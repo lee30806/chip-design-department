@@ -1,0 +1,34 @@
+{
+  "agents": [
+    {
+      "_note": "Pi 런타임. 로컬 모델은 PI_CODING_AGENT_DIR의 models.json에 provider로 등록. 플래그는 설치된 버전의 pi --help로 확인",
+      "name": "pi-family-a",
+      "family": "FAMILY_A",
+      "runtime": "pi",
+      "command": ["pi", "-p", "--model", "{model}", "{prompt}"],
+      "model": "MODEL_ID_A",
+      "env": { "PI_CODING_AGENT_DIR": "/opt/agents/pi-family-a" },
+      "vision": false
+    },
+    {
+      "_note": "Codex 런타임. 로컬 모델 provider는 ~/.codex/config.toml에 등록. 플래그는 codex exec --help로 확인",
+      "name": "codex-family-b",
+      "family": "FAMILY_B",
+      "runtime": "codex",
+      "command": ["codex", "exec", "--skip-git-repo-check", "-C", "{workdir}", "-m", "{model}", "{prompt}"],
+      "model": "MODEL_ID_B",
+      "vision": false
+    },
+    {
+      "_note": "Claude Code 런타임을 사내 모델 프록시에 붙이는 경우. 미확인 경로. 플래그는 claude --help로 확인",
+      "name": "claude-family-c",
+      "family": "FAMILY_C",
+      "runtime": "claude-code",
+      "command": ["claude", "-p", "--model", "{model}", "--permission-mode", "acceptEdits",
+                  "--allowedTools", "Read,Write,Edit,Bash(python3 tools/validate_ir.py:*)", "{prompt}"],
+      "model": "MODEL_ID_C",
+      "env": { "ANTHROPIC_BASE_URL": "http://llm-proxy.internal:4000" },
+      "vision": true
+    }
+  ]
+}

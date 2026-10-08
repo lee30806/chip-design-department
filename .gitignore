@@ -1,0 +1,10 @@
+.omc
+__pycache__
+.pytest_cache
+*.swp
+
+# P0 실험: 로컬 설정, 실행 결과, 사내 샘플은 올리지 않음
+experiments/p0/agents.json
+experiments/p0/results/
+experiments/p0/x2_wavejson/samples/*
+!experiments/p0/x2_wavejson/samples/README.md

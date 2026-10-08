@@ -1,0 +1,893 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chip-design-department/ir/v0",
+  "title": "RTL IR module (v0 draft)",
+  "description": "모듈당 JSON 파일 하나. L0 instances/connections, L1 params/domains/power_domains/ports, L2 types/signals, L3 blocks. 타입, 리셋값, 조건식, 파라미터 값은 SV 문자열이며 V3에서 pyslang으로 검사한다. 이 스키마는 V1(형식)만 담당하고, 참조와 의미 검사는 V2 이후 단계가 맡는다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "module",
+    "role",
+    "params",
+    "domains",
+    "ports"
+  ],
+  "properties": {
+    "module": {
+      "$ref": "#/$defs/ident"
+    },
+    "role": {
+      "enum": [
+        "top",
+        "block_top",
+        "module",
+        "external"
+      ]
+    },
+    "params": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/param"
+      }
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/domain"
+      }
+    },
+    "power_domains": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/power_domain"
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/port_or_bundle"
+      }
+    },
+    "types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/type_decl"
+      }
+    },
+    "signals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/signal"
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/instance"
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/connection"
+      }
+    },
+    "rtl_files": {
+      "description": "external 전용. 그대로 참조할 RTL 파일 경로",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "comb_paths": {
+      "description": "external 전용. 입력→출력 조합 경로 선언. 없으면 모든 입력→모든 출력으로 가정(V6)",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "$ref": "#/$defs/ident"
+          },
+          "to": {
+            "$ref": "#/$defs/ident"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "const": "external"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "rtl_files"
+        ],
+        "properties": {
+          "types": false,
+          "signals": false,
+          "blocks": false,
+          "instances": false,
+          "connections": false
+        }
+      },
+      "else": {
+        "properties": {
+          "rtl_files": false,
+          "comb_paths": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "role": {
+            "enum": [
+              "top",
+              "block_top"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/$defs/block_cdc_sync"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "ident": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_$]*$"
+    },
+    "node_id": {
+      "description": "이름이 없는 블록, 전이, 연결의 id",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "sv": {
+      "description": "SV 문자열 (타입, 식, 리셋값). V3에서 pyslang으로 검사",
+      "type": "string",
+      "minLength": 1
+    },
+    "ident_list": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/ident"
+      }
+    },
+    "param": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "default"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "type": {
+          "$ref": "#/$defs/sv"
+        },
+        "default": {
+          "$ref": "#/$defs/sv"
+        },
+        "range": {
+          "description": "SPEC 4번 섹션의 허용 범위 (자유 서식)",
+          "type": "string"
+        }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "clock",
+        "edge",
+        "reset"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "clock": {
+          "$ref": "#/$defs/ident"
+        },
+        "freq_mhz": {
+          "description": "SDC 골격의 클럭 정의에 사용",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "edge": {
+          "enum": [
+            "pos",
+            "neg"
+          ]
+        },
+        "reset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "port",
+            "active",
+            "async"
+          ],
+          "properties": {
+            "port": {
+              "$ref": "#/$defs/ident"
+            },
+            "active": {
+              "enum": [
+                "low",
+                "high"
+              ]
+            },
+            "async": {
+              "type": "boolean"
+            }
+          }
+        },
+        "async_to": {
+          "description": "SPEC 2번 섹션의 도메인 간 관계. SDC 비동기 클럭 그룹의 출처",
+          "$ref": "#/$defs/ident_list"
+        },
+        "power_domain": {
+          "$ref": "#/$defs/ident"
+        }
+      }
+    },
+    "power_domain": {
+      "description": "v1에서는 UPF 작성과 DCLint 입력으로만 사용. 필드 형식은 SPEC 양식 확인 후 확정",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "isolation": {
+          "type": "string"
+        },
+        "retention": {
+          "type": "string"
+        }
+      }
+    },
+    "port_signal_fields": {
+      "type": "object",
+      "required": [
+        "name",
+        "dir",
+        "type"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "dir": {
+          "enum": [
+            "input",
+            "output"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/sv"
+        },
+        "kind": {
+          "description": "출력 전용",
+          "enum": [
+            "reg",
+            "wire"
+          ]
+        },
+        "reset": {
+          "description": "kind=reg 출력의 리셋값",
+          "$ref": "#/$defs/sv"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dir": {
+                "const": "input"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "kind": false,
+              "reset": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "wire"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reset": false
+            }
+          }
+        }
+      ]
+    },
+    "bundle_signal": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/port_signal_fields"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "port": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/port_signal_fields"
+        },
+        {
+          "type": "object",
+          "required": [
+            "domain"
+          ],
+          "properties": {
+            "domain": {
+              "description": "null이면 비동기 입력. cdc_sync의 src로만 읽을 수 있음",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ident"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle",
+        "protocol",
+        "role",
+        "domain",
+        "signals"
+      ],
+      "properties": {
+        "bundle": {
+          "$ref": "#/$defs/ident"
+        },
+        "protocol": {
+          "description": "표준 프로토콜 태그 (목록은 P0 자료로 확정)",
+          "$ref": "#/$defs/ident"
+        },
+        "role": {
+          "description": "프로토콜 내 역할. 예: valid_ready의 source/sink",
+          "$ref": "#/$defs/ident"
+        },
+        "domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/bundle_signal"
+          }
+        }
+      }
+    },
+    "port_or_bundle": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/port"
+        },
+        {
+          "$ref": "#/$defs/bundle"
+        }
+      ]
+    },
+    "type_decl": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "kind",
+            "members"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/ident"
+            },
+            "kind": {
+              "const": "enum"
+            },
+            "base": {
+              "$ref": "#/$defs/sv"
+            },
+            "members": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/ident"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "kind",
+            "fields"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/ident"
+            },
+            "kind": {
+              "const": "struct"
+            },
+            "fields": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "type"
+                ],
+                "properties": {
+                  "name": {
+                    "$ref": "#/$defs/ident"
+                  },
+                  "type": {
+                    "$ref": "#/$defs/sv"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "signal": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "kind",
+            "type",
+            "domain"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/ident"
+            },
+            "kind": {
+              "const": "reg"
+            },
+            "type": {
+              "$ref": "#/$defs/sv"
+            },
+            "domain": {
+              "$ref": "#/$defs/ident"
+            },
+            "reset": {
+              "$ref": "#/$defs/sv"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "kind",
+            "type"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/ident"
+            },
+            "kind": {
+              "const": "wire"
+            },
+            "type": {
+              "$ref": "#/$defs/sv"
+            }
+          }
+        }
+      ]
+    },
+    "block": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/block_comb"
+        },
+        {
+          "$ref": "#/$defs/block_seq"
+        },
+        {
+          "$ref": "#/$defs/block_fsm"
+        },
+        {
+          "$ref": "#/$defs/block_cdc_sync"
+        },
+        {
+          "$ref": "#/$defs/block_memory"
+        }
+      ]
+    },
+    "block_comb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "reads",
+        "writes",
+        "body"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "comb"
+        },
+        "reads": {
+          "$ref": "#/$defs/ident_list"
+        },
+        "writes": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ident_list"
+            },
+            {
+              "minItems": 1
+            }
+          ]
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "block_seq": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "domain",
+        "reads",
+        "writes",
+        "body"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "seq"
+        },
+        "domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "reads": {
+          "$ref": "#/$defs/ident_list"
+        },
+        "writes": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ident_list"
+            },
+            {
+              "minItems": 1
+            }
+          ]
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "block_fsm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "domain",
+        "state_type",
+        "state_name",
+        "reset_state",
+        "reads",
+        "transitions"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "fsm"
+        },
+        "domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "state_type": {
+          "$ref": "#/$defs/ident"
+        },
+        "state_name": {
+          "description": "방출 시 <state_name>_q 레지스터를 노출",
+          "$ref": "#/$defs/ident"
+        },
+        "reset_state": {
+          "$ref": "#/$defs/ident"
+        },
+        "reads": {
+          "$ref": "#/$defs/ident_list"
+        },
+        "transitions": {
+          "description": "같은 from에서 조건이 겹치면 배열 순서가 우선. 일치하는 전이가 없으면 현재 상태 유지",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "from",
+              "to",
+              "cond"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/node_id"
+              },
+              "from": {
+                "$ref": "#/$defs/ident"
+              },
+              "to": {
+                "$ref": "#/$defs/ident"
+              },
+              "cond": {
+                "$ref": "#/$defs/sv"
+              }
+            }
+          }
+        }
+      }
+    },
+    "block_cdc_sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "src",
+        "src_domain",
+        "dst",
+        "dst_domain",
+        "style"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "cdc_sync"
+        },
+        "src": {
+          "$ref": "#/$defs/ident"
+        },
+        "src_domain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ident"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dst": {
+          "$ref": "#/$defs/ident"
+        },
+        "dst_domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "style": {
+          "description": "v1은 단일 비트 2ff만",
+          "enum": [
+            "2ff"
+          ]
+        }
+      }
+    },
+    "block_memory": {
+      "description": "ports 형식은 메모리 매크로 래퍼 규약을 받은 뒤 확정",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "word_type",
+        "depth",
+        "impl",
+        "ports"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "memory"
+        },
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "word_type": {
+          "$ref": "#/$defs/sv"
+        },
+        "depth": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "$ref": "#/$defs/sv"
+            }
+          ]
+        },
+        "impl": {
+          "enum": [
+            "inferred",
+            "macro"
+          ]
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "kind",
+              "domain"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/ident"
+              },
+              "kind": {
+                "enum": [
+                  "read",
+                  "write",
+                  "rw"
+                ]
+              },
+              "domain": {
+                "$ref": "#/$defs/ident"
+              }
+            }
+          }
+        }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "module",
+        "domain_map"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "module": {
+          "$ref": "#/$defs/ident"
+        },
+        "params": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/ident"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/sv"
+          }
+        },
+        "domain_map": {
+          "description": "자식 도메인 이름 → 부모 도메인 이름. 클럭과 리셋은 이것으로만 연결",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/ident"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/ident"
+          }
+        }
+      }
+    },
+    "endpoint": {
+      "description": "self.<port|bundle|signal> 또는 <instance>.<port|bundle>",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_$]*\\.[A-Za-z_][A-Za-z0-9_$]*$"
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "from": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "to": {
+          "$ref": "#/$defs/endpoint"
+        }
+      }
+    }
+  }
+}
