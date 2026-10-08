@@ -8,3 +8,13 @@ experiments/p0/agents.json
 experiments/p0/results/
 experiments/p0/x2_wavejson/samples/*
 !experiments/p0/x2_wavejson/samples/README.md
+
+# 예시 SPEC 원본(MIPI 등)은 재배포 조건이 있으므로 올리지 않음
+experiments/specs/*
+!experiments/specs/README.md
+experiments/**/*.pdf
+experiments/**/*.docx
+experiments/**/*.doc
+experiments/**/*.xlsx
+experiments/**/*.xls
+experiments/**/*.vsdx
