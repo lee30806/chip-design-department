@@ -5,7 +5,8 @@
 종료되면 정해진 경로의 결과 파일을 회수해 검사한다.
 
 런타임마다 headless 실행 방법이 다르므로 명령은 설정 파일의 템플릿으로 받는다.
-템플릿 자리표시자: {prompt} {prompt_file} {workdir} {model}
+템플릿 자리표시자: {prompt} {task} {prompt_file} {workdir} {model}, 과제별 추가 값(예: X2의 {image})
+  {prompt}는 "TASK.md를 읽어라"라는 짧은 지시이고, {task}는 TASK.md 본문 전체이다.
 """
 from __future__ import annotations
 
@@ -33,9 +34,16 @@ class AgentConfig:
 
 
 def load_agents(path: str | Path) -> list[AgentConfig]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    # "_"로 시작하는 키는 설명용 메모로 보고 무시한다.
-    return [AgentConfig(**{k: v for k, v in a.items() if not k.startswith("_")}) for a in raw["agents"]]
+    """env 값의 {config_dir}은 설정 파일이 있는 디렉터리로 바꾼다."""
+    path = Path(path).resolve()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    agents = []
+    for a in raw["agents"]:
+        # "_"로 시작하는 키는 설명용 메모로 보고 무시한다.
+        a = {k: v for k, v in a.items() if not k.startswith("_")}
+        a["env"] = {k: v.replace("{config_dir}", str(path.parent)) for k, v in a.get("env", {}).items()}
+        agents.append(AgentConfig(**a))
+    return agents
 
 
 @dataclass
@@ -51,12 +59,18 @@ class AgentRun:
         return not self.timed_out and self.returncode == 0
 
 
-def run_agent(cfg: AgentConfig, workdir: Path, task: str) -> AgentRun:
+def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] | None = None) -> AgentRun:
     """TASK.md를 쓰고 agent를 workdir에서 실행한다."""
     prompt_file = workdir / "TASK.md"
     prompt_file.write_text(task, encoding="utf-8")
-    subs = {"prompt": KICKOFF, "prompt_file": str(prompt_file), "workdir": str(workdir), "model": cfg.model}
-    cmd = [part.format(**subs) for part in cfg.command]
+    subs = {"prompt": KICKOFF, "task": task, "prompt_file": str(prompt_file), "workdir": str(workdir), "model": cfg.model,
+            **(extra or {})}
+    # str.format을 쓰면 과제 본문의 중괄호가 깨지므로 자리표시자만 직접 바꾼다.
+    cmd = []
+    for part in cfg.command:
+        for k, v in subs.items():
+            part = part.replace("{" + k + "}", v)
+        cmd.append(part)
     env = {**os.environ, **cfg.env}
 
     t0 = time.monotonic()

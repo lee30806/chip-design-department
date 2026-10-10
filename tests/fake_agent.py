@@ -31,4 +31,5 @@ elif mode == "touch_l1":
 elif mode == "crash":
     sys.exit(3)
 elif mode == "wave":
+    assert sys.argv[1].startswith("@") and (cwd / sys.argv[1][1:]).exists()  # {image} 첨부 확인
     (cwd / "out" / "wave.json").write_text(os.environ["FAKE_WAVE"])

@@ -1,0 +1,208 @@
+{
+  "agents": [
+    {
+      "_note": "로컬 ollama 리허설. cc-*는 기본 런타임 Claude Code, pi-*는 Pi. -inline은 TASK.md 본문을 명령에 직접 넣는 방식",
+      "name": "cc-qwen3.5-9b",
+      "family": "Qwen",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "--bare",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash(python3 tools/validate_ir.py:*)",
+        "--no-session-persistence"
+      ],
+      "model": "qwen3.5:9b",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "{config_dir}/claude-config",
+        "ANTHROPIC_BASE_URL": "http://localhost:11434",
+        "ANTHROPIC_API_KEY": "local",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "32768"
+      },
+      "vision": false
+    },
+    {
+      "name": "cc-gemma4-12b",
+      "family": "Gemma",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "--bare",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash(python3 tools/validate_ir.py:*)",
+        "--no-session-persistence"
+      ],
+      "model": "gemma4:12b",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "{config_dir}/claude-config",
+        "ANTHROPIC_BASE_URL": "http://localhost:11434",
+        "ANTHROPIC_API_KEY": "local",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "32768"
+      },
+      "vision": false
+    },
+    {
+      "name": "pi-qwen3.5-9b",
+      "family": "Qwen",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "{prompt}"
+      ],
+      "model": "qwen3.5:9b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": false,
+      "timeout_s": 900
+    },
+    {
+      "name": "pi-gemma4-12b",
+      "family": "Gemma",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "{prompt}"
+      ],
+      "model": "gemma4:12b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": false,
+      "timeout_s": 900
+    },
+    {
+      "name": "pi-qwen3-vl-8b",
+      "family": "Qwen",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "{prompt}"
+      ],
+      "model": "qwen3-vl:8b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": true,
+      "timeout_s": 900
+    },
+    {
+      "name": "pi-qwen3.5-9b-inline",
+      "family": "Qwen",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "{task}"
+      ],
+      "model": "qwen3.5:9b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": false,
+      "timeout_s": 900
+    },
+    {
+      "name": "pi-gemma4-12b-inline",
+      "family": "Gemma",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "{task}"
+      ],
+      "model": "gemma4:12b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": false,
+      "timeout_s": 900
+    },
+    {
+      "name": "pi-qwen3-vl-8b-inline",
+      "family": "Qwen",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "ollama/{model}",
+        "@{image}",
+        "{task}"
+      ],
+      "model": "qwen3-vl:8b",
+      "env": {
+        "PI_CODING_AGENT_DIR": "{config_dir}/pi"
+      },
+      "vision": true,
+      "timeout_s": 1800
+    }
+  ]
+}

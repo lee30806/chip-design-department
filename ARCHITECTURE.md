@@ -20,7 +20,7 @@ Chip Design Department의 아키텍처 개요입니다. 시스템은 SPEC에서 
 | 구조는 툴, 동작은 LLM | 계층, 인터페이스, 상태 선언은 JSON입니다. 동작은 타입이 붙은 슬롯 안의 SV 조각입니다. 툴은 구조(포트, 리셋, 드라이버, 도메인)를 보장하고, 오류는 조각 하나로 국소화됩니다. |
 | 결정론적 제어 흐름 | 순서, 분기, 반복 상한, 게이트는 스케줄러가 정합니다. 에이전트끼리는 메시지를 주고받지 않고 산출물로만 통신합니다. |
 | 생성과 검증의 격리 | Author와 Verifier는 서로의 산출물을 보거나 고칠 수 없고, 서로 다른 계열의 로컬 모델을 씁니다. DV Pod는 파이프라인 테스트를 보지 않고 따로 검증합니다. |
-| coding agent 기반 | LLM은 모두 coding agent 세션으로 씁니다. Seat는 OpenRig가 관리하는 장기 세션이고, 파이프라인 에이전트는 스케줄러가 작업마다 띄우는 headless 단기 세션입니다. 모델 API를 직접 호출하는 코드는 두지 않습니다. |
+| coding agent 기반 | LLM은 모두 coding agent 세션으로 씁니다. Seat는 OpenRig가 관리하는 장기 세션이고, 파이프라인 에이전트는 스케줄러가 작업마다 띄우는 headless 단기 세션입니다. 모델 API를 직접 호출하는 코드는 두지 않습니다. 기본 런타임은 Claude Code입니다. |
 | 대화는 OpenRig로 | 사람의 대화는 Web UI → 게이트웨이 → OpenRig를 거쳐 각 Seat에 전달됩니다. |
 | 단일 수정 창구 | 다른 Pod에서 나온 수정 요구는 Design-lead를 거쳐 네 가지 환류 형태 중 하나로만 들어갑니다. |
 | 사람 승인 세 곳 | SPEC 고정, 최종 승인, RTL Freeze입니다. 실행 중의 게이트는 멈추지 않고 검토 항목으로 기록합니다. |
@@ -234,7 +234,7 @@ OpenRig의 조율은 메시지와 규범에 기반하므로 접근을 막는 수
 | --- | --- | --- |
 | OpenRig | Seat의 세션, 토폴로지(rig.yaml), 메시지와 큐 관리 | tmux 위에서 도는 단일 사용자 로컬 데몬. 스냅숏으로 복구 |
 | 파이프라인 스케줄러 | 모듈 의존 그래프, 게이트, 자원 대기열, 상태 저장 | OpenRig의 서비스 묶음 방식으로 배치하고 RTL Engineer가 운영. Seat 세션과 상태를 분리 |
-| coding agent 실행기 | 작업마다 격리된 작업 디렉터리에서 headless coding agent를 실행하고 산출물을 회수 | 런타임(Pi, Codex 등)별 실행 명령 차이만 어댑터로 흡수. 도구는 CLI로 만들고 필요하면 MCP로도 노출 |
+| coding agent 실행기 | 작업마다 격리된 작업 디렉터리에서 headless coding agent를 실행하고 산출물을 회수 | 런타임(Claude Code(기본), Pi, Codex, Antigravity(agy) 등)별 실행 명령 차이만 어댑터로 흡수. 도구는 CLI로 만들고 필요하면 MCP로도 노출 |
 | 모델 서빙 | coding agent 런타임이 호출하는 언어 모델과 비전 모델 | 온프레미스 서빙과 호환 API 프록시. 런타임 외의 코드는 직접 호출하지 않음 |
 | EDA 실행 환경 | Verilator, VC SpyGlass, DC, PowerPro/PowerArtist 등 | 표준 래퍼 스크립트만 호출. 라이선스 수에 맞춘 대기열 |
 | 저장소 | SPEC, IR, RTL, 테스트, 리포트 | Seat별 Git worktree. 교환은 브랜치와 병합으로 수행 |

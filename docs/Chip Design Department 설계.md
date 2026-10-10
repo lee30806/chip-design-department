@@ -36,7 +36,7 @@ Oct 7, 2026 · @Seungjoon Lee
 | 전력 도메인 | SPEC 2번 섹션에 전력 도메인, isolation, retention 요구를 추가 |
 | SDC 골격 | Emitter가 클럭 정의, 비동기 클럭 그룹, CDC 경로 제약을 방출 |
 | 사람 인터페이스 | 직접 구축하는 Web UI. 1차로 SPEC 작업대, 승인함, 실행 상세를 만듦 |
-| LLM 실행 방식 | 모두 coding agent. Seat는 OpenRig가 관리하는 장기 세션, 파이프라인 에이전트는 스케줄러가 띄우는 headless 단기 세션. 모델 API를 직접 호출하는 코드는 두지 않음 |
+| LLM 실행 방식 | 모두 coding agent. 기본 런타임은 Claude Code. Seat는 OpenRig가 관리하는 장기 세션(`runtime: claude-code`), 파이프라인 에이전트는 스케줄러가 띄우는 headless 단기 세션. 로컬 모델은 Anthropic Messages API 호환 엔드포인트로 연결. 모델 API를 직접 호출하는 코드는 두지 않음 |
 | Seat와의 대화 | Web UI → 게이트웨이 → OpenRig를 거쳐 Seat에 전달. 질문과 진행 확인은 모든 Seat와 자유. 작업 지시는 Chip-lead와 각 lead에게만. 수정 요구는 환류 양식으로만 제출 |
 | 인증 | 사내 SSO 기반. 구현은 차후 |
 | Verifier 테스트 열람 | 사람은 열람 가능. DV Seat는 불가 |
@@ -250,7 +250,7 @@ flowchart LR
 - **다중 사용자.** OpenRig 데몬은 한 계정으로 실행하고, 사람별 로그인과 역할별 권한은 게이트웨이가 처리합니다.
 - **원칙의 강제.** 수정 요구를 환류 양식으로만 받는 규칙을 화면에서 구현합니다.
 - **승인 기록.** 누가, 언제, 어떤 SPEC 버전과 실행 ID를 승인했는지 남깁니다.
-- **대화 중계.** 사람의 메시지에 보낸 사람과 역할을 붙여 OpenRig 데몬의 메시지 전송으로 해당 Seat에 전달하고, Seat의 응답은 transcript에서 읽어 보여 줍니다. 게이트웨이는 모델을 직접 부르지 않습니다. 작업 지시 권한(lead에게만)은 게이트웨이가 전달 전에 검사합니다.
+- **대화 중계.** 사람의 메시지에 보낸 사람, 역할, 메시지 ID를 붙여 OpenRig의 메시지 전송(봉투 없는 `--raw` 방식)으로 해당 Seat에 전달하고, Seat의 응답은 transcript에서 메시지 ID로 찾아 보여 줍니다. Seat 기본 지침에 "Web UI에서 온 메시지는 화면에 직접 답한다"를 둡니다. OpenRig 봉투를 쓰면 Seat가 받을 곳이 없는 `rig send` 답장을 시도합니다(P0 로컬 리허설에서 확인). 게이트웨이는 모델을 직접 부르지 않습니다. 작업 지시 권한(lead에게만)은 게이트웨이가 전달 전에 검사합니다.
 
 ### 화면 구성과 구축 순서
 

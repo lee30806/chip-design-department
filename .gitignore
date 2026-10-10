@@ -18,3 +18,13 @@ experiments/**/*.doc
 experiments/**/*.xlsx
 experiments/**/*.xls
 experiments/**/*.vsdx
+
+# OpenRig가 rig 디렉터리에 만드는 파일
+experiments/p0/x6_chat_roundtrip/rig/AGENTS.md
+
+# Claude Code 리허설용 설정 디렉터리 (CLAUDE_CONFIG_DIR)
+experiments/p0/local/claude-config/
+
+# Pi가 실행 중에 만드는 파일 (인증 정보가 들어갈 수 있음)
+experiments/p0/local/pi/*
+!experiments/p0/local/pi/models.json

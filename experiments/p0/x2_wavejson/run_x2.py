@@ -6,6 +6,8 @@ samples/ 아래에 그림과 정답을 같은 이름으로 둔다.
 
 trial마다 작업 디렉터리에 그림 하나와 TASK.md를 두고 agent를 실행한다.
 agent는 out/wave.json을 써야 한다. 설정에서 "vision": true인 agent만 실행한다.
+명령 템플릿의 {image}는 그림 파일 이름이다. Pi는 읽기 도구로 연 이미지를 모델에 넘기지 못하므로
+`@{image}`처럼 첨부해야 한다(pi 1.0.2, qwen3-vl:8b에서 확인).
 
 사용 예
   python3 experiments/p0/x2_wavejson/run_x2.py --agents experiments/p0/agents.json --repeat 3
@@ -94,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                     work = out_dir / "work" / cfg.name / f"{img.stem}-{i}"
                     (work / "out").mkdir(parents=True)
                     shutil.copy(img, work / img.name)
-                    run = run_agent(cfg, work, TASK.format(image=img.name))
+                    run = run_agent(cfg, work, TASK.format(image=img.name), extra={"image": img.name})
                     row = {"agent": cfg.name, "runtime": cfg.runtime, "family": cfg.family, "sample": img.stem,
                            "trial": i, "workdir": str(work), "exit_ok": run.exit_ok, "duration_s": run.duration_s,
                            **score(work, gt)}

@@ -68,7 +68,7 @@ def test_run_x2_end_to_end(tmp_path):
                        {"name": "valid", "wave": "01.0"}]}
     fake = str(Path(__file__).resolve().parent / "fake_agent.py")
     cfg = {"name": "fake", "family": "F", "runtime": "fake", "vision": True,
-           "command": [sys.executable, fake, "{prompt}"], "env": {"FAKE_MODE": "wave", "FAKE_WAVE": json.dumps(pred)}}
+           "command": [sys.executable, fake, "@{image}"], "env": {"FAKE_MODE": "wave", "FAKE_WAVE": json.dumps(pred)}}
     blind = dict(cfg, name="blind", vision=False)
     (tmp_path / "agents.json").write_text(json.dumps({"agents": [cfg, blind]}))
     assert run_x2.main(["--agents", str(tmp_path / "agents.json"), "--samples", str(samples),

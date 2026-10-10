@@ -79,4 +79,20 @@ def test_main_writes_summary(tmp_path):
 def test_example_config_loads():
     from common.agent import load_agents
     agents = load_agents(Path(__file__).resolve().parents[1] / "experiments" / "p0" / "agents.example.json")
-    assert {a.runtime for a in agents} == {"pi", "codex", "claude-code"}
+    assert agents[0].runtime == "claude-code" and {a.runtime for a in agents} == {"pi", "codex", "claude-code", "antigravity"}
+
+
+def test_config_dir_placeholder_in_env(tmp_path):
+    from common.agent import load_agents
+    cfg = tmp_path / "agents.json"
+    cfg.write_text(json.dumps({"agents": [{"name": "a", "family": "F", "runtime": "pi", "command": ["x"],
+                                           "env": {"PI_CODING_AGENT_DIR": "{config_dir}/pi"}}]}))
+    assert load_agents(cfg)[0].env["PI_CODING_AGENT_DIR"] == f"{tmp_path.resolve()}/pi"
+
+
+def test_task_placeholder_passes_task_body_with_braces(tmp_path):
+    echo = AgentConfig(name="e", family="F", runtime="x",
+                       command=[sys.executable, "-c", "import sys; print(sys.argv[1])", "{task}"])
+    (tmp_path / "e").mkdir()
+    run = run_agent(echo, tmp_path / "e", 'write {"signal": []} to out')
+    assert '{"signal": []}' in run.stdout_tail

@@ -1,0 +1,22 @@
+version: "0.2"
+name: x6-rig
+pods:
+  - id: design
+    label: Design
+    members:
+      - id: lead
+        agent_ref: "local:agents/lead"
+        profile: default
+        runtime: pi
+        model: "ollama/qwen3.5:9b"
+        cwd: .
+      - id: eng
+        agent_ref: "local:agents/eng"
+        profile: default
+        runtime: pi
+        model: "ollama/gemma4:12b"
+        cwd: .
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: eng
