@@ -126,6 +126,32 @@ LLM 없이 스키마의 표현력과 Emitter의 정확성을 확인합니다. �
 5. **손 이식.** 블록 3개를 손으로 IR에 옮기고 `tests/golden/`에 둡니다. 막힌 지점은 기록 항목 표에 따라 남깁니다.
 6. **판정.** 방출된 RTL이 기존 테스트벤치와 VC SpyGlass 사내 템플릿을 통과하는지 봅니다.
 
+### 진행 상황 (2026-10-10)
+
+| 작업 | 상태 | 위치 |
+| --- | --- | --- |
+| 1. 스키마 | v0 초안 | `schema/ir.schema.json` |
+| 2. IR 코어 | 완료: 로더, 번들 펼치기, domains에서 클럭·리셋 포트 유도, FSM 상태 레지스터, 읽기·쓰기 이름 공간 | `pipeline/ir/model.py` |
+| 3. Validator V1\~V5 | 완료. V3, V4는 IR 하나를 탐침 모듈로 만들어 pyslang으로 한 번에 컴파일하고, 진단 줄을 IR 노드로 되돌림. 조각의 실제 읽기·쓰기와 대입 종류는 구문 트리에서 뽑음 | `pipeline/validator/` |
+| 4. 최소 Emitter | `comb`, `seq`(리셋 분기 포함), `fsm`, `cdc_sync`, 인스턴스(`domain_map` 배선, 번들 연결), `// @ir` 주석, 소스맵. **`memory`는 아직 방출하지 않음.** 동기화 셀은 P0 자료가 올 때까지 `sync_2ff`로 가정 | `pipeline/emitter/sv.py` |
+| 5\~6. 손 이식과 판정 | 대기: 이식 시험 블록 3개, 테스트벤치, SpyGlass 템플릿 필요 | – |
+
+**검증.**
+- 설계 문서의 예시 IR 2개가 V1\~V5를 통과합니다.
+- 일부러 넣은 오류 18종을 모두 맞는 단계와 노드로 잡습니다.
+- X1 리허설에서 모델이 만든 실제 IR 2개도 원인 위치를 짚어 거부합니다.
+- 방출한 RTL은 pyslang elaboration에서 진단 0건입니다.
+- 시뮬레이션: Verilator 5.052와 cocotb 2.1.0으로, 방출한 `pkt_parser`를 SPEC 기반 Python 참조 모델과 사이클 단위로 비교합니다. 정상 패킷, 잡음, 간격, 연속 패킷, 무작위 입력 3종이 통과합니다. 조각에 버그를 하나 넣은 변이는 3종 모두 실패합니다(`tests/sim/`). 시뮬레이션은 저장소의 `.venv`에서 돌립니다.
+
+```bash
+uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python cocotb pyslang==10.0.0 jsonschema pytest
+.venv/bin/python -m pytest tests            # 시뮬레이션 포함
+```
+
+```bash
+python3 -m pipeline.emitter.sv tests/fixtures/*.ir.json -o build/rtl
+```
+
 ### 완료 기준
 
 - 블록 3개의 방출 RTL이 기존 테스트벤치를 통과합니다.
@@ -143,7 +169,7 @@ LLM 없이 스키마의 표현력과 Emitter의 정확성을 확인합니다. �
 
 | 영역 | 작업 | 완료 기준 |
 | --- | --- | --- |
-| Validator | V6 래치와 루프, V7 리셋, V8 도메인, V9 FSM, V10 계층, V11 동결 해시 | 규칙마다 통과 사례와 실패 사례의 단위 테스트가 있고, golden IR 3개는 오탐 없이 통과 |
+| Validator | V6 래치와 루프, V7 리셋, V8 도메인, V9 FSM, V10 계층, V11 동결 해시 | 규칙마다 통과 사례와 실패 사례의 단위 테스트가 있고, golden IR 3개는 오탐 없이 통과. **진행 (2026-10-10): V6\~V11 구현.** 단계별 실패 사례 10종과 V11 테스트가 있고, 예시 IR 2개는 오탐 없이 통과. golden IR 3개 검증은 이식 시험 뒤에 함. 조합 경로는 대입문 단위로 계산(`pipeline/validator/structure.py`) |
 | Emitter | SDC 골격(클럭 정의, 비동기 클럭 그룹, CDC 경로), `external` 참조, 전력 도메인 L1 기록, `memory` 매크로 래퍼 | Emitter 대표 출력물의 SpyGlass 통과를 회귀 테스트로 CI에 등록 |
 | Verify | E1 Verilator lint, E2 Verilator sim, E3 SpyGlass 래퍼와 리포트 파서. 라이선스 대기열 | 세 단계 결과가 같은 형식(툴, 규칙, 파일, 줄, 메시지)으로 나옴 |
 | 테스트벤치 | L1에서 cocotb 하니스 생성. 번들 프로토콜별 드라이버, 모니터, 스코어보드 골격. 프로토콜 체커 라이브러리 | golden 블록에 생성된 하니스를 붙이고 손으로 쓴 참조 모델로 T1\~T5 실행 |

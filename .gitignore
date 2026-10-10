@@ -28,3 +28,8 @@ experiments/p0/local/claude-config/
 # Pi가 실행 중에 만드는 파일 (인증 정보가 들어갈 수 있음)
 experiments/p0/local/pi/*
 !experiments/p0/local/pi/models.json
+build/
+.venv/
+
+# cocotb가 실행할 때 남기는 결과 파일
+tests/sim/*.result.xml

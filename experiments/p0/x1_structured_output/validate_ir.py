@@ -2,8 +2,10 @@
 
     python3 tools/validate_ir.py out/pkt_parser.ir.json
 
-작업 디렉터리의 schema/ir.schema.json과 l1.json(동결된 L1)을 기준으로 검사하고,
-결과를 JSON으로 출력한다. 호출 기록은 .validate.log에 남는다(도구 사용 여부 측정용).
+파이프라인의 실제 Validator(V1~V10)로 검사하고, 동결된 L1(l1.json)이 바뀌었는지도 본다.
+작업 디렉터리에서는 tools/pipeline에 복사된 Validator를 쓰고, 저장소에서는 저장소의 pipeline을 쓴다.
+결과는 JSON으로 출력하고, 호출 기록은 .validate.log에 남긴다(도구 사용 여부 측정용).
+pyslang과 jsonschema가 필요하다.
 """
 from __future__ import annotations
 
@@ -12,35 +14,45 @@ import sys
 import time
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
+sys.dont_write_bytecode = True  # 작업 디렉터리에 __pycache__를 남기지 않는다
+HERE = Path(__file__).resolve().parent
+for p in (HERE, HERE.parents[2] if len(HERE.parents) > 2 else HERE):
+    if (p / "pipeline" / "validator").is_dir():
+        sys.path.insert(0, str(p))
+        break
+
+from pipeline.ir.model import Module  # noqa: E402
+from pipeline.validator.checks import errors, validate  # noqa: E402
 
 FROZEN_KEYS = ("module", "role", "params", "domains", "ports")
 
 
-def check_ir(ir: object, schema: dict, frozen_l1: dict) -> dict:
+def check_ir(ir: object, frozen_l1: dict, library: dict | None = None) -> dict:
     if not isinstance(ir, dict):
-        return {"ok": False, "schema_ok": False, "l1_frozen": False, "errors": ["최상위가 JSON 객체가 아님"]}
-    v = Draft202012Validator(schema)
-    schema_errors = [f"{'/'.join(map(str, e.absolute_path)) or '(root)'}: {e.message[:200]}"
-                     for e in sorted(v.iter_errors(ir), key=lambda e: list(map(str, e.absolute_path)))]
+        return {"ok": False, "valid": False, "l1_frozen": False, "errors": ["최상위가 JSON 객체가 아님"], "warnings": []}
+    try:
+        issues = validate(Module(ir), library or {})
+    except Exception as e:  # Validator 자체가 처리하지 못한 형태
+        issues_err, warns = [f"검사 중 예외: {type(e).__name__}: {e}"], []
+    else:
+        issues_err = [str(i) for i in errors(issues)]
+        warns = [str(i) for i in issues if i.severity != "error"]
     changed = [k for k in FROZEN_KEYS if ir.get(k) != frozen_l1.get(k)]
-    errors = schema_errors + [f"동결 범위 변경: {k}" for k in changed]
-    return {"ok": not errors, "schema_ok": not schema_errors, "l1_frozen": not changed, "errors": errors[:10]}
+    errs = issues_err + [f"[동결] {k}: 동결된 L1과 다름" for k in changed]
+    return {"ok": not errs, "valid": not issues_err, "l1_frozen": not changed, "errors": errs[:10], "warnings": warns[:10]}
 
 
-def check_file(path: Path, root: Path, schema: dict | None = None, frozen: dict | None = None) -> dict:
-    """schema와 frozen을 주지 않으면 root의 사본을 쓴다. 채점은 agent가 고칠 수 없는 원본을 넘겨야 한다."""
-    if schema is None:
-        schema = json.loads((root / "schema" / "ir.schema.json").read_text(encoding="utf-8"))
+def check_file(path: Path, root: Path, frozen: dict | None = None) -> dict:
+    """frozen을 주지 않으면 root의 l1.json을 쓴다. 채점은 agent가 고칠 수 없는 원본을 넘겨야 한다."""
     if frozen is None:
         frozen = json.loads((root / "l1.json").read_text(encoding="utf-8"))
     if not path.exists():
-        return {"ok": False, "schema_ok": False, "l1_frozen": False, "errors": [f"파일 없음: {path}"]}
+        return {"ok": False, "valid": False, "l1_frozen": False, "errors": [f"파일 없음: {path}"], "warnings": []}
     try:
         ir = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        return {"ok": False, "schema_ok": False, "l1_frozen": False, "errors": [f"JSON 파싱 실패: {e}"]}
-    return check_ir(ir, schema, frozen)
+        return {"ok": False, "valid": False, "l1_frozen": False, "errors": [f"JSON 파싱 실패: {e}"], "warnings": []}
+    return check_ir(ir, frozen)
 
 
 def main() -> int:

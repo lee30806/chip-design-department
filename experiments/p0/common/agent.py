@@ -92,7 +92,7 @@ def snapshot(root: Path, exclude: tuple[str, ...]) -> dict[str, str]:
     out = {}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root).as_posix()
-        if not p.is_file() or rel.startswith(exclude) or rel.split("/")[0].startswith("."):
+        if not p.is_file() or rel.startswith(exclude) or rel.split("/")[0].startswith(".") or "__pycache__" in rel:
             continue
         out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out

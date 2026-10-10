@@ -1,7 +1,7 @@
 """X1: coding agent가 스키마에 맞는 IR 파일을 내는 비율과 검사 도구를 쓰는 비율.
 
 과제는 Author 에이전트의 실제 일과 같은 형태다. 작업 디렉터리에 동결된 L1, SPEC 요구사항,
-스키마, 검사 도구를 두고 coding agent를 headless로 실행한다. agent는 out/pkt_parser.ir.json을
+스키마, 검사 도구(파이프라인의 Validator V1~V10)를 두고 coding agent를 headless로 실행한다. agent는 out/pkt_parser.ir.json을
 써야 한다. 기능의 정확성은 보지 않는다. 결과 파일, 스키마, 동결 범위, 도구 사용, 쓰기 범위만 본다.
 
 trial마다 새 작업 디렉터리를 만들고, 검사가 실패하면 오류를 담은 새 TASK.md로
@@ -29,7 +29,6 @@ from x1_structured_output.validate_ir import check_file  # noqa: E402
 ROOT = HERE.parents[2]
 FIXTURE = json.loads((ROOT / "tests" / "fixtures" / "pkt_parser.ir.json").read_text(encoding="utf-8"))
 FROZEN_L1 = {k: FIXTURE[k] for k in ("module", "role", "params", "domains", "ports")}
-SCHEMA = json.loads((ROOT / "schema" / "ir.schema.json").read_text(encoding="utf-8"))
 OUT_REL = "out/pkt_parser.ir.json"
 
 SPEC = """\
@@ -56,7 +55,7 @@ TASK = f"""\
 
 ## 할 일
 1. L1을 한 글자도 바꾸지 않고 포함하고, L2(types, signals)와 L3(blocks)를 채운 모듈 IR 전체를 `{OUT_REL}`에 JSON으로 쓴다.
-2. 다 쓰면 `python3 tools/validate_ir.py {OUT_REL}`로 검사한다. `"ok": true`가 나올 때까지 고친다.
+2. 다 쓰면 `python3 tools/validate_ir.py {OUT_REL}`로 검사한다. 이 도구는 스키마뿐 아니라 참조, 표현식, 조각의 읽기·쓰기, 구동, 래치, 리셋, 도메인, FSM까지 본다. `"ok": true`가 나올 때까지 고친다.
 
 ## 규칙
 - `{OUT_REL}` 외의 파일은 만들거나 고치지 않는다.
@@ -79,6 +78,10 @@ def prepare_workdir(work: Path) -> None:
     (work / "out").mkdir()
     shutil.copy(ROOT / "schema" / "ir.schema.json", work / "schema" / "ir.schema.json")
     shutil.copy(HERE / "validate_ir.py", work / "tools" / "validate_ir.py")
+    # 검사 도구가 작업 디렉터리 안에서 혼자 돌도록 Validator와 스키마를 함께 둔다.
+    shutil.copytree(ROOT / "pipeline", work / "tools" / "pipeline", ignore=shutil.ignore_patterns("__pycache__", "stubs"))
+    (work / "tools" / "schema").mkdir()
+    shutil.copy(ROOT / "schema" / "ir.schema.json", work / "tools" / "schema" / "ir.schema.json")
     (work / "l1.json").write_text(json.dumps(FROZEN_L1, ensure_ascii=False, indent=1), encoding="utf-8")
     (work / "spec.md").write_text(SPEC, encoding="utf-8")
 
@@ -92,8 +95,8 @@ def run_trial(cfg: AgentConfig, work: Path, retry: int) -> dict:
         duration += run.duration_s
         runs.append({"returncode": run.returncode, "timed_out": run.timed_out,
                      "stdout_tail": run.stdout_tail[-1000:], "stderr_tail": run.stderr_tail[-1000:]})
-        # 작업 디렉터리의 사본이 아니라 원본 스키마와 L1로 채점한다.
-        res = check_file(work / OUT_REL, work, SCHEMA, FROZEN_L1)
+        # 작업 디렉터리의 사본이 아니라 저장소의 Validator와 원본 L1로 채점한다.
+        res = check_file(work / OUT_REL, work, FROZEN_L1)
         if first is None:
             first = {**res, "exit_ok": run.exit_ok}
         if res["ok"]:

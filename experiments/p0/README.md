@@ -72,11 +72,12 @@ TASK.md                  # 과제와 규칙
 l1.json                  # 동결된 L1 (설계 문서의 pkt_parser)
 spec.md                  # SPEC 요구사항
 schema/ir.schema.json    # IR 스키마 v0 초안
-tools/validate_ir.py     # 검사 도구. 호출하면 .validate.log에 기록
+tools/validate_ir.py     # 검사 도구. 파이프라인 Validator V1~V10과 동결 검사. 호출하면 .validate.log에 기록
+tools/pipeline/          # 검사 도구가 쓰는 Validator 사본 (pyslang, jsonschema 필요)
 out/                     # agent가 out/pkt_parser.ir.json을 써야 함
 ```
 
-agent가 종료되면 결과 파일을 원본 스키마와 원본 L1로 검사합니다. 작업 디렉터리의 사본은 agent가 고칠 수 있으므로 채점에 쓰지 않습니다. 검사가 실패하면 오류를 붙인 새 TASK.md로 `--retry`회까지 다시 실행합니다. 이는 Classifier의 "스키마 위반 → 같은 에이전트 재시도"와 같은 동작입니다.
+agent가 종료되면 결과 파일을 저장소의 Validator(V1\~V10)와 원본 L1로 검사합니다. 작업 디렉터리의 사본은 agent가 고칠 수 있으므로 채점에 쓰지 않습니다. 따라서 X1의 "통과"는 스키마 준수가 아니라 파이프라인 Validator 통과를 뜻합니다(2026-10-10부터). 검사가 실패하면 오류를 붙인 새 TASK.md로 `--retry`회까지 다시 실행합니다. 이는 Classifier의 "스키마 위반 → 같은 에이전트 재시도"와 같은 동작입니다.
 
 기능의 정확성은 보지 않습니다.
 

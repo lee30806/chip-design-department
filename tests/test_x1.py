@@ -65,7 +65,7 @@ def test_validator_cli_detects_l1_change_separately_from_schema(tmp_path):
     ir["params"][0]["default"] = "8'h5A"
     (w / "out" / "a.json").write_text(json.dumps(ir))
     r = check_file(w / "out" / "a.json", w)
-    assert r["schema_ok"] and not r["l1_frozen"] and not r["ok"]
+    assert r["valid"] and not r["l1_frozen"] and not r["ok"]
 
 
 def test_main_writes_summary(tmp_path):
