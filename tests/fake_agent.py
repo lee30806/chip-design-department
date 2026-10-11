@@ -33,3 +33,9 @@ elif mode == "crash":
 elif mode == "wave":
     assert sys.argv[1].startswith("@") and (cwd / sys.argv[1][1:]).exists()  # {image} 첨부 확인
     (cwd / "out" / "wave.json").write_text(os.environ["FAKE_WAVE"])
+elif mode == "questions":
+    assert (cwd / "spec.md").exists()
+    (cwd / "out" / "questions.json").write_text(os.environ["FAKE_QUESTIONS"])
+elif mode == "questions_touch_spec":
+    (cwd / "out" / "questions.json").write_text('{"items": []}')
+    (cwd / "spec.md").write_text("changed")

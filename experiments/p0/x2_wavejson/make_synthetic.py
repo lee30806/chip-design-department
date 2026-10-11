@@ -12,11 +12,10 @@ import json
 import sys
 from pathlib import Path
 
-import fitz  # PyMuPDF
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from x2_wavejson.wavejson import expand, flatten  # noqa: E402
+from x2_wavejson.wavejson import render as draw  # noqa: E402
 
 SAMPLES = {
     "syn_handshake": {"signal": [
@@ -99,56 +98,6 @@ SAMPLES = {
         {"name": "status", "wave": "=..=.=..", "data": ["RUN", "RESET", "IDLE"]},
     ]},
 }
-
-CW, RH, X0, Y0, AMP = 48, 36, 90, 20, 18  # 사이클 폭, 행 높이, 파형 시작 x, 첫 행 y, 진폭
-
-
-def draw(wj: dict, path: Path) -> None:
-    sigs = list(flatten(wj).values())
-    ncyc = max(len(expand(s)) for s in sigs)
-    doc = fitz.open()
-    page = doc.new_page(width=X0 + CW * ncyc + 20, height=Y0 + RH * len(sigs) + 10)
-    black, grey = (0, 0, 0), (0.75, 0.75, 0.75)
-    for c in range(ncyc + 1):  # 사이클 경계 보조선
-        page.draw_line((X0 + c * CW, Y0 - 8), (X0 + c * CW, Y0 + RH * len(sigs)), color=grey, width=0.5, dashes="[2] 0")
-    for r, sig in enumerate(sigs):
-        top = Y0 + r * RH + 6
-        hi, lo, mid = top, top + AMP, top + AMP / 2
-        page.insert_text((8, mid + 4), sig["name"], fontsize=11, color=black)
-        prev = None
-        for i, (st, label) in enumerate(expand(sig)):
-            x1, x2 = X0 + i * CW, X0 + (i + 1) * CW
-            line = lambda a, b: page.draw_line(a, b, color=black, width=1.2)  # noqa: E731
-            if st in ("p", "n"):
-                first, second = (hi, lo) if st == "p" else (lo, hi)
-                line((x1, lo), (x1, hi)) if st == "p" else line((x1, hi), (x1, lo))
-                line((x1, first), ((x1 + x2) / 2, first))
-                line(((x1 + x2) / 2, first), ((x1 + x2) / 2, second))
-                line(((x1 + x2) / 2, second), (x2, second))
-            elif st in ("0", "1"):
-                y = lo if st == "0" else hi
-                if prev and prev[0] in ("0", "1") and prev[0] != st:
-                    line((x1, hi), (x1, lo))
-                line((x1, y), (x2, y))
-            elif st in ("=", "x"):
-                new_seg = prev != (st, label)
-                start = x1 + 6 if new_seg else x1
-                if new_seg:
-                    line((x1, mid), (start, hi))
-                    line((x1, mid), (start, lo))
-                line((start, hi), (x2, hi))
-                line((start, lo), (x2, lo))
-                if st == "x":
-                    for k in range(int(start), int(x2), 8):
-                        page.draw_line((k, lo), (min(k + 8, x2), hi), color=grey, width=0.8)
-                elif new_seg and label:
-                    page.insert_text((start + 4, mid + 4), label, fontsize=10, color=black)
-            elif st == "z":
-                line((x1, mid), (x2, mid))
-            prev = (st, label)
-    page.get_pixmap(dpi=144).save(str(path))
-    doc.close()
-
 
 def main() -> int:
     out = HERE / "samples"
