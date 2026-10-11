@@ -33,3 +33,7 @@ build/
 
 # cocotb가 실행할 때 남기는 결과 파일
 tests/sim/*.result.xml
+experiments/p0/local/pi-judge/*
+!experiments/p0/local/pi-judge/models.json
+experiments/p0/x3_seat/rig/work/*
+!experiments/p0/x3_seat/rig/work/README.txt

@@ -91,7 +91,8 @@ RANDOM_INIT_BUILD = ["-x-assign", "unique", "-x-initial", "unique"]
 
 def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir: Path,
         build_args: list[str] | None = None, seed: int | None = None, seeds: list[int] | None = None,
-        harness_dir: Path | None = None, trace: Path | None = None) -> StageResult:
+        harness_dir: Path | None = None, trace: Path | None = None, env: dict[str, str] | None = None,
+        timescale: tuple[str, str] | None = None) -> StageResult:
     """E2. cocotb + Verilator. 빌드 실패도 이 단계의 실패로 낸다.
 
     seeds를 주면 초기값을 무작위화해 시드마다 실행하고(T1, Verilator 시드만 바꾸고 Python random 시드는 seed로 고정), 시드에 따라 실패하는 테스트가 달라지면
@@ -107,7 +108,7 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     try:
         runner.build(sources=[Path(f) for f in files], hdl_toplevel=top, build_dir=build_dir,
                      build_args=[*(build_args or []), *(RANDOM_INIT_BUILD if seeds else [])], always=True,
-                     log_file=build_log)
+                     log_file=build_log, timescale=timescale)
     except (Exception, SystemExit):
         text = build_log.read_text(errors="replace") if build_log.exists() else ""
         findings = parse_verilator(text) or [Finding("verilator", "BUILD", None, None, text.strip()[-2000:])]
@@ -119,7 +120,7 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         tag = "default" if s is None else str(s)
         results, test_log = build_dir / f"results.{tag}.xml", build_dir / f"test.{tag}.log"
         results.unlink(missing_ok=True)
-        env = {"TB_OUT": str((build_dir / "tb_out" / tag).resolve())}
+        env = {**(env or {}), "TB_OUT": str((build_dir / "tb_out" / tag).resolve())}
         if trace:
             env["TB_TRACE"] = str(Path(trace).resolve())
         plus = [f"+verilator+seed+{s}", "+verilator+rand+reset+2"] if seeds else []
@@ -129,7 +130,7 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
             # 자극이 시드에 따라 바뀌지 않도록 cocotb(Python random) 시드는 고정한다.
             runner.test(hdl_toplevel=top, test_module=test_module, test_dir=Path(test_dir), build_dir=build_dir,
                         results_xml=str(results), seed=(seed if seed is not None else 1) if seeds else s,
-                        log_file=test_log, extra_env=env, plusargs=plus)
+                        log_file=test_log, extra_env=env, plusargs=plus, timescale=timescale)
         except (Exception, SystemExit):
             pass  # 테스트가 실패하면 runner가 예외를 던진다. 판정은 결과 파일로 한다.
         finally:

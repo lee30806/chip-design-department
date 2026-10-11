@@ -1,0 +1,43 @@
+{
+  "agents": [
+    {
+      "name": "agy-author",
+      "family": "Gemini",
+      "runtime": "antigravity",
+      "command": [
+        "agy",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        "1500s"
+      ],
+      "model": "gemini-3.8-flash-high",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500,
+      "_note": "P0 판정용 (2026-10-11, 사용자 지정). 응답 시간 때문에 로컬 모델 대신 agy(Antigravity CLI)의 클라우드 모델로 판정함. Author는 gemini-3.8-flash-high, Verifier는 gemini-3.1-pro-high. 로컬 모델 판정은 사용자가 따로 진행"
+    },
+    {
+      "name": "agy-verifier",
+      "family": "Gemini",
+      "runtime": "antigravity",
+      "command": [
+        "agy",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        "1500s"
+      ],
+      "model": "gemini-3.1-pro-high",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500
+    }
+  ]
+}

@@ -12,9 +12,9 @@ Oct 8, 2026 · @Seungjoon Lee
 
 | # | 실험 | 상태 | 준비물 |
 | --- | --- | --- | --- |
-| X1 | coding agent(로컬 모델)가 스키마에 맞는 IR 파일을 쓰고 검사 도구를 쓰는 비율 | 로컬 리허설에서 하네스 동작 확인. 통과율 판정은 폐쇄망에서 | `x1_structured_output/run_x1.py` |
-| X2 | 비전 모델을 쓰는 coding agent의 타이밍 다이어그램 → WaveJSON 정확도 | 로컬 리허설에서 이미지 전달 방식 확인. 정확도 판정은 폐쇄망에서. 실제 SPEC 그림과 정답 필요 | `x2_wavejson/run_x2.py`, `make_synthetic.py` |
-| X3 | coding agent 런타임과 로컬 모델의 연결. OpenRig Seat와 headless 실행 둘 다 | **로컬 리허설에서 둘 다 동작.** 폐쇄망 모델 서버로 재확인 필요 | `local/` |
+| X1 | coding agent(로컬 모델)가 스키마에 맞는 IR 파일을 쓰고 검사 도구를 쓰는 비율 | **통과 (2026-10-11, agy).** Author `gemini-3.8-flash-high`, Verifier `gemini-3.1-pro-high` 모두 10/10회 1회차 통과. 로컬 모델 판정은 사용자가 따로 진행 | `x1_structured_output/run_x1.py` |
+| X2 | 비전 모델을 쓰는 coding agent의 타이밍 다이어그램 → WaveJSON 정확도 | **통과 (2026-10-11, agy, 합성 그림 12장).** 평균 사이클 정확도 98.2%(Author), 100%(Verifier). 신호 재현율 100%. 실제 SPEC 그림으로 다시 볼 것 | `x2_wavejson/run_x2.py`, `make_synthetic.py` |
+| X3 | coding agent 런타임과 로컬 모델의 연결. OpenRig Seat와 headless 실행 둘 다 | **로컬 리허설에서 둘 다 동작.** Claude Code는 서버 컨텍스트 65536이 필요. agy headless는 클라우드 모델로 동작. 로컬 모델 판정은 사용자가 따로 진행 | `local/` |
 | X4 | rig.yaml edge 종류 | **완료 (소스 확인).** `handoff`, `can_message`는 없음 | 아래 결과 |
 | X5 | 폐쇄망 설치 절차와 데몬의 외부 호출 | 설치 리허설 완료. 반입 목록 작성. 폐쇄망 실측 필요 | [x5_offline_install/](x5_offline_install/README.md) |
 | X6 | 게이트웨이 → OpenRig → Seat 대화 왕복 | **로컬 리허설에서 전달 방식 확정** (`--raw` + 화면 응답 지시). 폐쇄망 재확인 필요 | `x6_chat_roundtrip/run_x6.py`, `rig/` |
@@ -22,6 +22,30 @@ Oct 8, 2026 · @Seungjoon Lee
 X3\~X6은 [OpenRig](https://github.com/mvschwarz/openrig) v0.6.6(커밋 `114cdb1`, 2026-10-08)의 소스를 읽어 확인했습니다. 버전이 바뀌면 다시 확인해야 합니다.
 
 **순서.** X3의 headless 실행이 되어야 X1과 X2를 돌릴 수 있습니다. X3 → X1, X2 → X6 순서로 진행합니다. X5는 설치 단계에서 함께 확인합니다.
+
+## agy 판정 결과 (2026-10-11)
+
+응답 시간 때문에 로컬 모델 대신 agy(Antigravity CLI 1.3.3)의 클라우드 모델로 X1, X2를 판정했습니다(사용자 결정). 설정은 `local/agents.agy.json`입니다. 로컬 모델 판정은 사용자가 따로 진행합니다.
+
+**X1.** 시도 10회, 재시도 1회까지 허용했습니다.
+
+| 역할 | 모델 | 1회차 통과 | 재시도 포함 통과 | 검사 도구 사용 | 동결 준수 | 범위 밖 쓰기 없음 | 평균 시간 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Author | `gemini-3.8-flash-high` | 100% | 100% | 100% | 100% | 100% | 254초 |
+| Verifier | `gemini-3.1-pro-high` | 100% | 100% | 100% | 100% | 100% | 264초 |
+
+**X2.** 정답에서 그린 합성 그림 12장을 썼습니다.
+
+| 역할 | 모델 | 사이클 정확도 (평균/최저) | 신호 재현율 | 신호 정밀도 | 완전 일치 | 평균 시간 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Author | `gemini-3.8-flash-high` | 98.2% / 88.9% | 100% | 100% | 10/12 | 148초 |
+| Verifier | `gemini-3.1-pro-high` | 100% / 100% | 100% | 100% | 12/12 | 211초 |
+
+**판정과 결정**
+- X1: 기준(1회차 80%, 재시도 포함 95%, 도구 사용 90%, 범위 밖 쓰기 0)을 모두 넘었습니다.
+- X2: "평균 95% 이상, 재현율 99% 이상" 구간입니다. 설계대로 coding agent가 변환하고 사람이 대조합니다. 합성 그림은 실제 SPEC 그림보다 쉬우므로, **실제 그림을 받으면 다시 판정합니다** (예정).
+- **두 모델이 같은 계열(Gemini)입니다.** 다른 계열을 권장하지만, 같은 계열도 허용하고 스케줄러가 경고를 남기기로 정했습니다 (2026-10-11).
+- agy는 전역 규칙 파일(`~/.gemini/GEMINI.md`)을 끄는 옵션이 없습니다. 이 Mac에서는 비어 있어 영향이 없었습니다. 운영 환경에서는 이 파일을 비워 둡니다.
 
 ## 로컬 리허설 결과 (2026-10-08)
 
@@ -33,6 +57,7 @@ X3\~X6은 [OpenRig](https://github.com/mvschwarz/openrig) v0.6.6(커밋 `114cdb1
 | 실험 | 결과 | 다음 조치 |
 | --- | --- | --- |
 | X3 headless | 두 모델 모두 `pi -p`로 bash 실행, 파일 쓰기, 종료 코드 0까지 동작 (26초, 39초) | 폐쇄망 모델 서버로 같은 확인 |
+| X3 Seat, Claude Code (2026-10-11 추가) | `runtime: claude-code` Seat가 데몬 환경의 `ANTHROPIC_BASE_URL`을 물려받아 로컬 모델(qwen3.5:9b)로 시작하고 응답함. **서버 컨텍스트 32768에서는 시작 프롬프트만으로 한도를 넘음(`Context limit reached`). 65536에서 동작.** 한 번 답할 때마다 프롬프트가 약 3만 9천 토큰이고, 이 Mac에서 응답 한 번에 4분 반. 9B 모델은 토큰을 그대로 옮겨 쓰는 짧은 지시도 틀림(`OK-`까지만 씀). 데몬 재시작, 복원, Seat 간 메시지는 응답 시간 때문에 확인 전에 중단 | 로컬 모델 판정은 사용자가 따로 진행. 스크립트 `x3_seat/run_x3_seat.py` |
 | X3 headless, Claude Code (2026-10-10 추가) | `claude --bare -p`를 ollama의 Anthropic 호환 API(`ANTHROPIC_BASE_URL=http://localhost:11434`)로 qwen3.5:9b에 연결해 bash 실행, 파일 쓰기, 종료 코드 0까지 동작 (20초). 프록시 불필요. 모르는 모델이라 컨텍스트를 200K로 가정한다는 경고가 나옴 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS`를 서버 컨텍스트에 맞춤. Seat 연결은 미확인 |
 | X3 Seat | `runtime: pi` Seat 두 개가 Seat별 `models.json`으로 로컬 모델에 연결되어 메시지에 응답 | 재시작 후 복구는 미확인 |
 | X1 | **ollama 기본 컨텍스트(4096)에서는 과제 지시가 잘려 모든 시도가 실패**했습니다. 모델이 과제 대신 스키마를 설명하거나 되물었습니다. 32K로 늘리자 qwen3.5:9b가 IR 파일을 쓰고 검사 도구를 6번 돌리며 고쳤고, 동결 범위도 지켰습니다. 그래도 스키마 위반 1건(`fsm` 블록의 `writes`)이 남은 채 시도당 900초 제한에 걸렸습니다 | 통과율은 폐쇄망 GPU 서버에서 잼. 노트북 추론은 응답당 1\~3분 |
@@ -263,7 +288,13 @@ python3 experiments/p0/x6_chat_roundtrip/run_x6.py --rig <rig 경로> \
 
 ## P0 완료 기준
 
-- X1\~X6의 결과가 이 문서의 현황 표와 `results/`에 남아 있습니다. 실패한 항목은 대안이 정해져 있습니다.
-- X1과 X2의 통과 기준이 확정되어 있습니다.
-- Author와 Verifier에 배정할 수 있는, 서로 다른 계열의 coding agent 런타임과 모델 조합이 둘 이상 있습니다.
-- 이식 시험 블록 3개와 VC SpyGlass 사내 템플릿을 받았습니다.
+2026-10-11 기준입니다. 사내 자료는 공개 자료와 임시 표준으로 대체했고([substitutes.md](substitutes.md)), VC SpyGlass는 제외했습니다.
+
+- [x] X1\~X6의 결과가 이 문서의 현황 표에 남아 있습니다. 실패한 항목은 대안이 정해져 있습니다
+  - X1, X2: agy로 통과
+  - X3: 로컬 리허설에서 동작. 로컬 모델 판정은 사용자가 진행
+  - X4: 완료
+  - X5, X6: 로컬 리허설 완료. 폐쇄망 실측은 운영 전 점검 항목
+- [x] X1과 X2의 통과 기준이 확정되어 있습니다. 이 문서의 기준을 그대로 씁니다
+- [x] Author와 Verifier에 배정할 coding agent 런타임과 모델 조합이 둘 이상 있습니다. agy의 `gemini-3.8-flash-high`(Author)와 `gemini-3.1-pro-high`(Verifier). 같은 계열이며, 허용하되 경고를 남기기로 정했습니다
+- [x] 이식 시험 블록과 템플릿. 공개 블록 4개로 대체([tests/golden/](../../tests/golden/README.md)). SpyGlass 템플릿은 제외

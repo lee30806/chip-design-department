@@ -5,6 +5,7 @@ IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 
 - 번들 포트를 개별 포트로 펼친다.
 - 클럭과 리셋 포트는 `domains`에서 유도한다. IR의 `ports`에는 적지 않는다.
 - `fsm` 블록은 `<state_name>_q` 레지스터를 노출한다.
+- `memory` 블록은 배열 `name`을 노출한다. 쓰기 포트 도메인의 seq 블록이 쓰고, 읽기 포트 도메인의 블록이 읽는다.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ class Signal:
     type: str
     domain: str | None = None
     reset: str | None = None
-    origin: str = "signal"   # signal | port | fsm
+    origin: str = "signal"   # signal | port | fsm | memory
 
 
 class Module:
@@ -85,12 +86,22 @@ class Module:
         return [Signal(f'{b["state_name"]}_q', "reg", b["state_type"], b["domain"], b["reset_state"], origin="fsm")
                 for b in self.blocks if b["kind"] == "fsm"]
 
+    def memories(self) -> dict[str, dict]:
+        """배열 이름 → memory 블록."""
+        return {b["name"]: b for b in self.blocks if b["kind"] == "memory"}
+
+    def memory_domains(self, name: str, kind: str) -> set[str]:
+        """메모리 포트 중 kind(read|write)를 할 수 있는 포트의 도메인."""
+        b = self.memories()[name]
+        return {p["domain"] for p in b["ports"] if p["kind"] in (kind, "rw")}
+
     def storage(self) -> dict[str, Signal]:
-        """쓸 수 있는 모든 이름: 출력 포트, 내부 신호, FSM 상태 레지스터."""
+        """쓸 수 있는 모든 이름: 출력 포트, 내부 신호, FSM 상태 레지스터, 메모리 배열."""
         out = {p.name: Signal(p.name, p.kind or "wire", p.type, p.domain, p.reset, origin="port")
                for p in self.ports if p.dir == "output"}
         out.update({s.name: s for s in self.signals})
         out.update({s.name: s for s in self.state_regs()})
+        out.update({n: Signal(n, "mem", b["word_type"], None, None, origin="memory") for n, b in self.memories().items()})
         return out
 
     def readable(self) -> set[str]:

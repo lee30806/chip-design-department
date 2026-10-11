@@ -2,16 +2,17 @@
 
 - 클럭과 리셋 포트는 domains에서 만든다. `seq` 블록의 `always_ff`와 리셋 분기는 Emitter가 씌운다.
 - `fsm`은 상태 레지스터 `<state_name>_q`와 next-state 로직으로 방출한다.
-- `cdc_sync`는 프로젝트 표준 동기화 셀 인스턴스로 방출한다. 셀 이름과 포트는 P0 자료로 확정할 때까지
-  `sync_2ff (clk, rst_n, d, q)`를 가정한다.
+- `cdc_sync`는 프로젝트 표준 동기화 셀 인스턴스로 방출한다. 셀 이름과 포트는 사내 자료로 확정할 때까지
+  임시 표준 `sync_2ff #(WIDTH) (clk, rst_n, d, q)`를 쓴다 (`stubs/sync_2ff.sv`). `gray`는 같은 셀에 폭만 준다.
+  셀의 리셋은 active-low이므로, 도착 도메인의 리셋이 active-high면 반전해 연결한다.
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
 - 노드마다 `// @ir <노드>` 주석을 달고, 소스맵(노드 → 줄 범위)을 함께 낸다.
-  IR 값이 그대로 놓인 줄(조각 본문, 전이 조건, 신호 타입, 리셋값, 포트 선언, 연결로 정해진 핀)은
+  IR 값이 그대로 놓인 줄(조각 본문, 전이 조건, 신호 타입, 리셋값, 파라미터와 포트 선언, 연결로 정해진 핀)은
   `fragment: true`인 세부 항목으로 따로 적는다. Classifier는 이 항목으로 lint 에러가 조각 안인지 골격인지 가른다.
 
 `external` 모듈은 방출하지 않고 등록된 RTL 파일(`rtl_files`)을 파일 목록에 그대로 넣는다.
 `top`과 `block_top`에는 SDC 골격(`sdc.py`)을 함께 낸다.
-`memory` 블록은 아직 방출하지 않는다 (매크로 래퍼 규약을 받은 뒤 포트 형식을 확정).
+`memory` 블록은 `impl: inferred`만 방출한다 (배열 선언). `macro`는 매크로 래퍼 규약을 받은 뒤 확정한다.
 
     python3 -m pipeline.emitter.sv <ir...> -o <dir>   # <모듈>.sv, .srcmap.json, .sdc, filelist.f
 """
@@ -160,9 +161,13 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     library = {**(library or {}), m.name: m}
     w = _Writer()
     w.line(f"// Generated from IR module '{m.name}'. Do not edit; change the IR and re-emit.")
-    if m.params:
-        params = ",\n".join(f'  parameter {p["type"]} {p["name"]} = {p["default"]}' for p in m.params)
-        w.line(f"module {m.name} #(\n{params}\n) (")
+    params = [p for p in m.params if not p.get("local")]
+    if params:
+        w.line(f"module {m.name} #(")
+        for i, p in enumerate(params):
+            w.line(f'  parameter {p["type"]} {p["name"]} = {p["default"]}' + ("," if i < len(params) - 1 else ""),
+                   frag=f'params/{p["name"]}')
+        w.line(") (")
     else:
         w.line(f"module {m.name} (")
     for i, p in enumerate(m.ports):
@@ -170,6 +175,9 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
         w.line(f"  {p.dir.ljust(6)} {p.type} {p.name}" + ("," if i < len(m.ports) - 1 else ""), frag=src)
     w.line(");")
 
+    for p in m.params:
+        if p.get("local"):
+            w.line(f'  localparam {p["type"]} {p["name"]} = {p["default"]};', frag=f'params/{p["name"]}')
     for t in m.types:
         with w.node(f'types/{t["name"]}'):
             if t["kind"] == "enum":
@@ -183,6 +191,11 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     for b in m.blocks:
         if b["kind"] == "fsm":
             w.line(f'  {b["state_type"]} {b["state_name"]}_q, {b["state_name"]}_d;')
+        elif b["kind"] == "memory":
+            if b["impl"] != "inferred":
+                raise EmitError(f'blocks/{b["id"]}: memory impl {b["impl"]}은 매크로 래퍼 규약을 받은 뒤 방출함')
+            with w.node(f'blocks/{b["id"]}'):
+                w.line(f'  {b["word_type"]} {b["name"]} [{b["depth"]}];', frag=f'blocks/{b["id"]}')
 
     nets, wires = _instance_nets(m, library) if m.instances else ({}, [])
     for type_, name, cid in wires:
@@ -191,6 +204,8 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
 
     storage = m.storage()
     for b in m.blocks:
+        if b["kind"] == "memory":
+            continue  # 선언부에서 방출함
         node = f'blocks/{b["id"]}'
         with w.node(node):
             if b["kind"] == "comb":
@@ -206,7 +221,9 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
             elif b["kind"] == "cdc_sync":
                 dom = m.domains[b["dst_domain"]]
                 c = SYNC_CELL
-                w.line(f'  {c["module"]} u_{b["id"]} (.{c["clk"]}({dom["clock"]}), .{c["rst"]}({dom["reset"]["port"]}), '
+                rst = dom["reset"]["port"] if dom["reset"]["active"] == "low" else f'!{dom["reset"]["port"]}'
+                prm = f' #(.WIDTH($bits({b["dst"]})))' if b["style"] == "gray" else ""
+                w.line(f'  {c["module"]}{prm} u_{b["id"]} (.{c["clk"]}({dom["clock"]}), .{c["rst"]}({rst}), '
                        f'.{c["d"]}({b["src"]}), .{c["q"]}({b["dst"]}));')
             else:
                 raise EmitError(f"{node}: v0 Emitter는 {b['kind']} 블록을 방출하지 않음")

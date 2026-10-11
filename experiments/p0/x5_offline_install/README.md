@@ -27,6 +27,9 @@ Oct 8, 2026 · @Seungjoon Lee
 | 데몬 시작 시 외부 접속 | `github.com`(20.200.245.247:443) 1건. 소스에서 확인한 플러그인 자동 갱신(`openrig-plugins` 저장소)과 일치. 실패해도 동작하도록 되어 있음 |
 | Pi Seat 실행 중 외부 접속 | 관측 시점(대기 상태)에는 없음. Seat 시작 순간은 기록하지 못함 |
 | 저장소에 생기는 파일 | `rig up`이 rig 디렉터리(`cwd: .`)에 `AGENTS.md`를 만듦. `.gitignore`에 추가함 |
+| Claude Code Seat 실행 중 외부 접속 (2026-10-11) | Seat의 Claude Code(v2.1.295)가 실행 중에 스스로 업데이트를 받음(화면에 "Update installed"). 데몬 환경에 `DISABLE_AUTOUPDATER=1`을 두면 Seat가 물려받음. 그 밖의 비필수 통신은 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`로 끔 |
+| Claude Code Seat의 파일 | `rig up`이 Seat 작업 디렉터리에 `CLAUDE.md`를 만듦 (`claude-code` 런타임). Pi의 `AGENTS.md`와 같은 역할 |
+| 데몬의 기본 rig | `rig daemon start`가 kernel rig(Claude Code Seat 4개)를 함께 띄움. 모델이 지정되지 않아 로컬 서버에서 404가 남. 시험에서는 `--no-kernel`로 끔 |
 
 ## 폐쇄망에서 확인할 것
 
@@ -34,3 +37,5 @@ Oct 8, 2026 · @Seungjoon Lee
 - [ ] 외부 접속이 막힌 상태에서 데몬 시작이 플러그인 갱신 타임아웃(5초) 뒤 정상으로 끝나는지
 - [ ] Pi Seat 시작 순간의 외부 접속. Pi는 `--offline`(또는 `PI_OFFLINE=1`)으로 시작 시 네트워크 동작을 끌 수 있음. 하지만 OpenRig가 Pi에 넘기는 환경 변수는 허용 목록으로 제한되므로, `PI_OFFLINE`이 전달되는지 확인해야 함
 - [ ] Linux 서버의 tmux 소켓 경로 길이 (Linux 제한 108자)
+- [ ] 데몬 환경의 `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`이 Claude Code Seat와 headless 실행 모두에서 외부 접속을 없애는지
+- [ ] kernel rig를 쓸지. 쓰면 kernel Seat에도 로컬 모델을 지정해야 함

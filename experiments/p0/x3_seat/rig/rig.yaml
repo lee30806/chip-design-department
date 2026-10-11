@@ -1,0 +1,22 @@
+version: "0.2"
+name: x3-rig
+pods:
+  - id: design
+    label: Design
+    members:
+      - id: lead
+        agent_ref: "local:agents/lead"
+        profile: default
+        runtime: claude-code
+        model: "qwen3.5:9b"
+        cwd: ./work
+      - id: eng
+        agent_ref: "local:agents/eng"
+        profile: default
+        runtime: claude-code
+        model: "qwen3.5:9b"
+        cwd: ./work
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: eng

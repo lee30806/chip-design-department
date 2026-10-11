@@ -201,6 +201,10 @@
         "range": {
           "description": "SPEC 4번 섹션의 허용 범위 (자유 서식)",
           "type": "string"
+        },
+        "local": {
+          "description": "true면 모듈 안의 localparam으로 방출. 인스턴스에서 바꿀 수 없음 (다른 파라미터에서 계산된 값 등)",
+          "type": "boolean"
         }
       }
     },
@@ -749,15 +753,16 @@
           "$ref": "#/$defs/ident"
         },
         "style": {
-          "description": "v1은 단일 비트 2ff만",
+          "description": "2ff: 단일 비트 2단 동기화. gray: gray 코드로 만든 여러 비트 값(포인터 등)을 비트별 2단 동기화. 셀은 같은 표준 셀에 폭만 다름",
           "enum": [
-            "2ff"
+            "2ff",
+            "gray"
           ]
         }
       }
     },
     "block_memory": {
-      "description": "ports 형식은 메모리 매크로 래퍼 규약을 받은 뒤 확정",
+      "description": "impl=inferred: Emitter가 배열(word_type name [depth])을 선언. 쓰기 포트 도메인의 seq 블록이 name[addr] <= ...로 쓰고, 읽기 포트 도메인의 seq 블록이 name[addr]로 읽음. impl=macro는 매크로 래퍼 규약을 받은 뒤 확정",
       "type": "object",
       "additionalProperties": false,
       "required": [

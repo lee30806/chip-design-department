@@ -108,8 +108,10 @@ P2와 P3은 병렬로 진행할 수 있고, P6과 P7도 병렬로 진행할 수 
 
 ### 완료 기준
 
-- X1\~X6의 결과가 기록되어 있고, 실패한 항목은 대안이 정해져 있습니다.
-- 이식 시험 블록 3개와 사내 템플릿을 받았습니다.
+2026-10-11 기준, 사내 자료를 공개 자료와 임시 표준으로 대체해 충족했습니다. 상세는 [experiments/p0/README.md](./experiments/p0/README.md)에 있습니다.
+
+- [x] X1\~X6의 결과가 기록되어 있고, 실패한 항목은 대안이 정해져 있습니다. X1과 X2는 agy(클라우드 모델)로 통과했고, 로컬 모델 판정은 사용자가 따로 진행합니다
+- [x] 이식 시험 블록 3개와 사내 템플릿을 받았습니다. 공개 블록 4개로 대체했고([tests/golden/](tests/golden/README.md)), SpyGlass 템플릿은 제외했습니다
 
 ---
 
@@ -126,15 +128,15 @@ LLM 없이 스키마의 표현력과 Emitter의 정확성을 확인합니다. �
 5. **손 이식.** 블록 3개를 손으로 IR에 옮기고 `tests/golden/`에 둡니다. 막힌 지점은 기록 항목 표에 따라 남깁니다.
 6. **판정.** 방출된 RTL이 기존 테스트벤치와 VC SpyGlass 사내 템플릿을 통과하는지 봅니다.
 
-### 진행 상황 (2026-10-10)
+### 진행 상황 (2026-10-11)
 
 | 작업 | 상태 | 위치 |
 | --- | --- | --- |
-| 1. 스키마 | v0 초안 | `schema/ir.schema.json` |
+| 1. 스키마 | v0. 이식 시험에서 `cdc_sync`의 `gray`, 파라미터의 `local`을 추가 | `schema/ir.schema.json` |
 | 2. IR 코어 | 완료: 로더, 번들 펼치기, domains에서 클럭·리셋 포트 유도, FSM 상태 레지스터, 읽기·쓰기 이름 공간 | `pipeline/ir/model.py` |
 | 3. Validator V1\~V5 | 완료. V3, V4는 IR 하나를 탐침 모듈로 만들어 pyslang으로 한 번에 컴파일하고, 진단 줄을 IR 노드로 되돌림. 조각의 실제 읽기·쓰기와 대입 종류는 구문 트리에서 뽑음 | `pipeline/validator/` |
-| 4. 최소 Emitter | `comb`, `seq`(리셋 분기 포함), `fsm`, `cdc_sync`, 인스턴스(`domain_map` 배선, 번들 연결), `// @ir` 주석, 소스맵. **`memory`는 아직 방출하지 않음.** 동기화 셀은 P0 자료가 올 때까지 `sync_2ff`로 가정 | `pipeline/emitter/sv.py` |
-| 5\~6. 손 이식과 판정 | 대기: 이식 시험 블록 3개, 테스트벤치, SpyGlass 템플릿 필요 | – |
+| 4. 최소 Emitter | `comb`, `seq`(리셋 분기 포함), `fsm`, `cdc_sync`(`2ff`, `gray`), `memory`(`inferred`), 인스턴스(`domain_map` 배선, 번들 연결), localparam, `// @ir` 주석, 소스맵. 동기화 셀은 임시 표준 `sync_2ff #(WIDTH)` | `pipeline/emitter/sv.py` |
+| 5\~6. 손 이식과 판정 | **완료 (2026-10-11), 공개 블록으로 대체.** 4개 블록(계층, FSM, datapath, 다중 클럭)의 방출 RTL이 원본 테스트벤치 49개를 모두 통과. 골격 코드의 E1 위반 0건. SpyGlass 판정은 제외. 기록 항목과 판정은 [tests/golden/README.md](tests/golden/README.md) | `tests/golden/`, `tests/sim/test_golden.py` |
 
 **검증.**
 - 설계 문서의 예시 IR 2개가 V1\~V5를 통과합니다.
@@ -154,10 +156,12 @@ python3 -m pipeline.emitter.sv tests/fixtures/*.ir.json -o build/rtl
 
 ### 완료 기준
 
-- 블록 3개의 방출 RTL이 기존 테스트벤치를 통과합니다.
-- 골격 코드에서 SpyGlass 위반이 0건입니다. 남은 위반이 있으면 Emitter 템플릿을 고칩니다.
-- 기록 항목(표현 불가 구문, 우회 표현, 원시 블록 비중, Validator 오탐)을 정리하고, 판정 규칙에 따라 스키마 조정안을 확정했습니다.
-- 원시 블록 비중의 기준선과 Repair 반복 상한의 초기값을 정했습니다.
+공개 블록으로 대체해 판정했습니다 (2026-10-11). VC SpyGlass 항목은 제외했습니다.
+
+- [x] 블록 3개의 방출 RTL이 기존 테스트벤치를 통과합니다. 4개 블록, 원본 테스트벤치 49개 모두 통과
+- [x] ~~골격 코드에서 SpyGlass 위반이 0건입니다~~ (제외). 대신 E1 Verilator `-Wall`에서 골격 줄의 위반 0건
+- [x] 기록 항목(표현 불가 구문, 우회 표현, 원시 블록 비중, Validator 오탐)을 정리하고, 판정 규칙에 따라 스키마 조정안을 확정했습니다. `gray` 동기화, 추론형 메모리, localparam을 추가했고 `generate`는 설정별 IR로 대응
+- [x] 원시 블록 비중의 기준선(0.46)과 Repair 반복 상한의 초기값(모듈당 5)을 정했습니다
 
 > **분기점.** 원시 블록 비중이 대부분이면 JSON 계층을 얇게 줄이는 방향으로 ARCHITECTURE.md를 개정한 뒤 P2로 넘어갑니다.
 

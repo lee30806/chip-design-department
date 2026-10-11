@@ -60,6 +60,9 @@ def build(m: Module, library: dict[str, Module] | None = None) -> Probe:
         p.add(f"  {s.type} {s.name};", "V3", f"signals/{s.name}")
     for s in m.state_regs():
         p.add(f"  {s.type} {s.name};", "V3", f"blocks/{s.name}")
+    for b in m.blocks:
+        if b["kind"] == "memory":
+            p.add(f'  {b["word_type"]} {b["name"]} [{b["depth"]}];', "V3", f'blocks/{b["id"]}')
     # 리셋값은 대상의 타입으로 상수 대입이 되는지 본다.
     for port in m.ports:
         if port.reset is not None:

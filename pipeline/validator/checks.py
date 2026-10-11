@@ -161,14 +161,24 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
     readable, storage = m.readable(), m.storage()
     for b in m.blocks:
         node = f'blocks/{b["id"]}'
-        if b["kind"] in ("seq", "fsm", "memory"):
+        if b["kind"] in ("seq", "fsm"):
             dom(b.get("domain"), node)
+        if b["kind"] == "memory":
+            for mp in b["ports"]:
+                dom(mp["domain"], f'{node}/ports/{mp["name"]}')
         if b["kind"] == "cdc_sync":
             dom(b["dst_domain"], node)
             dom(b["src_domain"], node)
             for k, pool in (("src", readable), ("dst", storage)):
                 if b[k] not in pool:
                     out.append(Issue("V2", node, f"{k}가 가리키는 신호가 없음: {b[k]}"))
+            types = {k: (storage[b[k]].type if b[k] in storage else next((p.type for p in m.ports if p.name == b[k]), None))
+                     for k in ("src", "dst")}
+            norm = {k: "".join(v.split()) if v else None for k, v in types.items()}
+            if b["style"] == "2ff" and any(v not in (None, "logic", "bit") for v in norm.values()):
+                out.append(Issue("V2", node, f"2ff는 1비트만 동기화함. 여러 비트는 gray 코드로 만든 뒤 style \"gray\"를 씀: {types}"))
+            if b["style"] == "gray" and None not in norm.values() and norm["src"] != norm["dst"]:
+                out.append(Issue("V2", node, f"gray 동기화의 src와 dst 타입이 다름: {types}"))
         for r in b.get("reads", []):
             if r not in readable:
                 out.append(Issue("V2", node, f"reads의 신호가 없음: {r}"))
@@ -191,6 +201,8 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
         for k in inst.get("params", {}):
             if k not in {p["name"] for p in child.params}:
                 out.append(Issue("V2", node, f'{inst["module"]}에 없는 파라미터: {k}'))
+            elif any(p["name"] == k and p.get("local") for p in child.params):
+                out.append(Issue("V2", node, f'{inst["module"]}의 {k}는 localparam이라 바꿀 수 없음'))
         for cd, pd in inst["domain_map"].items():
             if cd not in child.domains:
                 out.append(Issue("V2", node, f'{inst["module"]}에 없는 도메인: {cd}'))
@@ -216,17 +228,27 @@ _FORBIDDEN = {"DelayControl": "지연(#)", "ProceduralForceStatement": "force", 
 
 def _block_usage(node) -> tuple[set[str], set[str], set[str], list[str]]:
     """(쓰는 이름, 읽는 이름, 대입 종류, 금지 구문) — 구문 트리에서 직접 뽑는다."""
-    lhs_starts: set[int] = set()
+    # 대입 왼쪽의 범위. 그 안의 이름은 쓰기다. 단 왼쪽 안의 인덱스(`[...]`)에 나오는 이름은 읽기다.
+    # 왼쪽이 연결(`{a, b} <= ...`)이어도 각 원소가 쓰기가 된다.
+    lhs: list[tuple[int, int]] = []
+    selects: list[tuple[int, int]] = []
     writes, reads, kinds, forbidden = set(), set(), set(), []
+
+    def within(off: int, ranges) -> bool:
+        return any(a <= off < b for a, b in ranges)
 
     def visit(n):
         k = str(getattr(n, "kind", "")).removeprefix("SyntaxKind.")
         if k in ("AssignmentExpression", "NonblockingAssignmentExpression"):
             kinds.add("nonblocking" if k.startswith("Nonblocking") else "blocking")
-            lhs_starts.add(n.left.sourceRange.start.offset)
+            r = n.left.sourceRange
+            lhs.append((r.start.offset, r.end.offset))
+        elif k == "ElementSelect" and within(n.sourceRange.start.offset, lhs):
+            selects.append((n.sourceRange.start.offset, n.sourceRange.end.offset))
         elif k in ("IdentifierName", "IdentifierSelectName"):
             name = n.identifier.valueText
-            (writes if n.sourceRange.start.offset in lhs_starts else reads).add(name)
+            off = n.sourceRange.start.offset
+            (writes if within(off, lhs) and not within(off, selects) else reads).add(name)
         elif k in _FORBIDDEN:
             forbidden.append(_FORBIDDEN[k])
         return pyslang.VisitAction.Advance
@@ -322,6 +344,15 @@ def v5_drivers(m: Module, library: dict[str, Module]) -> list[Issue]:
             out.append(Issue("V5", f"ports/{p.bundle or p.name}", f"입력 포트에 쓰기: {p.name}"))
     for name, s in storage.items():
         ws = writers.get(name, [])
+        if s.origin == "memory":
+            mnode = next(f'blocks/{b["id"]}' for b in m.blocks if b.get("name") == name and b["kind"] == "memory")
+            wdoms = m.memory_domains(name, "write")
+            for wnode, blk in ws:
+                if blk is None or blk["kind"] != "seq" or blk.get("domain") not in wdoms:
+                    out.append(Issue("V5", mnode, f"메모리는 쓰기 포트 도메인({sorted(wdoms)})의 seq 블록만 쓸 수 있음: {wnode}"))
+            if len(ws) > sum(1 for p in m.memories()[name]["ports"] if p["kind"] in ("write", "rw")):
+                out.append(Issue("V5", mnode, f"메모리를 쓰는 블록이 쓰기 포트보다 많음: {[w for w, _ in ws]}"))
+            continue
         node = f"ports/{name}" if s.origin == "port" else (f"signals/{name}" if s.origin == "signal" else f"blocks/{name}")
         if len(ws) == 0:
             out.append(Issue("V5", node, f"구동하는 곳이 없음: {name}"))

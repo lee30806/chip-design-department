@@ -46,6 +46,58 @@ SAMPLES = {
         {"name": "empty", "wave": "1.0...1.."},
         {"name": "count", "wave": "=.==.==..", "data": ["0", "1", "2", "1", "0"]},
     ]},
+    "syn_apb_write": {"signal": [
+        {"name": "pclk", "wave": "p......"},
+        {"name": "psel", "wave": "01..0.."},
+        {"name": "penable", "wave": "0.1.0.."},
+        {"name": "pwrite", "wave": "x1..x.."},
+        {"name": "paddr", "wave": "x=..x..", "data": ["0x08"]},
+        {"name": "pready", "wave": "0..10.."},
+    ]},
+    "syn_apb_read_wait": {"signal": [
+        {"name": "pclk", "wave": "p......."},
+        {"name": "psel", "wave": "01...0.."},
+        {"name": "penable", "wave": "0.1..0.."},
+        {"name": "pready", "wave": "0...10.."},
+        {"name": "prdata", "wave": "x...=x..", "data": ["0x5A"]},
+    ]},
+    "syn_irq_pulse": {"signal": [
+        {"name": "clk", "wave": "p........"},
+        {"name": "event", "wave": "0.10..10."},
+        {"name": "irq", "wave": "0..10..10"},
+        {"name": "irq_en", "wave": "1........"},
+    ]},
+    "syn_cmd_queue": {"signal": [
+        {"name": "clk", "wave": "p........."},
+        {"name": "cmd_valid", "wave": "01.0.1.0.."},
+        {"name": "cmd_ready", "wave": "1.01..0..."},
+        {"name": "cmd_op", "wave": "x=.x.==x..", "data": ["WR", "RD", "WR"]},
+        {"name": "busy", "wave": "0.1......0"},
+    ]},
+    "syn_counter_wrap": {"signal": [
+        {"name": "clk", "wave": "p......."},
+        {"name": "en", "wave": "01.....0"},
+        {"name": "cnt", "wave": "=.=====.", "data": ["0", "1", "2", "3", "0", "1"]},
+        {"name": "wrap", "wave": "0....10."},
+    ]},
+    "syn_scl_sda_start": {"signal": [
+        {"name": "clk", "wave": "p........."},
+        {"name": "scl", "wave": "1...0.1.0."},
+        {"name": "sda", "wave": "1.0.....1."},
+        {"name": "start_det", "wave": "0..10....."},
+    ]},
+    "syn_resp_fifo": {"signal": [
+        {"name": "clk", "wave": "p........"},
+        {"name": "resp_valid", "wave": "0.1..0.1."},
+        {"name": "resp_ready", "wave": "0.1.01.1."},
+        {"name": "resp_code", "wave": "x.=.=x.=.", "data": ["OK", "NACK", "OK"]},
+    ]},
+    "syn_soft_reset": {"signal": [
+        {"name": "clk", "wave": "p......."},
+        {"name": "soft_rst", "wave": "0.10...."},
+        {"name": "enable", "wave": "1..0.1.."},
+        {"name": "status", "wave": "=..=.=..", "data": ["RUN", "RESET", "IDLE"]},
+    ]},
 }
 
 CW, RH, X0, Y0, AMP = 48, 36, 90, 20, 18  # 사이클 폭, 행 높이, 파형 시작 x, 첫 행 y, 진폭

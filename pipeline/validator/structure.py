@@ -241,9 +241,14 @@ def v8_domain(m: Module, library: dict[str, Module]) -> list[Issue]:
         s = storage.get(name)
         if s and s.kind != "reg" and len(ds - {None}) > 1:
             out.append(Issue("V8", f"signals/{name}", f"wire에 여러 도메인이 섞임: {sorted(ds)}"))
+    mems = m.memories()
     for b in m.blocks:
         node = f'blocks/{b["id"]}'
         reads = list(b.get("reads", []))
+        for r in [r for r in reads if r in mems]:
+            if b["kind"] != "seq" or b["domain"] not in m.memory_domains(r, "read"):
+                out.append(Issue("V8", node, f'메모리는 읽기 포트 도메인({sorted(m.memory_domains(r, "read"))})의 seq 블록에서만 읽음: {r}'))
+        reads = [r for r in reads if r not in mems]
         if b["kind"] in ("seq", "fsm"):
             for r in reads:
                 ds = dom.get(r, set())
