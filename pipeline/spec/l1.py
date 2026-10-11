@@ -20,6 +20,7 @@ from pathlib import Path
 from pipeline.spec.parse import Spec, Table, load
 
 ASYNC_WORDS = ("비동기", "async", "none", "-", "–", "")
+NONE_WORDS = ("없음", "none", "-", "–", "")
 
 
 class SpecTableError(Exception):
@@ -61,7 +62,7 @@ def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
         if others and ("비동기" in rel or "async" in rel.lower()):
             d["async_to"] = others
         pd = r.get("전력 도메인", "")
-        if pd and pd not in ASYNC_WORDS:
+        if pd not in NONE_WORDS:
             d["power_domain"] = pd
             ent = {"name": pd}
             for k in ("isolation", "retention"):

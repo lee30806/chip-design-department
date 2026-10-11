@@ -39,3 +39,31 @@ elif mode == "questions":
 elif mode == "questions_touch_spec":
     (cwd / "out" / "questions.json").write_text('{"items": []}')
     (cwd / "spec.md").write_text("changed")
+elif mode == "task_write":
+    (cwd / "out" / "result.txt").write_text("done")
+elif mode == "task_escape":
+    (cwd / "out" / "result.txt").write_text("done")
+    (cwd / "input.txt").write_text("changed")
+elif mode == "task_retry":
+    good = "이전 시도의 검사 결과" in (cwd / "TASK.md").read_text()
+    (cwd / "out" / "result.txt").write_text("good" if good else "bad")
+elif mode == "task_tools":
+    r = subprocess.run([sys.executable, "tools/pl.py", "validate", "in/ir.json"], capture_output=True, text=True)
+    (cwd / "out" / "result.txt").write_text(r.stdout)
+elif mode == "quota":
+    print("error: Individual quota reached. RESOURCE_EXHAUSTED (code 429)", file=sys.stderr)
+    sys.exit(3)
+elif mode == "roles":
+    # FAKE_FILES: {"Architect": {"상대 경로": 내용 또는 "@원본 파일"}, "Author": {...}, ...}. 스케줄러 흐름 시험용.
+    # FAKE_LOG가 있으면 실행한 역할을 한 줄씩 남긴다 (재개 시험에서 다시 실행됐는지 보려고).
+    task = (cwd / "TASK.md").read_text()
+    for role, files in json.loads(os.environ["FAKE_FILES"]).items():
+        if f"{role} 에이전트" in task:
+            if os.environ.get("FAKE_LOG"):
+                with open(os.environ["FAKE_LOG"], "a") as f:
+                    f.write(role + "\n")
+            for rel, content in files.items():
+                p = cwd / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(Path(content[1:]).read_text() if content.startswith("@") else content)
+            break

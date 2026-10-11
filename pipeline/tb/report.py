@@ -22,7 +22,7 @@ WINDOW_BEFORE, WINDOW_AFTER = 8, 2
 
 
 def _writers(m: Module, library: dict[str, Module] | None) -> dict[str, list[tuple[str, list[str]]]]:
-    """신호 → [(쓰는 노드, 그 노드가 읽는 신호)]. 인스턴스 출력이 구동하는 신호는 인스턴스에서 멈춘다."""
+    """신호 → [(쓰는 노드, 그 노드가 읽는 신호)]. 인스턴스 출력의 팬인은 그 인스턴스의 입력 포트(`<인스턴스>.<포트>`)다."""
     from pipeline.validator.checks import _endpoint_ports
 
     out: dict[str, list[tuple[str, list[str]]]] = {}
@@ -37,6 +37,13 @@ def _writers(m: Module, library: dict[str, Module] | None) -> dict[str, list[tup
         elif b["kind"] == "cdc_sync":
             out.setdefault(b["dst"], []).append((node, [b["src"]]))
     lib = {**(library or {}), m.name: m}
+    inst_mod = {i["name"]: lib.get(i["module"]) for i in m.instances}
+
+    def inputs(inst: str) -> list[str]:
+        # 인스턴스 출력의 팬인은 그 인스턴스의 입력 포트다 (형제 인스턴스가 구동하면 그쪽으로 이어짐)
+        child = inst_mod.get(inst)
+        return [f"{inst}.{p.name}" for p in child.ports if p.dir == "input" and not p.derived] if child else []
+
     for c in m.connections:
         ends = [_endpoint_ports(m, c[k], lib) for k in ("from", "to")]
         owners = [c[k].split(".", 1)[0] for k in ("from", "to")]
@@ -47,12 +54,12 @@ def _writers(m: Module, library: dict[str, Module] | None) -> dict[str, list[tup
                                                   ((db, nb, owners[1]), (da, na, owners[0]))):
                 # 인스턴스의 출력 포트 → 반대편 신호(자기 포트나 내부 신호, 다른 인스턴스는 넷)
                 if own != "self" and d == "output":
-                    out.setdefault(other if oown == "self" else f"{oown}.{other}", []).append((f"instances/{own}", []))
+                    out.setdefault(other if oown == "self" else f"{oown}.{other}", []).append((f"instances/{own}", inputs(own)))
     return out
 
 
 def fanin(m: Module, signals: list[str], library: dict[str, Module] | None = None) -> tuple[list[str], list[str]]:
-    """출력 신호들의 팬인 → (노드 목록, 신호 목록). 입력 포트와 인스턴스에서 멈춘다."""
+    """출력 신호들의 팬인 → (노드 목록, 신호 목록). 입력 포트에서 멈추고, 인스턴스는 입력 포트를 거쳐 형제 인스턴스로 이어진다."""
     writers = _writers(m, library)
     seen_sig, nodes, todo = set(), [], list(signals)
     while todo:

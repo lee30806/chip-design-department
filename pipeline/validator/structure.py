@@ -9,7 +9,7 @@ import json
 
 import pyslang
 
-from pipeline.ir.model import Module
+from pipeline.ir.model import Module, frozen_l1
 from pipeline.validator.checks import Issue, _block_usage, _endpoint_ports
 
 
@@ -354,7 +354,7 @@ def frozen_scope(library: dict[str, Module]) -> dict[str, str]:
     out: dict[str, str] = {}
     for name, m in sorted(library.items()):
         parts = {
-            "l1": {k: m.raw.get(k) for k in ("module", "role", "params", "domains", "power_domains", "ports")},
+            "l1": frozen_l1(m.raw),
             "instances": m.raw.get("instances", []),
         }
         if m.role in ("top", "block_top"):

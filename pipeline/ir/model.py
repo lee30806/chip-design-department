@@ -120,6 +120,25 @@ class Module:
         return {t["name"] for t in self.types}
 
 
+IMPL_PORT_FIELDS = ("kind", "reset")
+
+
+def frozen_l1(raw: dict) -> dict:
+    """동결 범위의 L1. 출력 포트의 kind(reg/wire)와 리셋값, local 파라미터는 구현이 정하는 값이라 뺀다.
+
+    SPEC 표에는 이 값들이 없고 Author가 L2와 함께 정한다 (2026-10-11 결정).
+    """
+    def port(p: dict) -> dict:
+        if "signals" in p:
+            return {**p, "signals": [{k: v for k, v in s.items() if k not in IMPL_PORT_FIELDS} for s in p["signals"]]}
+        return {k: v for k, v in p.items() if k not in IMPL_PORT_FIELDS}
+
+    out = {k: raw[k] for k in ("module", "role", "domains", "power_domains") if k in raw}  # 없는 키는 넣지 않음
+    out["params"] = [p for p in raw.get("params", []) if not p.get("local")]
+    out["ports"] = [port(p) for p in raw.get("ports", [])] if isinstance(raw.get("ports"), list) else raw.get("ports")
+    return out
+
+
 def load(path: str | Path) -> Module:
     path = Path(path)
     return Module(json.loads(path.read_text(encoding="utf-8")), path)

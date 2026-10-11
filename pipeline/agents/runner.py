@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,8 +61,30 @@ class AgentRun:
         return not self.timed_out and self.returncode == 0
 
 
-def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] | None = None) -> AgentRun:
-    """TASK.md를 쓰고 agent를 workdir에서 실행한다."""
+class IsolationUnavailable(RuntimeError):
+    pass
+
+
+def sandbox_profile(deny: list[Path], allow: list[Path]) -> str:
+    """macOS sandbox-exec 프로필: deny 아래는 읽기·쓰기 금지, 그 안의 allow만 허용 (뒤의 규칙이 이김)."""
+    q = lambda p: str(Path(p).resolve()).replace('"', '\\"')  # noqa: E731
+    rules = ["(version 1)", "(allow default)"]
+    rules += [f'(deny file-read* file-write* (subpath "{q(p)}"))' for p in deny]
+    rules += [f'(allow file-read* file-write* (subpath "{q(p)}"))' for p in allow]
+    return "".join(rules)
+
+
+def isolate(cmd: list[str], deny: list[Path], allow: list[Path]) -> list[str]:
+    """에이전트 프로세스가 deny(저장소, 다른 후보의 작업 디렉터리 등)를 보지 못하게 감싼다.
+    격리는 지침이 아니라 파일 시스템으로 강제한다. 수단이 없으면 실행하지 않는다."""
+    if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+        return ["sandbox-exec", "-p", sandbox_profile(deny, allow), *cmd]
+    raise IsolationUnavailable("이 OS에서 쓸 격리 수단이 없음 (macOS sandbox-exec. Linux는 bubblewrap 등으로 추가 예정)")
+
+
+def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] | None = None,
+              sandbox: tuple[list[Path], list[Path]] | None = None) -> AgentRun:
+    """TASK.md를 쓰고 agent를 workdir에서 실행한다. sandbox=(deny, allow)를 주면 파일 시스템 격리 안에서 실행한다."""
     prompt_file = workdir / "TASK.md"
     prompt_file.write_text(task, encoding="utf-8")
     subs = {"prompt": KICKOFF, "task": task, "prompt_file": str(prompt_file), "workdir": str(workdir), "model": cfg.model,
@@ -72,6 +96,8 @@ def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] 
             part = part.replace("{" + k + "}", v)
         cmd.append(part)
     env = {**os.environ, **cfg.env}
+    if sandbox is not None:
+        cmd = isolate(cmd, *sandbox)
 
     t0 = time.monotonic()
     try:

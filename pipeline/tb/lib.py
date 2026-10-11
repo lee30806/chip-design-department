@@ -31,6 +31,13 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly
 
 
+def _handle(dut, name: str):
+    """`u_x.port`처럼 인스턴스 아래 신호도 찾는다."""
+    for part in name.split("."):
+        dut = getattr(dut, part)
+    return dut
+
+
 def _int(h) -> int | None:
     try:
         return int(h.value)
@@ -161,6 +168,7 @@ class Scoreboard:
     def __init__(self):
         self.expected: dict[str, deque] = {}
         self.actual: dict[str, deque] = {}
+        self.seen: dict[str, list] = {}   # 스트림별 실제 출력 전부 (후보 간 차분 검사용)
         self.matched = 0
         self.reqs: set[str] = set()   # 기댓값이 맞은 요구사항 ID (T5)
         self.first: dict | None = None
@@ -179,6 +187,7 @@ class Scoreboard:
         return any(self.expected.values())
 
     def got(self, stream: str, txn: dict, cycle: int, domain: str | None = None) -> None:
+        self.seen.setdefault(stream, []).append(txn)
         a = (txn, cycle, domain)
         if self.expected.get(stream):
             self._compare(stream, self.expected[stream].popleft(), a)
@@ -323,6 +332,7 @@ class Harness:
                     | {r for c in self.checkers if (r := self.protocol_reqs.get(c.name)) and c.handshakes})
             reqs = sorted(reqs)
             rec = {"test": self.name, "scoreboard": self.sb.first, "matched": self.sb.matched, "reqs": reqs,
+                   "outputs": self.sb.seen,
                    "protocol": [v for c in self.checkers for v in c.violations], "properties": self.prop_fail}
             name = _safe(self.name)
             (Path(out) / f"{name}.result.json").write_text(json.dumps(rec, indent=1))
@@ -367,7 +377,7 @@ class Harness:
                             self.prop_fail.append({"property": name, "cycle": c, "domain": domain, "reason": r, "req": req})
             if traced:
                 self.trace.append({"domain": domain, "cycle": c,
-                                   "values": {n: _int(getattr(self.dut, n)) for n in traced}})
+                                   "values": {n: _int(_handle(self.dut, n)) for n in traced}})
             self.cycle[domain] = c + 1
 
     def _domain_of(self, bundle: str) -> str:

@@ -48,7 +48,8 @@ def raw_ratio(lib, texts: dict[str, str]) -> dict:
     return {"body_lines": body, "rtl_lines": total, "ratio": round(body / total, 3) if total else None}
 
 
-def run_block(name: str, out: Path, baseline: bool = False) -> dict:
+def run_block(name: str, out: Path, baseline: bool = False, ir_override: dict[str, dict] | None = None) -> dict:
+    """ir_override: 모듈 이름 → IR. 손으로 옮긴 IR 대신 쓴다 (에이전트가 쓴 IR 평가용)."""
     d = HERE / name
     cfg = json.loads((d / "golden.json").read_text())
     bout = out / name / ("baseline" if baseline else "ir")
@@ -59,6 +60,10 @@ def run_block(name: str, out: Path, baseline: bool = False) -> dict:
         files = [(d / f).resolve() for f in cfg["upstream_rtl"]]
     else:
         lib = load_library([d / f for f in cfg["ir"]])
+        if ir_override:
+            from pipeline.ir.model import Module
+
+            lib.update({n: Module(r) for n, r in ir_override.items()})
         issues = {n: [str(i) for i in validate(m, lib)] for n, m in lib.items()}
         res["validator"] = issues
         if any(v for v in issues.values() if any("경고" not in x for x in v)):
@@ -94,9 +99,11 @@ def run_block(name: str, out: Path, baseline: bool = False) -> dict:
     return res
 
 
-def run_harness(name: str, out: Path, mutate=None, seeds: list[int] | None = None, coverage: bool = True) -> dict:
+def run_harness(name: str, out: Path, mutate=None, seeds: list[int] | None = None, coverage: bool = True,
+                tb: Path | None = None) -> dict:
     """생성 하니스 + 참조 모델로 T1~T5. 내부 신호 목록은 Verifier가 보지 않는 디렉터리에 둔다.
-    mutate(raw)는 대상 모듈의 IR을 고친다 (버그 주입 시험용). 결과의 "out"에 결과 디렉터리가 있다."""
+    mutate(raw)는 대상 모듈의 IR을 고친다 (버그 주입 시험용). 결과의 "out"에 결과 디렉터리가 있다.
+    tb를 주면 손으로 쓴 테스트벤치 대신 그 파일(에이전트가 쓴 cocotb 테스트 모듈)로 돌린다."""
     import copy
 
     from pipeline.ir.model import Module
@@ -124,7 +131,8 @@ def run_harness(name: str, out: Path, mutate=None, seeds: list[int] | None = Non
     trace = bout / "verify_only" / f"{top.name}_trace.json"
     trace.write_text(json.dumps(trace_names(top)))
     seeds = seeds or hc.get("seeds", [1, 2])
-    r = sim(files, top.name, hc["tb"], d / "harness", bout / "sim", seeds=seeds, harness_dir=bout / "verifier",
+    tb_dir, tb_mod = (Path(tb).parent, Path(tb).stem) if tb else (d / "harness", hc["tb"])
+    r = sim(files, top.name, tb_mod, tb_dir, bout / "sim", seeds=seeds, harness_dir=bout / "verifier",
             trace=trace, timescale=TIMESCALE, coverage=coverage)
     tb_out = bout / "sim" / "tb_out" / str(seeds[0])
     results = [json.loads(p.read_text()) for p in sorted(tb_out.glob("*.result.json"))]

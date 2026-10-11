@@ -10,7 +10,8 @@
 | P1 블록 이식 시험 | 완료 (2026-10-11) | 공개 블록 4개. 원본 테스트벤치 49개 통과 |
 | P2 결정론적 툴 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 남은 항목은 아래 대기 항목 (조건 충족 시 진행) |
 | P3 SPEC 변환과 검사 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 입력: I3C 예시 SPEC. 남은 항목은 대기 항목 (조건 충족 시 진행) |
-| P4 이후 | 시작 전 | P2, P3의 지금 할 수 있는 항목 완료. 시작 가능 |
+| P4 에이전트와 스케줄러 | **진행 중** | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`) |
+| P5 이후 | 시작 전 | |
 
 ## 제외 항목 (사용자 결정)
 
@@ -30,8 +31,132 @@
 | Word SPEC 변환 (10개 섹션 대응) | P3 | 사내 Word 양식 원본 |
 | 블록 다이어그램 파싱 (Visio, SVG)과 경계 신호 교차 검사 | P3 | 다이어그램 원본과 그림 작성 규칙 |
 | IP-XACT와 레지스터 맵 대조 | P3 | IP-XACT 파일 |
+| Linux 서버에서 에이전트 격리 (bubblewrap 등) | P4 | 폐쇄망 서버 환경 |
 
 ## 진행 기록
+
+### 2026-10-11 P4-9 SPEC부터 끝까지 실행 (1차, 23:09)
+
+블록을 하나씩 차례로 실행합니다 (사용량 한도 때문).
+
+| 블록 | 결과 | 에이전트 실행 | 시간 |
+|---|---|---|---|
+| `axis_adapter` | 승인 대기 | 11 | 47.6분 |
+| `axis_cobs_decode` | 승인 대기 | 9 | 47.2분 |
+| `axis_async_fifo` | 사용량 한도로 멈춤 (`paused_quota`) | 9 | 37.9분 |
+
+- 두 블록의 양상이 같습니다.
+  - Architect, Verifier, Author 후보 2개는 모두 게이트를 통과했습니다.
+  - 두 후보 모두 Verifier 1은 통과하고 Verifier 0에서 실패했습니다. Repair를 한 번 해도 결과는 같았습니다.
+  - Arbiter는 두 블록의 후보 4개 모두 `test_wrong`으로 판정했습니다. 기댓값을 바꾸려면 사람의 승인이 필요해서 승인 대기로 멈췄습니다.
+- `axis_adapter`:
+  - Verifier 0의 처리량 속성이 tlast=0을 "입력 비트를 아직 내보내는 중"으로 잘못 해석했습니다.
+  - Arbiter가 근거로 든 요구사항은 ADP-01, 02, 06입니다.
+- `axis_cobs_decode`:
+  - 세그먼트 중간에 tlast가 오는 오류 경우(`04 CC(tlast=1)`)에서 문제가 났습니다. SPEC은 그 바이트(CC)를 tlast=1, tuser=1로 내보내라고 정합니다. 그런데 Verifier 0의 모델은 직전 버퍼 값인 0을 냈습니다.
+  - 테스트 파일의 주석은 CC를 기대 출력으로 적고 있어, 모델이 자기 주석과도 어긋납니다.
+  - Arbiter가 근거로 든 요구사항은 COBS-07입니다.
+- 두 판정 모두 SPEC 문장을 인용했고, 검토해 보니 타당합니다.
+- Verifier 간 차분 검사 수정:
+  - 결함: 1비트 신호에 0\~255 값(예: `s_axis_tlast=187`)을 넣었습니다.
+  - 수정: `pl model`과 같은 신호 폭 기준 무작위 입력을 쓰도록 바꿨습니다 (`pipeline/tb/gen.py`의 `signal_widths`로 공통화).
+  - 이번 두 블록의 Verifier 테스트로 다시 돌린 결과:
+    - `axis_adapter`: 차이가 없어졌습니다. 앞의 보고는 잘못된 경보였습니다.
+    - `axis_cobs_decode`: 차이가 남았습니다. 입력 `tdata=18, tlast=1, tuser=1`에서 v0은 0을, v1은 18을 냅니다. Arbiter가 찾은 Verifier 0의 결함과 같은 것입니다.
+  - 에이전트와 스케줄러 테스트 14개가 통과했습니다.
+- `axis_async_fifo`:
+  - Architect는 하위 모듈 3개로 나눴습니다: `_s`, `_m`, `_mem`.
+  - Author 후보 6개(모듈 3개 × 2)는 모두 게이트를 통과했습니다.
+  - 그런데 검증에서 모두 실패했고, Repair 6개를 돌리던 중 사용량 한도에 걸렸습니다.
+- 스케줄러 결함 (하위 모듈이 둘 이상일 때):
+  - 후보 하나를 검증할 때 형제 모듈은 동작이 없는 L1만 둔 채 Block Top 테스트를 돌립니다.
+  - 그래서 출력이 드라이브되지 않고(예: `tdata=160, tid=209`), 후보가 맞아도 반드시 실패합니다.
+  - 이 실패를 받은 Repair는 고칠 수 없는 문제를 고치려 하게 됩니다.
+  - 앞의 두 블록은 하위 모듈이 하나라 이 문제가 드러나지 않았습니다.
+  - 수정 (사용자 결정: 같은 번호 후보끼리 묶어 검증):
+    - 모든 모듈의 Author 후보를 먼저 만든 뒤, c0끼리, c1끼리 묶어 Block Top에서 검증합니다.
+    - 실패하면 불일치 출력을 구동하는 인스턴스의 모듈을 원인 후보로 보고, 그 모듈의 Repair에 넘깁니다. 출력 불일치가 없으면 lint 조각 오류가 난 모듈로 정합니다.
+    - 하위 모듈이 여럿이면 Repair는 Block Top의 연결과 형제 모듈의 L1(`block.json`)을 받습니다.
+    - 원인이 형제 모듈에 있다고 보면 `suspect_module`을 써서 그 모듈의 Repair로 넘깁니다. 이것이 Classifier의 "자식 모듈 원인 의심"입니다.
+    - Repair들이 원인을 서로 넘기면 `CHILD_SUSPECT_LOOP` 검토 항목으로 멈춥니다.
+    - 묶음 선택: 모든 모듈이 통과한 묶음 가운데 Repair 수가 적고 lint가 적은 것을 고릅니다.
+    - 시험: 하위 모듈 둘(통과)과, Repair가 출력 구동 모듈에서 지목된 형제 모듈로 넘어가는 경우를 추가했습니다. 전체 테스트 200개가 통과했습니다.
+- 기댓값 수정 승인 흐름은 P5에서 정합니다 (사용자 결정).
+- 23:21 `axis_async_fifo`를 이어서 실행했습니다.
+  - 묶음 검증은 동작했습니다. 이번에는 진짜 불일치가 났고, 원인 후보로 출력 구동 모듈 `_m`을 골랐습니다.
+  - Repair 단계에서 다시 사용량 한도에 걸렸습니다 (`Resets in 2h32m`, 약 01:53).
+- 그 실행에서 찾아 고친 결함 2개:
+  - 결과 파일 이름 불일치:
+    - 결과 파일은 하니스의 `name`(`sc01_single_frame`)을 따르는데, 스케줄러는 cocotb 함수 이름(`test_sc01_single_frame`)으로 찾았습니다.
+    - 그래서 불일치 리포트가 빠진 채 Repair에 넘어갔습니다.
+    - 함수 이름, `test_`를 뗀 이름, 실패가 기록된 첫 결과 파일 순으로 찾게 했습니다.
+    - 앞의 두 블록은 이름이 같아 리포트가 정상으로 들어갔습니다.
+  - 원인 모듈을 좁힐 신호가 없음:
+    - Block Top 트레이스에 인스턴스 포트(`u_m.mem_rdata` 등)를 넣었습니다.
+    - 팬인은 인스턴스 입력을 거쳐 형제 인스턴스로 이어지게 했습니다.
+    - 저장된 c0 묶음을 다시 검증한 결과: 팬인은 `u_m → u_mem → u_s` 순서입니다. `mem_raddr`가 2→5로 바뀌는 동안 `u_mem`의 출력 데이터가 213으로 고정된 것이 리포트에 보입니다.
+  - 시험을 보강했고, 전체 테스트 200개가 통과했습니다.
+
+### 2026-10-11 P4-8 스케줄러, 단독 평가 일부, 사용량 한도
+
+**P4-8 스케줄러** (`pipeline/scheduler/run.py`)
+- 흐름:
+  - SPEC 검사 → Block Top L1 → Architect(모듈 트리, 동결 해시)
+  - Verifier 후보와 참조 모델 차분 검사
+  - 모듈마다 Author 후보 → 검증(Validator, V11, 방출, E1, 모든 Verifier 테스트로 E2)
+  - 실패 처리: 일부 Verifier만 실패하면 Arbiter(rtl_wrong → Repair, test_wrong/모호 → 승인 대기), 그 밖에는 Repair 루프(상한, IR 해시 진동 감지, L1 변경 요청은 검토 항목)
+  - 후보 선택(Repair 적음, lint 적음)과 Author 후보 간 출력 차분 검사 → 통합과 보고서
+- 상태 저장과 재개: 단계는 `state.json`에, 병렬 후보와 에이전트 작업은 각자 파일에 저장. 다시 실행하면 끝난 단계와 작업은 건너뜀
+- 예산 상한, 사용량 한도(429 RESOURCE_EXHAUSTED)는 `paused_quota`로 멈추고 이어서 실행
+- 가짜 agent로 시험: SPEC부터 통합까지 통과, 중단 뒤 재개(끝난 Architect·Verifier 다시 안 부름), 한도 멈춤, 동결 L1 변경 거부, 두 차분 검사 (`tests/sim/test_scheduler.py`, `tests/test_agents.py`)
+- 고친 결함: `frozen_l1`이 없는 키를 null로 넣음, Verifier 게이트의 도구 기록 파일이 쓰기 범위 위반으로 잡힘, 차분 검사가 하니스를 못 불러옴
+
+**단독 평가 (격리 적용 후, agy)**
+- Arbiter 2/2 정답: 일부러 틀린 기댓값은 `test_wrong`(ADP-01 근거, 수정안 정확), RTL 버그는 `rtl_wrong`(COBS-01\~03 근거)
+- Repair 2/2 성공(한도 전에 끝난 것): `adapter_shift`, `fifo_slice` 모두 원인 노드 하나만 고쳐 원본 테스트벤치 통과(9/9, 20/20), 범위 위반 0
+- 나머지(Author 3, Verifier 3, Architect 3, Repair 1)는 agy 사용량 한도(429, 개인 할당량)에 걸려 실행되지 않음. 14개를 동시에 돌린 탓. 한도가 풀리면(20:53쯤) 블록별로 순서대로 다시 돌림
+
+**다음**
+- P4-9: `tests/golden/e2e.py`로 golden 블록 3개를 SPEC부터 끝까지 실행하고 원본 테스트벤치로 판정
+
+### 2026-10-11 P4-3\~7 에이전트 다섯 종 작성과 격리 위반 발견
+
+**한 일**
+- 에이전트 모듈 (`pipeline/agents/`): `author.py`, `repair.py`, `verifier.py`, `architect.py`, `arbiter.py`. 역할마다 볼 수 있는 입력, 쓸 수 있는 출력, 종료 게이트를 정함
+- 에이전트용 안내서: `prompts/ir_guide.md`(IR 작성), `prompts/tb_guide.md`(하니스 API, 참조 모델 규약)
+- golden 블록 3개의 10개 섹션 SPEC (`tests/golden/<블록>/block_spec.md`). SPEC 검사 게이트가 처음 쓴 `axis_async_fifo` SPEC에서 동작을 정하지 않은 출력 5개를 잡아 고침. SPEC에서 만든 L1은 golden과 같은 인터페이스
+- 결정: 출력 포트의 kind(reg/wire)와 리셋값, local 파라미터는 동결 L1에서 뺌. SPEC 표에 없고 Author가 정하는 값 (`pipeline/ir/model.py`의 `frozen_l1`)
+- 평가 스크립트 `tests/golden/eval_agents.py` (author, repair, verifier, architect, arbiter)
+
+**발견: 격리 위반**
+- 첫 평가에서 Author가 낸 `axis_async_fifo` IR이 golden IR과 똑같았음. 작업 디렉터리가 저장소 안(`build/agents/`)이었고, agy가 작업 디렉터리 밖의 golden 정답을 읽어 그대로 씀
+- 대응: 격리를 파일 시스템으로 강제
+  - 모든 에이전트 실행을 macOS `sandbox-exec`으로 감쌈. 저장소와 실행 디렉터리 전체의 읽기·쓰기를 막고 자기 작업 디렉터리만 허용
+  - 작업 디렉터리는 저장소 밖(`~/.cache/chip-design-department/runs`). 저장소 안이면 실행 거부
+  - 격리 수단이 없는 OS에서는 실행 거부
+  - 저장소 읽기, 이웃 후보 디렉터리 읽기·쓰기가 막히는지 시험함 (`tests/test_agents.py`)
+- 첫 평가 결과는 모두 버리고 격리한 상태로 다시 돌림. Author 평가는 결과가 golden과 같은지도 기록함
+- 대기 항목 추가: Linux(폐쇄망 서버)용 격리 수단 (bubblewrap 등)
+
+### 2026-10-11 P4-1, P4-2 작업 실행기와 에이전트 도구
+
+**한 일**
+- `pipeline/agents/task.py`: 모든 에이전트를 같은 작업 인터페이스로 다룸
+  - 입력 산출물, 도구, 기대 출력, 쓰기 범위를 받음
+  - 실행 전후 스냅숏으로 범위 밖 변경을 거부
+  - 검사 오류를 TASK.md에 붙여 재시도
+  - `.task.json`에 실행 기록
+- `pipeline/agents/roles.py`, `config/roles.json`: 역할별 agent, 후보 수, 상한(Repair 5, 재시도 1, 예산 200회). Author와 Verifier가 같은 계열이면 경고
+- `pipeline/agents/pl.py`: 작업 디렉터리에 설치되는 도구 CLI. validate(동결 L1 대조 포함), patch(사전 실행), emit, fanin, trace, spec(구절 조회), harness, model(참조 모델 단독 실행). 호출 기록을 남김
+
+**결과**
+- 가짜 agent로 출력 회수, 범위 위반 거부, 재시도, 출력 누락, 도구 9개 명령을 확인 (`tests/test_agents.py`)
+- 현재 설정(agy, Gemini 두 모델)에서 계열 중복 경고가 나옴 (결정대로 허용)
+
+### 2026-10-11 P4 시작
+
+- 완료 기준: 이식 시험 블록 3개를 SPEC부터 끝까지 사람 개입 없이 실행하고 결과 RTL이 원본 테스트벤치 통과, 강제 중단 뒤 재개, 격리(Verifier에 L2/L3/RTL 없음, Author 후보끼리 서로 못 봄)
+- 순서: P4-1 작업 실행기 → P4-2 에이전트 도구 CLI → P4-3\~7 에이전트 하나씩(Author, Repair, Verifier, Architect, Arbiter)과 golden 블록 단독 평가 → P4-8 스케줄러 → P4-9 통합 단계와 SPEC부터 끝까지 실행
 
 ### 2026-10-11 P3-5, P3-6 타이밍 다이어그램과 LLM 검사, P3 정리
 

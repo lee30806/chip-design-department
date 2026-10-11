@@ -1,0 +1,102 @@
+"""Repair 에이전트: 실패 리포트를 보고 자기 후보의 IR을 고치는 patch 목록을 낸다.
+
+볼 수 있는 것: SPEC, 자기 후보의 IR, 실패 리포트(분류 결과, 불일치 리포트), 이전 patch 이력.
+하위 모듈이 여럿이면 Block Top의 인스턴스와 연결, 형제 모듈의 L1도 본다 (`block.json`).
+쓸 수 있는 것: `out/patches.json`. IR을 직접 고치지 않는다. 테스트와 모델은 볼 수 없고 고칠 수도 없다.
+종료 게이트: patch 툴이 거부하지 않고(쓰기 범위, 동결 범위, waiver), 적용 결과가 Validator를 통과한다.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pipeline.agents.task import ROOT, Task
+from pipeline.ir.model import Module
+from pipeline.patch.apply import apply
+from pipeline.validator.checks import errors, validate
+
+GUIDE = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+OUT = "out/patches.json"
+
+TASK = """\
+# 과제: {module} 모듈의 실패 고치기
+
+너는 RTL 생성 파이프라인의 Repair 에이전트다. 검증에서 실패한 IR을 고치는 patch 목록을 쓴다.
+
+## 입력
+- `ir.json`: 지금 IR
+- `failure.json`: 실패 리포트. `classified`는 실패 유형과 대상 노드, `report`는 첫 불일치(기댓값과 실제값),
+  그 전후의 FSM 상태, 불일치 출력의 팬인 노드와 신호 값, 관련 SPEC 구절이다
+- `history.json`: 이전에 적용한 patch (같은 patch를 반복하지 않는다)
+- `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다
+- `guide.md`: IR 작성 안내
+
+## 할 일
+1. `failure.json`의 실패를 SPEC과 비교해 원인 노드를 찾는다. 팬인 노드 가운데에서 찾는다.
+2. 고치는 patch 목록을 `{out}`에 JSON 배열로 쓴다. patch 하나는 아래 형식이다.
+   - `{{"op": "set", "target": "blocks/<id>", "field": "body", "value": "..."}}`
+   - `{{"op": "set", "target": "blocks/<id>/transitions/<id>", "field": "cond", "value": "..."}}`
+   - `{{"op": "add", "target": "signals", "value": {{...}}}}`, `{{"op": "remove", "target": "signals/<name>"}}`
+3. `python3 tools/pl.py patch ir.json {out}`가 `"ok": true`가 될 때까지 고친다. 이 도구는 patch를 적용해 보고 검사만 한다.
+
+## 규칙
+- 고칠 수 있는 것은 types, signals, blocks, connections이다. L1(ports, params, domains)과 인스턴스는 고칠 수 없다.
+  L1을 바꿔야 한다고 판단되면 patch 대신 `{out}`에 `[{{"op": "request_interface_change", "reason": "..."}}]`를 쓴다.
+- lint waiver나 검사를 끄는 주석을 넣지 않는다.
+- `{out}` 외의 파일은 만들거나 고치지 않는다.
+{block}"""
+
+BLOCK = """
+## 형제 모듈
+이 모듈은 Block Top `{top}` 안에서 형제 모듈 {siblings}와 함께 검증된다. 불일치는 Block Top의 출력에서 관측된 것이다.
+`block.json`에 Block Top의 인스턴스와 연결, 형제 모듈의 L1이 있다. 실패 리포트의 팬인은 Block Top의 출력을 구동하는 인스턴스까지다.
+원인이 이 모듈이 아니라 형제 모듈에 있다고 판단되면 patch 대신 `{out}`에
+`[{{"op": "suspect_module", "module": "<형제 모듈 이름>", "reason": "..."}}]`를 쓴다.
+"""
+
+
+def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: list[dict], block: dict | None = None) -> Task:
+    """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}}."""
+    inputs = {"ir.json": json.dumps(ir, ensure_ascii=False, indent=1), "spec.md": Path(spec), "guide.md": GUIDE,
+              "failure.json": json.dumps(failure, ensure_ascii=False, indent=1),
+              "history.json": json.dumps(history, ensure_ascii=False, indent=1)}
+    extra = ""
+    if block:
+        inputs["block.json"] = json.dumps(block, ensure_ascii=False, indent=1)
+        extra = BLOCK.format(top=block["top"], siblings=", ".join(f"`{n}`" for n in block["siblings"]), out=OUT)
+    return Task("repair", name, TASK.format(module=ir["module"], out=OUT, block=extra), inputs=inputs, outputs=[OUT])
+
+
+def interface_change(patches: object) -> str | None:
+    """Repair가 L1 변경을 요청했으면 그 이유. 스케줄러가 Architect로 올린다."""
+    if isinstance(patches, list) and patches and all(isinstance(p, dict) for p in patches):
+        req = [p for p in patches if p.get("op") == "request_interface_change"]
+        if req:
+            return str(req[0].get("reason", ""))
+    return None
+
+
+def suspect(patches: object) -> tuple[str, str] | None:
+    """Repair가 원인을 형제 모듈로 지목했으면 (모듈, 이유). 스케줄러가 그 모듈의 Repair로 넘긴다."""
+    if isinstance(patches, list) and patches and all(isinstance(p, dict) for p in patches):
+        req = [p for p in patches if p.get("op") == "suspect_module"]
+        if req:
+            return str(req[0].get("module", "")), str(req[0].get("reason", ""))
+    return None
+
+
+def check(ir: dict, library: dict[str, Module] | None = None, siblings: set[str] | None = None):
+    def _check(work: Path) -> list[str]:
+        try:
+            patches = json.loads((work / OUT).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            return [f"patch 목록을 읽을 수 없음: {e}"]
+        if interface_change(patches) is not None:
+            return []
+        if (sus := suspect(patches)) is not None:
+            return [] if siblings and sus[0] in siblings else [f"형제 모듈이 아님: {sus[0]} (형제: {sorted(siblings or [])})"]
+        res = apply(ir, patches)
+        if not res.ok:
+            return [f"patch 거부: {r['reason']}" for r in res.rejected]
+        return [str(i) for i in errors(validate(Module(res.ir), library or {}))]
+    return _check
