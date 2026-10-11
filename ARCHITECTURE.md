@@ -174,7 +174,7 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 | L3 | `blocks` | `comb`, `seq`, `fsm`, `cdc_sync`, `memory` |
 
 - **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
-- **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결과 동기화 셀입니다.
+- **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결, 동기화 셀, 신호, 타입입니다.
 - **Validator.** V1 스키마부터 V11 동결까지 11단계로 검사합니다. 사용하는 수단은 JSON Schema, 심볼 테이블, pyslang AST, reads/writes 그래프입니다.
 - **v1 제외.** generate, function/task, inout/tristate, 의도적 래치, 다중 비트 CDC, SVA는 아직 표현하지 못합니다.
 

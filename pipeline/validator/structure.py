@@ -341,7 +341,11 @@ def v10_hierarchy(m: Module, library: dict[str, Module]) -> list[Issue]:
 
 # ---------------------------------------------------------------- V11
 def frozen_scope(library: dict[str, Module]) -> dict[str, str]:
-    """동결 범위의 해시: 모든 모듈의 L1과 인스턴스 목록, top/block_top의 연결과 동기화 셀."""
+    """동결 범위의 해시: 모든 모듈의 L1과 인스턴스 목록, top/block_top의 연결, 동기화 셀, 신호, 타입.
+
+    top/block_top의 신호는 연결과 동기화 셀에만 쓰이므로, 신호의 타입이나 도메인이 바뀌면 동결된 연결이
+    바뀐 것과 같다. 그래서 신호와 타입도 함께 동결한다.
+    """
     out: dict[str, str] = {}
     for name, m in sorted(library.items()):
         parts = {
@@ -350,7 +354,10 @@ def frozen_scope(library: dict[str, Module]) -> dict[str, str]:
         }
         if m.role in ("top", "block_top"):
             parts["connections"] = m.raw.get("connections", [])
-            parts["cdc_sync"] = [b for b in m.blocks if b["kind"] == "cdc_sync"]
+            parts["signals"] = m.raw.get("signals", [])
+            parts["types"] = m.raw.get("types", [])
+            # 해석에 실패한 IR에서도 같은 값이 나오도록 raw에서 직접 읽는다.
+            parts["cdc_sync"] = [b for b in m.raw.get("blocks", []) if isinstance(b, dict) and b.get("kind") == "cdc_sync"]
         for k, v in parts.items():
             out[f"{name}/{k}"] = hashlib.sha256(json.dumps(v, sort_keys=True).encode()).hexdigest()
     return out

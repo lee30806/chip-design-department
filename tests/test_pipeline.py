@@ -86,7 +86,8 @@ def test_emit_is_deterministic_and_has_sourcemap():
     assert a.text == b.text
     lines = a.text.split("\n")
     for entry in a.sourcemap:
-        assert lines[entry["start"] - 2].strip() == f"// @ir {entry['node']}"
+        if not entry.get("fragment"):
+            assert lines[entry["start"] - 2].strip() == f"// @ir {entry['node']}"
     k_cnt = next(e for e in a.sourcemap if e["node"] == "blocks/k_cnt")
     block = "\n".join(lines[k_cnt["start"] - 1:k_cnt["end"]])
     assert "always_ff @(posedge clk or negedge rst_n)" in block

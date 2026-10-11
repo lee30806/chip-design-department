@@ -284,6 +284,8 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
 
 # ---------------------------------------------------------------- V5
 def v5_drivers(m: Module, library: dict[str, Module]) -> list[Issue]:
+    if m.role == "external":
+        return []  # 동작은 등록된 RTL에 있다. 파이프라인은 외부 모듈 자체를 검증하지 않는다.
     out: list[Issue] = []
     writers: dict[str, list[tuple[str, dict | None]]] = {}
 
