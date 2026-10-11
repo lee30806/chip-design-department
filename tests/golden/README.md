@@ -68,7 +68,7 @@ cocotb 2.1, cocotbext-axi, cocotbext-uart, cocotb-test, Verilator가 필요합�
 | 5 | `always` 안의 blocking 임시 변수(`wr_ptr_temp`)를 `comb` 신호로 뺌 | `axis_async_fifo` | V4 규칙(`seq`에는 non-blocking만) 그대로 |
 | 6 | RAM 파이프라인 배열과 `for` 루프를 단계별 레지스터로 풂 | `axis_async_fifo` | `RAM_PIPELINE=1` 고정이라 두 단 |
 | 7 | 비동기 리셋으로 세우는 리셋 동기화 플롭(`s_rst_sync1_reg`)을 동기 리셋 레지스터로 옮김 | `axis_async_fifo` | 한 도메인에 리셋 방식이 하나뿐이라서. 리셋 진입이 한 클럭 늦음 |
-| 8 | 리셋이 없던 동기화 플롭이 리셋이 있는 표준 셀로 바뀜 | `axis_async_fifo` | 셀 규약은 사내 셀을 받으면 다시 봄 |
+| 8 | 리셋이 없던 동기화 플롭이 리셋이 있는 표준 셀로 바뀜 | `axis_async_fifo` | **이 차이로 기능 버그가 생겼고, P2 생성 하니스가 찾음** (한쪽 도메인이 먼저 리셋에서 풀리면 입력을 받았다가 잃음). "상대 도메인 준비됨" 플래그(리셋 시 0)를 동기화하도록 고침. 원본 테스트벤치는 두 리셋을 동시에 풀어 놓침. 셀 규약은 사내 셀을 받으면 다시 봄 |
 | 9 | 비동기 입력 `rxd`를 원본처럼 플롭 하나로 받으려고 동기 포트로 선언함 | `uart_rx` | 원본의 관행. `cdc_sync`를 쓰면 지연이 한 클럭 늘어 원본과 달라짐 |
 
 ### Validator 오탐과 누락

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -118,7 +119,8 @@ def mismatch_report(m: Module, result: dict, trace: list[dict], spec_text: str |
             fsm_nodes += [f'blocks/{b["id"]}/transitions/{tr["id"]}' for tr in b["transitions"]]
     values = [{"cycle": t["cycle"], **{s: t["values"][s] for s in sigs if s in t["values"]}} for t in window]
     req = first.get("req")
-    clauses = [ln.strip() for ln in (spec_text or "").splitlines() if req and req in ln]
+    reqs = [req] if isinstance(req, str) else list(req or [])  # 기댓값 하나에 요구사항이 여럿일 수 있음
+    clauses = [ln.strip() for ln in (spec_text or "").splitlines() if any(r in ln for r in reqs)]
     return {"test": result.get("test"), "first_failure": {k: v for k, v in first.items() if k != "signals_from"},
             "fsm_trace": fsm_trace, "fanin": {"outputs": outs, "nodes": nodes, "fsm_transitions": fsm_nodes,
                                               "signals": sigs, "values": values},
@@ -149,6 +151,17 @@ def fsm_coverage(m: Module, traces: list[list[dict]]) -> dict[str, dict]:
             "unobservable": [t["id"] for t in trs if t["from"] == t["to"]],
         }
     return out
+
+
+_REQ = re.compile(r"^\s*[-*]\s*([A-Z][A-Z0-9]*-\d+)\s*:", re.M)
+
+
+def req_coverage(results: list[dict], spec_text: str) -> dict:
+    """T5. SPEC에 있는 요구사항 ID 중 테스트에서 실행된 것 (기댓값이 맞았거나, 속성이 평가됐거나, 체커가 검사함)."""
+    spec = _REQ.findall(spec_text)
+    hit = set().union(*(set(r.get("reqs", [])) for r in results)) if results else set()
+    return {"total": len(spec), "covered": sorted(set(spec) & hit), "missed": [r for r in spec if r not in hit],
+            "ratio": round(len(set(spec) & hit) / len(spec), 3) if spec else None}
 
 
 def main(argv: list[str] | None = None) -> int:

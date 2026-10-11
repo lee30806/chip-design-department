@@ -38,9 +38,11 @@ class StageResult:
     ok: bool
     findings: list[Finding] = field(default_factory=list)
     log: str = ""            # 툴 출력 (잘라서 보관)
+    coverage: dict | None = None  # E2에서 coverage=True일 때: 종류별 {points, hit, ratio} (T5)
 
     def to_dict(self) -> dict:
-        return {"stage": self.stage, "ok": self.ok, "findings": [asdict(f) for f in self.findings], "log": self.log}
+        return {"stage": self.stage, "ok": self.ok, "findings": [asdict(f) for f in self.findings], "log": self.log,
+                "coverage": self.coverage}
 
 
 def parse_verilator(text: str, tool: str = "verilator") -> list[Finding]:
@@ -87,17 +89,47 @@ def parse_cocotb_results(path: Path) -> tuple[int, list[Finding]]:
 REPO = Path(__file__).resolve().parents[2]
 # T1: Verilator는 2-state라 X를 볼 수 없다. 초기값을 시드별로 무작위화해 결과가 달라지는지 본다.
 RANDOM_INIT_BUILD = ["-x-assign", "unique", "-x-initial", "unique"]
+# 커버리지 계측은 always 블록을 쪼개 실제로는 없는 조합 루프 경고(UNOPTFLAT)를 낸다. 이 경고는 계측 없는
+# 빌드와 E1에서 본다 (axis_cobs_decode 이식 시험에서 확인).
+COVERAGE_BUILD = ["--coverage", "-Wno-UNOPTFLAT"]
+
+
+_COV = re.compile(r"^C '(.*)' (\d+)$")
+
+
+def parse_coverage(paths: list[Path]) -> dict:
+    """Verilator coverage.dat들을 합쳐 종류별(line, toggle, branch 등) 커버리지와 안 덮인 줄을 낸다."""
+    points: dict[str, int] = {}
+    for p in paths:
+        for ln in Path(p).read_text(errors="replace").splitlines():
+            mo = _COV.match(ln)
+            if mo:
+                points[mo.group(1)] = max(points.get(mo.group(1), 0), int(mo.group(2)))
+    out: dict = {}
+    for key, n in points.items():
+        f = dict(x.split("\x02", 1) for x in key.split("\x01") if "\x02" in x)
+        t = out.setdefault(f.get("t", "?"), {"points": 0, "hit": 0, "missed": []})
+        t["points"] += 1
+        if n:
+            t["hit"] += 1
+        elif f.get("t") != "toggle":
+            t["missed"].append(f'{Path(f.get("f", "?")).name}:{f.get("l", "?")}')
+    for t in out.values():
+        t["ratio"] = round(t["hit"] / t["points"], 3) if t["points"] else None
+        t["missed"] = sorted(set(t["missed"]))[:50]
+    return out
 
 
 def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir: Path,
         build_args: list[str] | None = None, seed: int | None = None, seeds: list[int] | None = None,
         harness_dir: Path | None = None, trace: Path | None = None, env: dict[str, str] | None = None,
-        timescale: tuple[str, str] | None = None) -> StageResult:
+        timescale: tuple[str, str] | None = None, coverage: bool = False) -> StageResult:
     """E2. cocotb + Verilator. 빌드 실패도 이 단계의 실패로 낸다.
 
     seeds를 주면 초기값을 무작위화해 시드마다 실행하고(T1, Verilator 시드만 바꾸고 Python random 시드는 seed로 고정), 시드에 따라 실패하는 테스트가 달라지면
     그 자체를 실패(`T1_INIT`)로 낸다. harness_dir는 생성된 하니스가 있는 디렉터리, trace는 내부 신호 목록
     (`<module>_trace.json`)이다. 하니스 결과(첫 불일치, 트레이스)는 `build_dir/tb_out/<시드>/`에 남는다.
+    coverage=True면 Verilator line/toggle 커버리지를 모든 시드에 걸쳐 합쳐 `coverage`에 낸다(T5).
     """
     from cocotb_tools.runner import get_runner
 
@@ -107,7 +139,8 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     runner = get_runner("verilator")
     try:
         runner.build(sources=[Path(f) for f in files], hdl_toplevel=top, build_dir=build_dir,
-                     build_args=[*(build_args or []), *(RANDOM_INIT_BUILD if seeds else [])], always=True,
+                     build_args=[*(build_args or []), *(RANDOM_INIT_BUILD if seeds else []), *(COVERAGE_BUILD if coverage else [])],
+                     always=True,
                      log_file=build_log, timescale=timescale)
     except (Exception, SystemExit):
         text = build_log.read_text(errors="replace") if build_log.exists() else ""
@@ -124,6 +157,10 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         if trace:
             env["TB_TRACE"] = str(Path(trace).resolve())
         plus = [f"+verilator+seed+{s}", "+verilator+rand+reset+2"] if seeds else []
+        cov_file = build_dir / f"coverage.{tag}.dat"
+        if coverage:
+            cov_file.unlink(missing_ok=True)
+            plus.append(f"+verilator+coverage+file+{cov_file.resolve()}")
         saved = list(sys.path)
         sys.path[:0] = paths  # runner는 PYTHONPATH를 이 프로세스의 sys.path로 정한다
         try:
@@ -148,15 +185,21 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     if len(failed_sets) > 1:
         detail = ", ".join(f"seed {s}: {sorted(f.test for f in fs) or '통과'}" for s, fs in per_seed.items())
         findings.insert(0, Finding("cocotb", "T1_INIT", None, None, f"초기값에 따라 결과가 달라짐 ({detail})"))
-    elif seeds and trace and len(seeds) > 1:
-        diff = _compare_outputs(build_dir / "tb_out", [str(s) for s in seeds], json.loads(Path(trace).read_text())["outputs"])
+    elif seeds and trace and len(seeds) > 1 and len(json.loads(Path(trace).read_text()).get("domains", [None])) == 1:
+        # 클럭이 여럿이면 초기값 무작위화가 클럭 입력의 초기값도 바꿔 도메인 사이 위상이 시드마다 달라진다.
+        # 그때 출력이 언제 보이는지는 CDC 지연 때문에 정상적으로 달라지므로, 실패 목록 비교(위)만 쓴다.
+        tcfg = json.loads(Path(trace).read_text())
+        diff = _compare_outputs(build_dir / "tb_out", [str(s) for s in seeds], tcfg["outputs"], tcfg.get("qualifiers", {}))
         if diff:
             findings.insert(0, Finding("cocotb", "T1_INIT", None, None, f"초기값에 따라 출력이 달라짐 ({diff})", test=diff.split(":")[0]))
-    return StageResult("E2", not findings, findings, "\n".join(logs)[-20000:])
+    cov = parse_coverage(sorted(build_dir.glob("coverage.*.dat"))) if coverage else None
+    return StageResult("E2", not findings, findings, "\n".join(logs)[-20000:], cov)
 
 
-def _compare_outputs(tb_out: Path, tags: list[str], outputs: list[str]) -> str | None:
-    """시드별 트레이스에서 DUT 출력값을 사이클 단위로 비교해 처음 달라진 곳을 돌려준다."""
+def _compare_outputs(tb_out: Path, tags: list[str], outputs: list[str], qualifiers: dict[str, str] | None = None) -> str | None:
+    """시드별 트레이스에서 DUT 출력값을 사이클 단위로 비교해 처음 달라진 곳을 돌려준다.
+    qualifiers의 data 출력은 양쪽 모두 valid가 0이면 비교하지 않는다 (리셋 없는 data 레지스터의 초기값)."""
+    qualifiers = qualifiers or {}
     base = tb_out / tags[0]
     for f in sorted(base.glob("*.trace.json")):
         ref = json.loads(f.read_text())
@@ -164,9 +207,19 @@ def _compare_outputs(tb_out: Path, tags: list[str], outputs: list[str]) -> str |
             other = tb_out / tag / f.name
             if not other.exists():
                 continue
-            oth = json.loads(other.read_text())
-            for a, b in zip(ref, oth):
+            oth = {(t["domain"], t["cycle"]): t for t in json.loads(other.read_text())}
+            # 도메인이 여럿이면 항목 순서가 실행마다 다를 수 있으므로 (도메인, 사이클)로 짝짓는다.
+            for a in ref:
+                b = oth.get((a["domain"], a["cycle"]))
+                if b is None:
+                    return (f'{f.name.removesuffix(".trace.json")}: 실행 길이가 다름 '
+                            f'({a["domain"]} cycle {a["cycle"]}이 seed {tag}에 없음)')
                 for o in outputs:
+                    if o not in a["values"] and o not in b["values"]:
+                        continue  # 이 도메인에서 읽지 않는 출력
+                    q = qualifiers.get(o)
+                    if q and not a["values"].get(q) and not b["values"].get(q):
+                        continue
                     if a["values"].get(o) != b["values"].get(o):
                         return (f'{f.name.removesuffix(".trace.json")}: {a["domain"]} cycle {a["cycle"]} {o} = '
                                 f'{a["values"].get(o)} (seed {tags[0]}) / {b["values"].get(o)} (seed {tag})')

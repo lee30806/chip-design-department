@@ -43,5 +43,15 @@
       "PAUSE_ENABLE": 1,
       "FRAME_PAUSE": 1
     }
+  },
+  "harness": {
+    "top": "axis_async_fifo",
+    "tb": "tb_axis_async_fifo_h",
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "spec": "spec.md"
   }
 }

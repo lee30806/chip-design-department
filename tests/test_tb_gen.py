@@ -27,7 +27,7 @@ def test_trace_names_include_internals():
     assert trace_names(LIB["pkt_parser"]) == {
         "names": {"s_valid": "sys", "s_ready": "sys", "s_data": "sys", "pkt_valid": "sys",
                   "byte_cnt": "sys", "sync_hit": None, "state_q": "sys"},
-        "outputs": ["s_ready", "pkt_valid"]}
+        "outputs": ["s_ready", "pkt_valid"], "qualifiers": {}, "domains": ["sys"]}
 
 
 def test_source_bundle_and_unknown_protocol():

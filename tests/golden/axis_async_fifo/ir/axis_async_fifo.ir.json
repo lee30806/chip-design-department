@@ -426,11 +426,11 @@
    "reset": "1'b0"
   },
   {
-   "name": "m_rst_sync1_reg",
+   "name": "s_side_ready_reg",
    "kind": "reg",
    "type": "logic",
    "domain": "s",
-   "reset": "1'b1"
+   "reset": "1'b0"
   },
   {
    "name": "rd_ptr_conv_reg",
@@ -539,11 +539,11 @@
    "domain": "m"
   },
   {
-   "name": "s_rst_sync1_reg",
+   "name": "m_side_ready_reg",
    "kind": "reg",
    "type": "logic",
    "domain": "m",
-   "reset": "1'b1"
+   "reset": "1'b0"
   },
   {
    "name": "overflow_sync4_reg",
@@ -627,6 +627,16 @@
    "name": "s_pause_req_sync3_reg",
    "kind": "wire",
    "type": "logic"
+  },
+  {
+   "name": "m_side_ready_sync",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_side_ready_sync",
+   "kind": "wire",
+   "type": "logic"
   }
  ],
  "blocks": [
@@ -665,7 +675,8 @@
     "s_axis_tdata",
     "s_pause_ack_sync3_reg",
     "full",
-    "wr_ptr_inc"
+    "wr_ptr_inc",
+    "m_side_ready_sync"
    ],
    "writes": [
     "wr_ptr_inc",
@@ -675,9 +686,10 @@
     "s_axis_word",
     "s_status_bad_frame",
     "s_status_good_frame",
-    "s_pause_ack"
+    "s_pause_ack",
+    "s_rst_sync3_reg"
    ],
-   "body": "wr_ptr_inc = wr_ptr_reg + 1'b1;\nwr_ptr_inc_gray = wr_ptr_inc ^ (wr_ptr_inc >> 1);\nfull = wr_ptr_gray_reg == (rd_ptr_gray_sync2_reg ^ {2'b11, {(ADDR_WIDTH-1){1'b0}}});\ns_axis_tready = !full && !s_rst_sync3_reg;\ns_axis_word = {s_axis_tuser, s_axis_tdest, s_axis_tid, s_axis_tlast, s_axis_tdata};\ns_status_bad_frame = 1'b0;\ns_status_good_frame = 1'b0;\ns_pause_ack = s_pause_ack_sync3_reg;"
+   "body": "s_rst_sync3_reg = !m_side_ready_sync;\nwr_ptr_inc = wr_ptr_reg + 1'b1;\nwr_ptr_inc_gray = wr_ptr_inc ^ (wr_ptr_inc >> 1);\nfull = wr_ptr_gray_reg == (rd_ptr_gray_sync2_reg ^ {2'b11, {(ADDR_WIDTH-1){1'b0}}});\ns_axis_tready = !full && !s_rst_sync3_reg;\ns_axis_word = {s_axis_tuser, s_axis_tdest, s_axis_tid, s_axis_tlast, s_axis_tdata};\ns_status_bad_frame = 1'b0;\ns_status_good_frame = 1'b0;\ns_pause_ack = s_pause_ack_sync3_reg;"
   },
   {
    "id": "k_s_g2b",
@@ -740,9 +752,9 @@
    ],
    "writes": [
     "overflow_sync1_reg",
-    "m_rst_sync1_reg"
+    "s_side_ready_reg"
    ],
-   "body": "overflow_sync1_reg <= overflow_sync1_reg ^ s_status_overflow;\nm_rst_sync1_reg <= 1'b0;"
+   "body": "overflow_sync1_reg <= overflow_sync1_reg ^ s_status_overflow;\ns_side_ready_reg <= 1'b1;"
   },
   {
    "id": "k_s_status",
@@ -784,18 +796,18 @@
   {
    "id": "c_s_rst",
    "kind": "cdc_sync",
-   "src": "s_rst_sync1_reg",
+   "src": "m_side_ready_reg",
    "src_domain": "m",
-   "dst": "s_rst_sync3_reg",
+   "dst": "m_side_ready_sync",
    "dst_domain": "s",
    "style": "2ff"
   },
   {
    "id": "c_m_rst",
    "kind": "cdc_sync",
-   "src": "m_rst_sync1_reg",
+   "src": "s_side_ready_reg",
    "src_domain": "s",
-   "dst": "m_rst_sync3_reg",
+   "dst": "s_side_ready_sync",
    "dst_domain": "m",
    "style": "2ff"
   },
@@ -852,7 +864,8 @@
     "overflow_sync3_reg",
     "overflow_sync4_reg",
     "m_axis_tlast_pipe",
-    "m_axis_tvalid_pipe"
+    "m_axis_tvalid_pipe",
+    "s_side_ready_sync"
    ],
    "writes": [
     "rd_ptr_inc",
@@ -870,9 +883,10 @@
     "m_status_overflow",
     "m_status_bad_frame",
     "m_status_good_frame",
-    "m_pause_ack"
+    "m_pause_ack",
+    "m_rst_sync3_reg"
    ],
-   "body": "rd_ptr_inc = rd_ptr_reg + 1'b1;\nempty = rd_ptr_gray_reg == wr_ptr_gray_sync2_reg;\nm_axis_tready_pipe = m_axis_tready && !pause_reg;\nm_axis_tvalid_pipe = m_axis_tvalid_pipe_reg[1];\nm_axis_tlast_pipe = m_axis_pipe_reg1[LAST_OFFSET] | m_terminate_frame_reg;\nm_axis_tdata = m_axis_pipe_reg1[DATA_WIDTH-1:0];\nm_axis_tkeep = '1;\nm_axis_tvalid = m_axis_tvalid_pipe && !pause_reg;\nm_axis_tlast = m_axis_tlast_pipe;\nm_axis_tid = m_axis_pipe_reg1[ID_OFFSET +: ID_WIDTH];\nm_axis_tdest = m_axis_pipe_reg1[DEST_OFFSET +: DEST_WIDTH];\nm_axis_tuser = m_terminate_frame_reg ? USER_WIDTH'(USER_BAD_FRAME_VALUE) : m_axis_pipe_reg1[USER_OFFSET +: USER_WIDTH];\nm_status_overflow = overflow_sync3_reg ^ overflow_sync4_reg;\nm_status_bad_frame = 1'b0;\nm_status_good_frame = 1'b0;\nm_pause_ack = pause_reg;"
+   "body": "m_rst_sync3_reg = !s_side_ready_sync;\nrd_ptr_inc = rd_ptr_reg + 1'b1;\nempty = rd_ptr_gray_reg == wr_ptr_gray_sync2_reg;\nm_axis_tready_pipe = m_axis_tready && !pause_reg;\nm_axis_tvalid_pipe = m_axis_tvalid_pipe_reg[1];\nm_axis_tlast_pipe = m_axis_pipe_reg1[LAST_OFFSET] | m_terminate_frame_reg;\nm_axis_tdata = m_axis_pipe_reg1[DATA_WIDTH-1:0];\nm_axis_tkeep = '1;\nm_axis_tvalid = m_axis_tvalid_pipe && !pause_reg;\nm_axis_tlast = m_axis_tlast_pipe;\nm_axis_tid = m_axis_pipe_reg1[ID_OFFSET +: ID_WIDTH];\nm_axis_tdest = m_axis_pipe_reg1[DEST_OFFSET +: DEST_WIDTH];\nm_axis_tuser = m_terminate_frame_reg ? USER_WIDTH'(USER_BAD_FRAME_VALUE) : m_axis_pipe_reg1[USER_OFFSET +: USER_WIDTH];\nm_status_overflow = overflow_sync3_reg ^ overflow_sync4_reg;\nm_status_bad_frame = 1'b0;\nm_status_good_frame = 1'b0;\nm_pause_ack = pause_reg;"
   },
   {
    "id": "k_rd",
@@ -925,10 +939,10 @@
     "overflow_sync3_reg"
    ],
    "writes": [
-    "s_rst_sync1_reg",
+    "m_side_ready_reg",
     "overflow_sync4_reg"
    ],
-   "body": "s_rst_sync1_reg <= 1'b0;\noverflow_sync4_reg <= overflow_sync3_reg;"
+   "body": "m_side_ready_reg <= 1'b1;\noverflow_sync4_reg <= overflow_sync3_reg;"
   },
   {
    "id": "k_m_status",

@@ -11,5 +11,15 @@
   "upstream_rtl": [
     "upstream/rtl/axis_cobs_decode.v"
   ],
-  "upstream_params": {}
+  "upstream_params": {},
+  "harness": {
+    "top": "axis_cobs_decode",
+    "tb": "tb_axis_cobs_decode_h",
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "spec": "spec.md"
+  }
 }

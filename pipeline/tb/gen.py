@@ -65,11 +65,19 @@ def harness_config(m: Module) -> dict:
 
 def trace_names(m: Module) -> dict:
     """트레이스 설정. names: 신호 → 도메인 (포트, 내부 신호, FSM 상태. 도메인이 없는 wire는 모든 도메인 표본에서 읽음).
-    outputs: DUT 출력 포트. Verify가 시드별 결과를 비교할 때(T1) 쓴다."""
+    outputs: DUT 출력 포트. Verify가 시드별 결과를 비교할 때(T1) 쓴다.
+    qualifiers: DUT가 내는 번들의 data 출력 → 그 번들의 valid. valid가 0인 사이클의 data 값은 비교하지 않는다.
+    domains: 클럭 도메인. 둘 이상이면 T1은 사이클 비교를 하지 않는다 (시드에 따라 도메인 사이 위상이 바뀜)."""
     names = {p.name: p.domain for p in m.ports if not p.derived}
     for s in m.signals + m.state_regs():
         names[s.name] = s.domain if s.kind == "reg" else None
-    return {"names": names, "outputs": [p.name for p in m.ports if p.dir == "output"]}
+    qual = {}
+    for p in m.raw["ports"]:
+        if "bundle" in p and p.get("protocol") == "valid_ready" and p.get("role") == "source":
+            b = _bundle(p)
+            qual.update({d: b["valid"] for d in b["data"]})
+    return {"names": names, "outputs": [p.name for p in m.ports if p.dir == "output"], "qualifiers": qual,
+            "domains": sorted(m.domains)}
 
 
 def harness_source(m: Module) -> str:
