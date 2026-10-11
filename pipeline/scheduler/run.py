@@ -229,12 +229,12 @@ class Run:
         out = Path(v["out"])
         test = self.result_name(out, [f["test"] for f in v["findings"] if f["test"]])
         if test is None:
-            return {"classified": v["findings"], "report": None}
+            return {"classified": [{"type": _sim_type(f["rule"]), **f} for f in v["findings"]], "report": None}
         mods = {n: Module(r) for n, r in lib.items()}
         rep = mismatch_report(mods[top], json.loads((out / f"{test}.result.json").read_text()),
                               json.loads((out / f"{test}.trace.json").read_text()),
                               self.spec_path.read_text(encoding="utf-8"), mods)
-        return {"classified": [{"type": "sim_mismatch" if f["rule"] in ("AssertionError", "T1_INIT") else "tb_error",
+        return {"classified": [{"type": _sim_type(f["rule"]),
                                 "test": f["test"], "message": f["message"]} for f in v["findings"]], "report": rep}
 
     def author_step(self, mod: str, c: int, tree: dict) -> dict:
@@ -323,7 +323,7 @@ class Run:
             fail_v = failed[0] if failed else {"findings": [], "out": ""}
             failure = self.failure_report(lib, top_ir["module"], fail_v) if failed else {"classified": vres["e1"], "report": None}
             if any(x.get("type") == "tb_error" for x in failure["classified"]) and not any(
-                    x.get("type") == "sim_mismatch" for x in failure["classified"]):
+                    x.get("type") in ("sim_mismatch", "sim_hang") for x in failure["classified"]):
                 self.review("TB_ERROR", f"{gname} 후보 {c}: 테스트 실행 오류 (Verifier가 고쳐야 함)", fail_v.get("out", ""))
                 save_all(status="failed", reason="TB 실행 오류")
                 break
@@ -462,6 +462,13 @@ class Run:
         self.save()
         (self.dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
         return rep
+
+
+def _sim_type(rule: str) -> str:
+    """sim 실패 분류. 시간 초과는 RTL이 멈춘 것으로 보고 Repair에 넘긴다."""
+    if rule in ("AssertionError", "T1_INIT"):
+        return "sim_mismatch"
+    return "sim_hang" if rule == "SIM_TIMEOUT" else "tb_error"
 
 
 def _load_model(tb: str, harness_dir: Path | None = None):

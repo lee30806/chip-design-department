@@ -76,3 +76,17 @@ def test_t1_random_init_exposes_missing_reset(tmp_path):
     r, e, _, _ = _run(tmp_path, raw, seeds=(1, 2, 3, 4, 5, 6))
     assert not r.ok and r.findings[0].rule == "T1_INIT", r.findings
     assert classify_findings(r.findings[:1], {"pkt_parser": e.sourcemap}, {"pkt_parser": "module"})[0].type == "sim_mismatch"
+
+
+def test_hung_sim_is_stopped(tmp_path):
+    """테스트가 끝나지 않으면(RTL이 멈춤) 시간 초과로 시뮬레이터를 끝내고 마지막 테스트를 낸다."""
+    tb = tmp_path / "tb"
+    tb.mkdir()
+    (tb / "tb_hang.py").write_text(
+        "import cocotb\nfrom cocotb.clock import Clock\nfrom cocotb.triggers import ClockCycles\n\n"
+        "@cocotb.test()\nasync def never_ends(dut):\n"
+        "    cocotb.start_soon(Clock(dut.clk, 10, 'ns').start())\n"
+        "    await ClockCycles(dut.clk, 10**12)\n")
+    (tmp_path / "pkt_parser.sv").write_text(emit(LIB["pkt_parser"], LIB).text)
+    r = sim([tmp_path / "pkt_parser.sv"], "pkt_parser", "tb_hang", tb, tmp_path / "build", timeout_s=15)
+    assert [(f.rule, f.test) for f in r.findings] == [("SIM_TIMEOUT", "never_ends")]

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -120,11 +122,16 @@ def parse_coverage(paths: list[Path]) -> dict:
     return out
 
 
+SIM_TIMEOUT_S = float(os.environ.get("CHIPDEPT_SIM_TIMEOUT", "900"))
+
+
 def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir: Path,
         build_args: list[str] | None = None, seed: int | None = None, seeds: list[int] | None = None,
         harness_dir: Path | None = None, trace: Path | None = None, env: dict[str, str] | None = None,
-        timescale: tuple[str, str] | None = None, coverage: bool = False) -> StageResult:
+        timescale: tuple[str, str] | None = None, coverage: bool = False, timeout_s: float = SIM_TIMEOUT_S) -> StageResult:
     """E2. cocotb + Verilator. 빌드 실패도 이 단계의 실패로 낸다.
+
+    시드 하나의 실행이 timeout_s초를 넘으면 시뮬레이터를 끝내고 `SIM_TIMEOUT`으로 낸다 (RTL이 멈춰 테스트가 끝나지 않을 때).
 
     seeds를 주면 초기값을 무작위화해 시드마다 실행하고(T1, Verilator 시드만 바꾸고 Python random 시드는 seed로 고정), 시드에 따라 실패하는 테스트가 달라지면
     그 자체를 실패(`T1_INIT`)로 낸다. harness_dir는 생성된 하니스가 있는 디렉터리, trace는 내부 신호 목록
@@ -163,6 +170,11 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
             plus.append(f"+verilator+coverage+file+{cov_file.resolve()}")
         saved = list(sys.path)
         sys.path[:0] = paths  # runner는 PYTHONPATH를 이 프로세스의 sys.path로 정한다
+        timed_out = threading.Event()
+        # runner는 시뮬레이터를 하위 프로세스로 돌린다. 빌드 디렉터리의 실행 파일 경로로 그 프로세스만 찾아 끝낸다
+        watchdog = threading.Timer(timeout_s, lambda: (timed_out.set(), subprocess.run(
+            ["pkill", "-f", str((build_dir / top).resolve())], capture_output=True)))
+        watchdog.start()
         try:
             # 자극이 시드에 따라 바뀌지 않도록 cocotb(Python random) 시드는 고정한다.
             runner.test(hdl_toplevel=top, test_module=test_module, test_dir=Path(test_dir), build_dir=build_dir,
@@ -171,8 +183,15 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         except (Exception, SystemExit):
             pass  # 테스트가 실패하면 runner가 예외를 던진다. 판정은 결과 파일로 한다.
         finally:
+            watchdog.cancel()
             sys.path[:] = saved
         logs.append(test_log.read_text(errors="replace")[-20000:] if test_log.exists() else "")
+        if timed_out.is_set():
+            running = re.findall(r"running \S+?\.(\S+) \(", logs[-1])
+            last = running[-1] if running else None
+            per_seed[s] = [Finding("cocotb", "SIM_TIMEOUT", None, None,
+                                   f"{timeout_s:.0f}초 안에 끝나지 않아 중단 (마지막 테스트 {last}, seed {tag})", test=last)]
+            continue
         if not results.exists():
             per_seed[s] = [Finding("cocotb", "NO_RESULTS", None, None, f"결과 파일이 없음 (시뮬레이터 비정상 종료, seed {tag})")]
             continue
