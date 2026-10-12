@@ -169,3 +169,124 @@ def test_repair_goes_to_driver_then_suspected_sibling(tmp_path):
     fail = json.loads((tmp_path / "run" / "work" / "repair__axis_adapter_out__c0__r0" / "failure.json").read_text())
     assert fail["report"]["fanin"]["nodes"] == ["instances/u_out", "instances/u_core"]
     assert "u_out.s_axis_tdata" in fail["report"]["fanin"]["values"][-1]
+
+
+def _files_wrong_v1(tmp_path):
+    """Verifier 1의 테스트에만 틀린 속성이 있음. Arbiter는 test_wrong, 승인된 수정 작업은 올바른 테스트를 씀."""
+    f = _files(tmp_path)
+    good = Path(f["Verifier"]["out/test_axis_adapter.py"][1:])
+    bad = tmp_path / "tb_bad.py"
+    bad.write_text(good.read_text().replace(
+        "    await h.start()\n",
+        "    h.add_property('bogus', 'sys', lambda s, c: 'always fails' if c == 30 else None, 'ADP-01')\n    await h.start()\n", 1))
+    verdict = {"verdict": "test_wrong", "reqs": ["ADP-01"], "reason": "SPEC에 없는 검사", "proposal": "bogus 속성을 지운다"}
+    return {"Architect": f["Architect"], "Author": f["Author"],
+            "Verifier|기댓값 수정": {"out/test_axis_adapter.py": f"@{good}"},
+            "Verifier|verifier__v1": {"out/test_axis_adapter.py": f"@{bad}"},
+            "Verifier": {"out/test_axis_adapter.py": f"@{good}"},
+            "Arbiter": {"out/verdict.json": json.dumps(verdict)}}
+
+
+def test_approved_expectation_change_revises_test_and_resumes(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_wrong_v1(tmp_path)
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval"
+    items = approve.pending(tmp_path / "run")
+    assert sorted((p["verifier"], p["c"]) for p in items) == [(1, 0), (1, 1)]
+    first = items[0]["id"]
+    with pytest.raises(ValueError):
+        approve.decide(tmp_path / "run", [first], "approved", by="")   # 결정한 사람이 필요
+    approve.decide(tmp_path / "run", [first], "approved", by="design-lead", note="SPEC에 없는 검사")
+    with pytest.raises(ValueError):
+        approve.decide(tmp_path / "run", [first], "rejected", by="x")   # 두 번 결정할 수 없음
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    calls = _calls(tmp_path)
+    assert calls.count("Verifier|기댓값_수정") == 1 and calls.count("Arbiter") == 2   # 수정 한 번, 다시 판정하지 않음
+    decisions = {p["id"]: p["decision"]["decision"] for p in rep["pending"]}
+    assert sorted(decisions.values()) == ["approved", "superseded"]   # 같은 Verifier를 기다리던 다른 후보도 풀림
+    st = json.loads((tmp_path / "run" / "state.json").read_text())
+    assert len(st["tb_history"]) == 1 and st["tb_history"][0]["verifier"] == 1
+    d = json.loads((tmp_path / "run" / "decisions.json").read_text())[0]
+    assert d["by"] == "design-lead" and d["reqs"] == ["ADP-01"] and d["spec_sha256"] and d["run_id"] == "run"
+    assert approve.pending(tmp_path / "run") == []
+
+
+def test_rejected_expectation_change_goes_to_repair(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_wrong_v1(tmp_path)
+    Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    approve.decide(tmp_path / "run", [p["id"] for p in approve.pending(tmp_path / "run")], "rejected", by="design-lead")
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    calls = _calls(tmp_path)
+    assert calls.count("Arbiter") == 2 and "Verifier|기댓값_수정" not in calls   # 다시 판정하지 않고, 테스트도 고치지 않음
+    # 가짜 Repair는 patch를 쓰지 않으므로 게이트에서 실패한다: Repair로 넘어갔다는 증거
+    assert rep["status"] == "failed"
+    assert all("Repair 실패" in (c["reason"] or "") for c in rep["candidates"].values())
+
+
+def test_candidate_diffsim_finds_test_gap_and_verifier_closes_it(tmp_path):
+    """두 후보가 약한 테스트를 모두 통과하지만 동작이 다름 → 차분 시뮬레이션이 찾고, Verifier가 테스트를 보강하면 틀린 후보가 떨어진다."""
+    sys.path.insert(0, str(ROOT / "tests" / "golden"))
+    from bugs import BUGS
+
+    f = _files(tmp_path)
+    good_ir = json.loads(f["Author"]["out/axis_adapter_core.ir.json"])
+    bad_ir = copy.deepcopy(good_ir)
+    BUGS["adapter_shift"][1](bad_ir)
+    good_tb = Path(f["Verifier"]["out/test_axis_adapter.py"][1:])
+    weak = tmp_path / "tb_weak.py"   # 기대 출력을 내지 않는 테스트 (프로토콜만 봄)
+    weak.write_text(good_tb.read_text().replace("    def on_input(self, stream, t):\n",
+                                                "    def on_input(self, stream, t):\n        return []\n", 1)
+                    .replace("class Model:\n", "class Model:\n    streams = set()\n", 1))
+    verdict = {"verdict": "rtl_wrong", "reqs": ["ADP-01"], "reason": "바이트 순서가 SPEC과 다름", "proposal": ""}
+    files = {"Architect": f["Architect"],
+             "Author|author__axis_adapter_core__c1": {"out/axis_adapter_core.ir.json": json.dumps(bad_ir)},
+             "Author": {"out/axis_adapter_core.ir.json": json.dumps(good_ir)},
+             "Verifier|후보 간 차분": {"out/test_axis_adapter.py": f"@{good_tb}"},
+             "Verifier": {"out/test_axis_adapter.py": f"@{weak}"},
+             "Arbiter": {"out/verdict.json": json.dumps(verdict)}}
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert rep["chosen"] == {"axis_adapter_core": 0}
+    assert rep["candidates"]["axis_adapter_core/c1"]["status"] == "failed"   # 보강된 테스트 → Arbiter rtl_wrong → Repair(가짜, 실패)
+    calls = _calls(tmp_path)
+    assert calls.count("Verifier|후보_간_차분") == 1 and calls.count("Arbiter") == 1
+    st = json.loads((tmp_path / "run" / "state.json").read_text())
+    d = st["steps"]["candidate_diffsim_r0"]["difference"]
+    assert d["mode"] == "steady" and d["difference"]["kind"] == "data"
+    mini = st["steps"]["candidate_diffsim_r0_min"]   # 데이터 오류는 backpressure와 무관하므로 사건이 모두 지워진다
+    assert mini["episodes"] == 0 and mini["difference"]["kind"] == "data" and mini["total_cycles"] < 3600
+    assert st["tb_history"][-1]["diff_round"] == 0
+
+
+def test_augmented_test_that_cannot_split_candidates_is_not_adopted(tmp_path):
+    """보강된 테스트가 후보를 가르지 못하면(모두 통과) 다시 시도하고, 끝내 못 가르면 채택하지 않고 검토 항목으로 남긴다."""
+    sys.path.insert(0, str(ROOT / "tests" / "golden"))
+    from bugs import BUGS
+
+    f = _files(tmp_path)
+    good_ir = json.loads(f["Author"]["out/axis_adapter_core.ir.json"])
+    bad_ir = copy.deepcopy(good_ir)
+    BUGS["adapter_shift"][1](bad_ir)
+    good_tb = Path(f["Verifier"]["out/test_axis_adapter.py"][1:])
+    weak = tmp_path / "tb_weak.py"
+    weak.write_text(good_tb.read_text().replace("    def on_input(self, stream, t):\n",
+                                                "    def on_input(self, stream, t):\n        return []\n", 1)
+                    .replace("class Model:\n", "class Model:\n    streams = set()\n", 1))
+    weak2 = tmp_path / "tb_weak2.py"   # 바뀌었지만 여전히 출력을 보지 않음
+    weak2.write_text(weak.read_text() + "\n# 보강 시도\n")
+    files = {"Architect": f["Architect"],
+             "Author|author__axis_adapter_core__c1": {"out/axis_adapter_core.ir.json": json.dumps(bad_ir)},
+             "Author": {"out/axis_adapter_core.ir.json": json.dumps(good_ir)},
+             "Verifier|후보 간 차분": {"out/test_axis_adapter.py": f"@{weak2}"},
+             "Verifier": {"out/test_axis_adapter.py": f"@{weak}"}}
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass"
+    assert _calls(tmp_path).count("Verifier|후보_간_차분") == 2   # 두 번 시도
+    assert any(r["code"] == "CANDIDATE_DIFF" and "가르지 못함" in r["message"] for r in rep["review"])
+    st = json.loads((tmp_path / "run" / "state.json").read_text())
+    assert "tb_history" not in st   # 채택하지 않음

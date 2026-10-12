@@ -239,6 +239,30 @@ P1과 독립적으로 진행할 수 있습니다. 다만 템플릿 섹션의 대
 - 실행을 강제로 중단한 뒤 같은 상태에서 재개됩니다.
 - 격리를 시험합니다. Verifier의 입력에 L2, L3, RTL이 없고, Author 후보끼리 서로의 산출물이 보이지 않습니다.
 
+### 진행 상황 (2026-10-12)
+
+자세한 기록은 [PROGRESS.md](./PROGRESS.md)에 있습니다.
+
+- **실행기와 격리:** `pipeline/agents/runner.py`, `task.py`.
+  - 작업 디렉터리는 저장소 밖(`~/.cache/chip-design-department/runs`)에 두고, macOS `sandbox-exec`로 저장소와 다른 작업을 막습니다.
+  - 사용량 한도(429)를 만나면 `paused_quota`로 멈추고 이어서 실행합니다.
+- **도구:** `pipeline/agents/pl.py` (validate, patch, emit, fanin, trace, spec, harness, model).
+- **에이전트:** Author, Repair, Verifier(작성, 승인된 수정, 차분 보강), Architect, Arbiter. 모두 agy로 돌립니다 (Author `gemini-3.8-flash-high`, 나머지 `gemini-3.1-pro-high`. 같은 계열 경고).
+- **스케줄러:** `pipeline/scheduler/run.py`.
+  - 하위 모듈이 여럿이면 같은 번호 후보끼리 묶어 검증합니다.
+  - Repair는 원인 후보 모듈로 보내고, 형제 모듈을 지목하면 그 모듈로 넘깁니다. 트레이스와 팬인은 인스턴스 경계를 넘습니다.
+  - Arbiter 판정, 반복 상한, 진동 감지, sim 시간 초과, 상태 저장과 재개를 갖췄습니다.
+- **사람 승인 (P5 일부 앞당김):** `pipeline/scheduler/approve.py`. 기댓값 수정안을 승인하거나 거절하고, `decisions.json`에 기록합니다.
+- **후보 간 차분 시뮬레이션:** `pipeline/tb/diffsim.py`.
+  - 같은 무작위 자극(steady, reset)으로 후보를 비교하고, 차이를 유지하는 최소 자극으로 줄입니다.
+  - Verifier가 그 상황의 테스트를 더합니다. 보강된 테스트는 후보를 갈라야 채택합니다.
+- **E2E:** 이식 시험 블록 3개가 SPEC부터 원본 테스트벤치까지 통과했습니다 (9/9, 16/16, 20/20). 블록마다 기댓값 수정 승인이 한 번 있었습니다.
+- **아직 안 한 것:**
+  - 동결 해제의 전파 (L1 변경 요청은 검토 항목으로만 기록)
+  - 두 단계 이상의 모듈 트리
+  - 단독 평가 일부 (Author, Verifier, Architect 각 3블록, Repair cobs. 사용량 한도로 못 돌림)
+  - Linux 서버 격리 (bubblewrap 등)
+
 ---
 
 ## P5. 파이프라인 API와 환류 입력

@@ -3,6 +3,12 @@
 볼 수 있는 것: SPEC, 동결된 L1, L1에서 생성한 하니스, 테스트벤치 안내서. L2, L3, RTL은 입력에 없다 (격리).
 쓸 수 있는 것: `out/test_<module>.py` 하나 (cocotb 테스트 모듈, `Model` 클래스 포함).
 종료 게이트: 파이썬 문법, `Model.on_input`이 무작위 입력에서 예외 없이 돌 것, cocotb 테스트가 둘 이상일 것.
+
+수정 작업(`make_revise_task`): 사람이 승인한 기댓값 수정안(Arbiter의 test_wrong 판정)대로 자기 테스트를 고친다.
+게이트는 같고, 테스트가 실제로 바뀌어야 한다.
+
+보강 작업(`make_augment_task`): 통과한 RTL 후보들이 같은 무작위 자극에 다른 출력을 냈을 때(후보 간 차분 시뮬레이션),
+그 상황을 SPEC으로 판정하는 directed 테스트를 더한다. SPEC이 정하지 않은 동작이면 테스트를 바꾸지 않고 그렇다고 쓴다.
 """
 from __future__ import annotations
 
@@ -43,6 +49,66 @@ TASK = """\
 """
 
 
+REVISE = """\
+# 과제: {module} 모듈 테스트의 기댓값 수정 (사람 승인됨)
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. 네가 쓴 테스트 `{out}`가 RTL과 다른 기댓값을 냈고, Arbiter가 SPEC을 근거로
+테스트 쪽이 틀렸다고 판정했다. 사람이 그 수정안을 승인했다. 수정안대로 테스트를 고친다. RTL은 볼 수 없다.
+
+## 입력
+- `{out}`: 지금 테스트 (이 파일을 고친다)
+- `approved.json`: 승인된 수정안 목록. 항목마다 근거 요구사항(`reqs`), 판정 이유(`reason`), 수정안(`proposal`),
+  불일치 내용(`first_failure`)이 있다
+- `spec.md`, `l1.json`, `harness/{module}_harness.py`, `tb_guide.md`: 처음 테스트를 쓸 때와 같다
+
+## 할 일
+1. `approved.json`의 수정안이 가리키는 참조 모델, 속성, 시나리오를 SPEC 구절에 맞게 고친다.
+2. 수정안과 관계없는 기댓값은 바꾸지 않는다. 검사를 지우거나 약하게 만드는 것으로 해결하지 않는다.
+   SPEC이 정한 동작은 계속 검사해야 한다.
+3. `python3 tools/pl.py model {out} l1.json`이 `"ok": true`가 될 때까지 고친다.
+
+## 규칙
+- `{out}` 외의 파일은 만들거나 고치지 않는다.
+"""
+
+
+AUGMENT = """\
+# 과제: {module} 모듈 테스트 보강 (후보 간 차분)
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. 네 테스트를 모두 통과한 RTL 후보 둘(A, B)에 같은 무작위 자극을 넣었더니
+출력이 달랐다. 테스트가 그 상황을 검사하지 않는다는 뜻이다. RTL은 볼 수 없다.
+
+## 입력
+- `{out}`: 지금 테스트 (이 파일을 고친다)
+- `diff.json`: 차이 리포트
+  - `mode`: `steady`(처음 리셋 뒤 리셋 없음) 또는 `reset`(중간에 리셋을 넣음)
+  - `difference`: 첫 차이. 출력 번들 트랜잭션 순서에서 몇 번째(`index`)가 어떻게 달랐는지, A와 B의 그 트랜잭션과 직전 몇 개.
+    트랜잭션은 `[도메인, 사이클, 값]`이다. `count`면 한쪽이 트랜잭션을 더 적게 냈다 (멈춤일 수 있다)
+  - `scenario`(있으면): 차이를 유지하는 가장 작은 자극으로 줄인 것. `background`(배경 트래픽)와 `events`(시간순 사건:
+    리셋, 출력 backpressure, 단독 입력). 이 사건들이 차이의 원인이다. 테스트는 이 상황을 재현한다
+  - `events`(scenario가 없을 때): 차이 전 자극 사건 `[도메인, 사이클, 신호, 값]`
+  - `inputs_accepted`: 각 후보가 받은 입력 트랜잭션 수
+  - `previous_attempt`(있으면): 이전에 네가 보강한 테스트를 후보들에 돌린 결과. 모두 실패했으면 테스트의 결함을,
+    모두 통과했으면 상황을 재현하지 못한 것을 먼저 의심한다
+- `spec.md`, `l1.json`, `harness/{module}_harness.py`, `tb_guide.md`: 처음 테스트를 쓸 때와 같다
+
+## 할 일
+1. `events`와 `difference`로 어떤 상황(예: 프레임 도중 한쪽 리셋, 긴 backpressure 뒤 리셋, pause와 리셋의 조합)에서
+   차이가 났는지 파악한다. 어느 후보가 맞는지는 SPEC으로 판단한다. 다수결이나 짐작으로 정하지 않는다.
+2. SPEC이 그 상황의 출력을 정하면: 그 상황을 재현하는 directed 테스트를 `{out}`에 더한다. 기존 테스트와 기댓값은 그대로 둔다.
+   상황을 일반화해 쓴다 (사이클 번호를 그대로 옮기지 말고, "프레임 도중 리셋" 같은 상황을 만든다).
+   기대 출력이 끝까지 오지 않는 경우(멈춤)도 실패로 잡히게 한다 (`h.drain()`은 기대 출력이 다 올 때까지 기다린다).
+3. SPEC이 정하지 않은 동작이면: 테스트를 바꾸지 말고 `out/diff_verdict.json`에
+   `{{"spec_defined": false, "reason": "SPEC의 어느 부분이 이 상황을 정하지 않는지"}}`를 쓴다.
+4. 테스트를 바꿨으면 `python3 tools/pl.py model {out} l1.json`이 `"ok": true`가 될 때까지 고친다.
+
+## 규칙
+- `out/` 밖의 파일은 만들거나 고치지 않는다.
+"""
+
+DIFF_VERDICT = "out/diff_verdict.json"
+
+
 def out_rel(module: str) -> str:
     return f"out/test_{module}.py"
 
@@ -55,11 +121,53 @@ def make_task(name: str, l1: dict, spec: str | Path) -> Task:
                 outputs=[out_rel(module)], write_scope=["out/"])
 
 
-def check(l1: dict):
+def make_revise_task(name: str, l1: dict, spec: str | Path, test_file: Path, approved: list[dict]) -> Task:
+    module = l1["module"]
+    t = make_task(name, l1, spec)
+    t.inputs[out_rel(module)] = Path(test_file)
+    t.inputs["approved.json"] = json.dumps(approved, ensure_ascii=False, indent=1)
+    t.text = REVISE.format(module=module, out=out_rel(module))
+    return t
+
+
+def make_augment_task(name: str, l1: dict, spec: str | Path, test_file: Path, diff: dict) -> Task:
+    module = l1["module"]
+    t = make_task(name, l1, spec)
+    t.inputs[out_rel(module)] = Path(test_file)
+    t.inputs["diff.json"] = json.dumps(diff, ensure_ascii=False, indent=1)
+    t.text = AUGMENT.format(module=module, out=out_rel(module))
+    return t
+
+
+def spec_undefined(work: Path) -> str | None:
+    """보강 작업에서 Verifier가 SPEC이 정하지 않은 동작이라고 답했으면 그 이유."""
+    p = Path(work) / DIFF_VERDICT
+    try:
+        v = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return str(v.get("reason", "")) if v.get("spec_defined") is False else None
+
+
+def check_augment(l1: dict, before: str):
+    """테스트를 보강했거나(일반 게이트 + 바뀜), SPEC이 정하지 않았다고 이유와 함께 답했으면 통과."""
+    inner = check(l1, before)
+
+    def _check(work: Path) -> list[str]:
+        if (reason := spec_undefined(work)) is not None:
+            return [] if reason.strip() else ["spec_defined=false의 이유(reason)가 없음"]
+        return inner(work)
+    return _check
+
+
+def check(l1: dict, before: str | None = None):
+    """before: 수정 작업이면 고치기 전 테스트 내용 (바뀌지 않았으면 거부)."""
     module = l1["module"]
 
     def _check(work: Path) -> list[str]:
         src = (work / out_rel(module)).read_text(encoding="utf-8")
+        if before is not None and src == before:
+            return ["테스트가 바뀌지 않음 (승인된 수정안을 반영해야 함)"]
         try:
             tree = ast.parse(src)
         except SyntaxError as e:

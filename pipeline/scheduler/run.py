@@ -34,6 +34,7 @@ from pipeline.spec import check as spec_check
 from pipeline.spec.l1 import block_top_l1
 from pipeline.spec.parse import load as load_spec
 from pipeline.tb.gen import harness_source, trace_names
+from pipeline.tb.diffsim import compare, describe, episodes, make_plan, truncate, without
 from pipeline.tb.report import mismatch_report
 from pipeline.validator.checks import errors, validate
 from pipeline.validator.structure import frozen_scope, v11_frozen
@@ -123,6 +124,73 @@ class Run:
         self.save()
         return res
 
+    # -- 사람 승인 --
+    def add_pending(self, item: dict) -> str:
+        """사람 결정을 기다리는 항목을 등록하고 id를 돌려준다. 결정은 `decisions.json`에 따로 쌓인다 (approve CLI)."""
+        with self.lock:
+            pend = self.state.setdefault("pending", [])
+            pid = f"E{len(pend) + 1}"
+            pend.append({"id": pid, **item, "created": time.strftime("%Y-%m-%d %H:%M:%S")})
+        self.save()
+        return pid
+
+    def apply_decisions(self, tree: dict, tbs: list[str]) -> list[str]:
+        """사람 결정을 반영한다. 승인: Verifier가 수정안대로 테스트를 고치고, 그 Verifier를 기다리던 후보를 모두 다시 돌린다.
+        거절: 그 후보를 다시 돌리되 그 Verifier의 실패는 Arbiter 없이 Repair로 보낸다."""
+        decisions = {d["id"]: d for d in load_decisions(self.dir)}
+        todo = [p for p in self.state.get("pending", []) if p["id"] in decisions and not p.get("applied")]
+        if not todo:
+            return tbs
+        for p in todo:
+            p["decision"] = decisions[p["id"]]
+        top = tree["top"]
+        l1 = {k: top[k] for k in ("module", "role", "params", "domains", "ports") if k in top}
+        approved: dict[int, list[dict]] = {}
+        for p in todo:
+            if p["decision"]["decision"] == "approved":
+                approved.setdefault(p["verifier"], []).append(p)
+        for k, items in sorted(approved.items()):
+            rev = self.state.get("tb_rev", 0) + 1
+            before = Path(tbs[k]).read_text(encoding="utf-8")
+            res = self.agent("verifier", verifier.make_revise_task(
+                f"verifier/v{k}/rev{rev}", l1, self.spec_path, Path(tbs[k]),
+                [{x: p.get(x) for x in ("id", "reqs", "reason", "proposal", "first_failure")} | {"note": p["decision"].get("note")}
+                 for p in items]), verifier.check(l1, before))
+            if not res.ok:
+                self.review("VERIFIER_REVISE_FAILED", f"Verifier {k}가 승인된 수정안({[p['id'] for p in items]})을 반영하지 못함: "
+                                                      f"{res.errors[:3]}", "verifier")
+                for p in items:
+                    p["decision"] = {**p["decision"], "result": "revise_failed"}
+                continue
+            new = res.outputs[verifier.out_rel(l1["module"])]
+            self.state.setdefault("tb_history", []).append({"verifier": k, "from": tbs[k], "to": new, "items": [p["id"] for p in items]})
+            self.event("tb_revise", f"Verifier {k} 테스트 수정 ({[p['id'] for p in items]})")
+            tbs[k] = new
+            self.state["tb_rev"] = rev
+            self.state["steps"]["verifiers"] = tbs
+            # 같은 Verifier를 기다리던 다른 항목은 테스트가 바뀌었으므로 다시 돌려 본다
+            for p in self.state.get("pending", []):
+                if p["verifier"] == k and not p.get("applied") and p not in todo:
+                    p["decision"] = {"decision": "superseded", "by": f"Verifier {k} 수정 {[x['id'] for x in items]}"}
+                    todo.append(p)
+        if approved:
+            self.verifier_diff_review(tbs, l1, "수정 후 ")
+        for p in todo:
+            if p["decision"].get("result") == "revise_failed":
+                continue
+            for m in p["mods"]:
+                key = f"{m}/c{p['c']}"
+                st = self.mod_state(key)
+                if st["status"] == "waiting_approval" and st.get("pending") == p["id"]:
+                    st["status"] = "running"
+                    if p["decision"]["decision"] == "rejected":
+                        st.setdefault("skip_arbiter", []).append(p["verifier"])
+                    self.save_mod(key, st)
+            p["applied"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.event("decision", f"{p['id']} {p['decision']['decision']} ({p['decision'].get('by')})")
+        self.save()
+        return tbs
+
     # -- 단계 --
     def step_spec(self) -> bool:
         if (s := self.done("spec")) is not None:
@@ -165,19 +233,22 @@ class Run:
         for w in self.roles.warnings():
             self.review("MODEL_FAMILY", w, "roles")
         if len(tbs) >= 2:
-            hdir = self.dir / "harness"
-            hdir.mkdir(exist_ok=True)
-            (hdir / f"{l1['module']}_harness.py").write_text(harness_source(Module(l1)), encoding="utf-8")
-            try:
-                diff = verifier_diff(tbs, l1, harness_dir=hdir)
-            except ImportError as e:
-                diff = None
-                self.review("VERIFIER_DIFF_SKIPPED", f"참조 모델을 불러올 수 없어 Verifier 간 차분 검사를 못 함: {e}", "verifier")
-            if diff:
-                self.review("VERIFIER_DIFF", f"참조 모델끼리 같은 입력에 다른 출력을 냄: {diff}. SPEC 모호함 또는 한쪽 모델 오류",
-                            "verifier")
+            self.verifier_diff_review(tbs, l1)
         self.finish_step("verifiers", tbs)
         return tbs
+
+    def verifier_diff_review(self, tbs: list[str], l1: dict, when: str = "") -> None:
+        hdir = self.dir / "harness"
+        hdir.mkdir(exist_ok=True)
+        (hdir / f"{l1['module']}_harness.py").write_text(harness_source(Module(l1)), encoding="utf-8")
+        try:
+            diff = verifier_diff(tbs, l1, harness_dir=hdir)
+        except ImportError as e:
+            diff = None
+            self.review("VERIFIER_DIFF_SKIPPED", f"{when}참조 모델을 불러올 수 없어 Verifier 간 차분 검사를 못 함: {e}", "verifier")
+        if diff:
+            self.review("VERIFIER_DIFF", f"{when}참조 모델끼리 같은 입력에 다른 출력을 냄: {diff}. SPEC 모호함 또는 한쪽 모델 오류",
+                        "verifier")
 
     # -- 검증 --
     def verify(self, lib: dict[str, dict], top: str, tbs: list[str], tag: str) -> dict:
@@ -301,20 +372,27 @@ class Run:
                 save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]])
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
-            if failed and len(failed) < len(vres["e2"]):
+            skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
+            if failed and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip:
                 # 한 Verifier에서만 실패: 그 Verifier의 오류일 수 있으므로 Arbiter가 판정한다
                 v = failed[0]
                 rep = self.failure_report(lib, top_ir["module"], v)
-                ares = self.agent("arbiter", arbiter.make_task(f"arbiter/{gname}/c{c}/r{total}", self.spec_path,
-                                                               rep["report"] or rep, Path(tbs[v["verifier"]])),
+                rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
+                ares = self.agent("arbiter", arbiter.make_task(f"arbiter/{gname}/c{c}/r{total}" + (f"/t{rev}" if rev else ""),
+                                                               self.spec_path, rep["report"] or rep, Path(tbs[v["verifier"]])),
                                   arbiter.check(self.spec_path))
-                verdict = json.loads(Path(ares.outputs[arbiter.OUT]).read_text())["verdict"] if ares.ok else "spec_ambiguous"
+                vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
+                verdict = vj["verdict"]
                 for st in sts.values():
                     st.setdefault("arbiter", []).append(verdict)
                 if verdict == "test_wrong":
-                    self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 (사람 승인 대기)",
+                    pid = self.add_pending({"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
+                                            "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
+                                            "first_failure": (rep["report"] or {}).get("first_failure"),
+                                            "arbiter_dir": str(ares.workdir)})
+                    self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 {pid} (사람 승인 대기)",
                                 str(ares.workdir), "arbiter")
-                    save_all(status="waiting_approval")
+                    save_all(status="waiting_approval", pending=pid)
                     break
                 if verdict == "spec_ambiguous":
                     self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: Verifier 사이 해석이 갈림", str(ares.workdir), "arbiter")
@@ -387,6 +465,8 @@ class Run:
         with ThreadPoolExecutor(max(1, n)) as ex:
             list(ex.map(lambda c: self.candidate_loop(c, mods, tree, tbs), range(n)))
         allst = self.modules()
+        with self.lock:   # 이전 실행(승인 대기 등)에서 남은 결과는 이번 판정으로 바꾼다
+            self.state["review"] = [r for r in self.state["review"] if r["code"] != "MODULE_FAILED"]
         # 묶음 c는 모든 모듈의 c번 후보가 함께 통과해야 쓸 수 있다
         ok = sorted([(sum(allst[f"{m}/c{c}"]["repairs"] for m in mods), sum(allst[f"{m}/c{c}"].get("lint", 0) for m in mods), c)
                      for c in range(n) if all(allst[f"{m}/c{c}"]["status"] == "pass" for m in mods)])
@@ -403,9 +483,124 @@ class Run:
                 if diff:
                     self.review("CANDIDATE_DIFF", f"{', '.join(mods)}: 통과한 후보들이 같은 테스트에서 다른 출력을 냄 ({diff}). "
                                                   "테스트에 구멍이 있음. Verifier에게 돌려 보강", ", ".join(mods))
+                elif self.diff_and_augment(tree, mods, passed, tbs):
+                    return self.step_modules(tree, tbs)   # 보강된 테스트로 모든 묶음을 다시 검증
         self.state["chosen"] = chosen
         self.save()
         return chosen
+
+    def group_lib(self, tree: dict, mods: list[str], c: int) -> dict[str, dict]:
+        allst = self.modules()
+        return {tree["top"]["module"]: tree["top"],
+                **{n: (allst[f"{n}/c{c}"]["ir"] if n in mods else ch) for n, ch in tree["children"].items()}}
+
+    def diff_and_augment(self, tree: dict, mods: list[str], passed: list[int], tbs: list[str]) -> bool:
+        """후보 간 차분 시뮬레이션. 차이가 나면 Verifier가 그 상황의 테스트를 더하고, 통과했던 묶음을 다시 돌린다.
+        다시 돌려야 하면 True. 보강 횟수는 limits.candidate_diff_rounds(기본 2)까지."""
+        rnd = self.state.get("diff_rounds", 0)
+        limit = self.roles.limits.get("candidate_diff_rounds", 2)
+        top = tree["top"]
+        hdir = self.dir / "harness"   # 참조 모델(legal로 입력을 거름)이 하니스를 import한다
+        hdir.mkdir(exist_ok=True)
+        (hdir / f"{top['module']}_harness.py").write_text(harness_source(Module(top)), encoding="utf-8")
+        recs: dict[tuple, dict | None] = {}
+        found = None
+        for mode, seed in DIFF_RUNS:
+            for c in passed:
+                files, _ = emit_lib(self.group_lib(tree, mods, c), self.dir / "diffsim" / f"r{rnd}" / f"c{c}" / "rtl", self.cells)
+                recs[(c, mode, seed)] = run_diffsim(files, top, mode, seed, self.dir / "diffsim" / f"r{rnd}" / f"c{c}" / f"{mode}{seed}",
+                                                    model=tbs[0], harness_dir=hdir)
+            base = recs[(passed[0], mode, seed)]
+            for c in passed[1:]:
+                other = recs[(c, mode, seed)]
+                if base is None or other is None:
+                    found = {"mode": mode, "seed": seed, "a": passed[0], "b": c,
+                             "difference": {"kind": "sim_failed", "a_ok": base is not None, "b_ok": other is not None}}
+                elif (d := compare(base, other)) is not None:
+                    found = {"mode": mode, "seed": seed, "a": passed[0], "b": c, "difference": d,
+                             "events": diff_window(base, d), "inputs_accepted": {"A": base["inputs"], "B": other["inputs"]}}
+                if found:
+                    break
+            if found:
+                break
+        self.finish_step(f"candidate_diffsim_r{rnd}", {"groups": passed, "difference": found})
+        if found is None:
+            self.event("diffsim", f"후보 간 차분 시뮬레이션: 차이 없음 (묶음 {passed})")
+            return False
+        msg = f"{', '.join(mods)}: 묶음 {found['a']}, {found['b']}가 같은 자극({found['mode']}, seed {found['seed']})에 다른 출력을 냄"
+        if rnd >= limit:
+            self.review("CANDIDATE_DIFF", f"{msg}. 보강 상한 {limit}회", ", ".join(mods))
+            return False
+        k = rnd % len(tbs)
+        l1 = {x: top[x] for x in ("module", "role", "params", "domains", "ports") if x in top}
+        before = Path(tbs[k]).read_text(encoding="utf-8")
+        diff_in = {x: found[x] for x in ("mode", "seed", "difference", "events", "inputs_accepted") if x in found}
+        if found["difference"].get("kind") != "sim_failed":
+            # 차이를 유지하는 가장 작은 자극을 찾아 Verifier에게 짧은 시나리오로 준다
+            mdir = self.dir / "diffsim" / f"r{rnd}" / "min"
+            files = {c: emit_lib(self.group_lib(tree, mods, c), mdir / f"c{c}" / "rtl", self.cells)[0] for c in (found["a"], found["b"])}
+            mini = minimize_diff(files, top, found["mode"], found["seed"], mdir, tbs[0], hdir)
+            if mini:
+                h = diff_cfg(top, found["mode"], found["seed"])["harness"]
+                ins = ", ".join(b["name"] for b in h["bundles"] if not b["dut_drives"])
+                diff_in = {"mode": found["mode"], "difference": mini["difference"], "inputs_accepted": mini["inputs_accepted"],
+                           "scenario": {"total_cycles": mini["total_cycles"],
+                                        "background": f"처음 {INIT_RESET_CYCLES}사이클 리셋 뒤, 입력 번들({ins})에 무작위 트랜잭션을 "
+                                                      "사이클의 약 70%에 보냄(SPEC이 허용하는 값만). 아래 사건 외에는 출력 ready=1, "
+                                                      "단독 입력=0, 리셋 없음",
+                                        "events": describe(mini["plan"], h)}}
+                self.finish_step(f"candidate_diffsim_r{rnd}_min", {k2: mini[k2] for k2 in ("difference", "episodes", "total_cycles", "runs")}
+                                 | {"events": describe(mini["plan"], h)})
+                self.event("diffsim_min", f"자극 축소: 사건 {mini['episodes']}개, {mini['total_cycles']}사이클 ({mini['runs']}회 실행)")
+        attempts = self.roles.limits.get("augment_attempts", 2)
+        feedback, new = None, None
+        for a in range(attempts):
+            res = self.agent("verifier", verifier.make_augment_task(
+                f"verifier/v{k}/diff{rnd}" + (f"a{a}" if a else ""), l1, self.spec_path, Path(tbs[k]),
+                diff_in | ({"previous_attempt": feedback} if feedback else {})), verifier.check_augment(l1, before))
+            if not res.ok:
+                self.state["diff_rounds"] = rnd + 1
+                self.review("CANDIDATE_DIFF", f"{msg}. Verifier {k}가 테스트를 보강하지 못함: {res.errors[:3]}", ", ".join(mods))
+                self.save()
+                return False
+            if (reason := verifier.spec_undefined(Path(res.workdir))) is not None:
+                self.state["diff_rounds"] = rnd + 1
+                self.review("CANDIDATE_DIFF_UNDEFINED", f"{msg}. Verifier {k}: SPEC이 정하지 않은 동작 ({reason[:300]})",
+                            ", ".join(mods), "verifier")
+                self.save()
+                return False
+            cand = res.outputs[verifier.out_rel(l1["module"])]
+            # 보강된 테스트는 후보를 갈라야 한다. 모두 실패하면 테스트 결함일 가능성이 크고, 모두 통과하면 상황을 재현하지 못한 것
+            runs = {c: self.verify(self.group_lib(tree, mods, c), top["module"], [cand], f"augment_r{rnd}a{a}_c{c}")["e2"][0]
+                    for c in passed}
+            ok = [c for c in passed if runs[c]["ok"]]
+            self.event("augment_check", f"보강 테스트 시도 {a}: 통과 묶음 {ok} / {passed}")
+            if 0 < len(ok) < len(passed):
+                new = cand
+                break
+            feedback = {"result": "통과했던 후보가 모두 실패함. 테스트 자체의 결함(기댓값 관리, 시나리오 구성)을 먼저 의심할 것"
+                        if not ok else "통과했던 후보가 모두 통과함. 차이가 난 상황을 재현하지 못함",
+                        "failures": {f"후보 {i}": [f["message"][:400] for f in runs[c]["findings"][:2]] for i, c in enumerate(passed)}}
+            if not ok and a == attempts - 1:
+                new = cand   # 끝까지 모두 실패: 후보가 모두 틀렸을 수도 있으므로 채택하고 Arbiter와 사람이 판단
+        self.state["diff_rounds"] = rnd + 1
+        if new is None:
+            self.review("CANDIDATE_DIFF", f"{msg}. Verifier {k}의 보강 테스트가 후보를 가르지 못함", ", ".join(mods))
+            self.save()
+            return False
+        self.state.setdefault("tb_history", []).append({"verifier": k, "from": tbs[k], "to": new, "diff_round": rnd})
+        tbs[k] = new
+        self.state["tb_rev"] = self.state.get("tb_rev", 0) + 1
+        self.state["steps"]["verifiers"] = tbs
+        self.event("tb_augment", f"{msg} → Verifier {k} 테스트 보강")
+        for c in passed:
+            for m in mods:
+                key = f"{m}/c{c}"
+                st = self.mod_state(key)
+                st["status"] = "running"
+                self.save_mod(key, st)
+        self.save()
+        return True
 
     def step_integrate(self, tree: dict, chosen: dict, tbs: list[str]) -> dict:
         lib = {tree["top"]["module"]: tree["top"]}
@@ -432,6 +627,8 @@ class Run:
                 self.review("ARCHITECT_FAILED", "Architect가 모듈 트리를 만들지 못함")
                 return self.report()
             tbs = self.step_verifiers(tree["top"])
+            if tbs:
+                tbs = self.apply_decisions(tree, tbs)
             if not tbs:
                 self.state["status"] = "failed"
                 self.review("VERIFIER_FAILED", "쓸 수 있는 Verifier 테스트가 없음")
@@ -458,10 +655,129 @@ class Run:
         rep = {"status": st["status"], "spec": st["spec"], "agent_runs": st["agent_runs"], "chosen": st.get("chosen"),
                "candidates": {k: {x: v.get(x) for x in ("status", "repairs", "lint", "reason", "arbiter")}
                               for k, v in self.modules().items()},
-               "integration": st["steps"].get("integration"), "review": st["review"], "events": st["events"]}
+               "integration": st["steps"].get("integration"), "pending": st.get("pending", []),
+               "review": st["review"], "events": st["events"]}
         self.save()
         (self.dir / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
         return rep
+
+
+INIT_RESET_CYCLES = 10
+DIFF_RUNS = [("steady", 1), ("steady", 2), ("reset", 3), ("reset", 4)]
+
+
+def emit_lib(lib: dict[str, dict], rtl: Path, cells: list[Path]) -> tuple[list[Path], dict]:
+    """IR 묶음을 SV로 방출한다 → (파일 목록, 모듈별 소스맵)."""
+    rtl.mkdir(parents=True, exist_ok=True)
+    mods = {n: Module(r) for n, r in lib.items()}
+    files, maps = list(cells), {}
+    for n, m in mods.items():
+        e = emit(m, mods)
+        (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
+        files.append(rtl / f"{n}.sv")
+        maps[n] = e.sourcemap
+    return files, maps
+
+
+def diff_cfg(top_ir: dict, mode: str, seed: int, model: str | None = None, harness_dir: Path | None = None,
+             cycles: int = 3000, drain: int = 600) -> dict:
+    from pipeline.tb.gen import harness_config, signal_widths
+
+    return {"harness": harness_config(Module(top_ir)), "widths": signal_widths(top_ir), "mode": mode, "seed": seed,
+            "cycles": cycles, "drain": drain, "model": model, "harness_dir": str(harness_dir) if harness_dir else None}
+
+
+def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir: Path, model: str | None = None,
+                harness_dir: Path | None = None, plan: dict | None = None, rebuild: bool = True) -> dict | None:
+    """후보 하나에 차분 자극을 넣고 출력 기록을 돌려준다. 시뮬레이션이 끝나지 않거나 실패하면 None.
+    plan을 주면 그 자극 계획을 쓴다 (축소할 때). rebuild=False면 이미 만든 시뮬레이터를 다시 쓴다."""
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    cfg = diff_cfg(top_ir, mode, seed, model, harness_dir) | ({"plan": plan} if plan else {})
+    (build_dir / "diff_cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
+    out = build_dir / "diff_out.json"
+    out.unlink(missing_ok=True)
+    sim(files, top_ir["module"], "diffsim", ROOT / "pipeline" / "tb", build_dir,
+        env={"DIFF_CFG": str((build_dir / "diff_cfg.json").resolve()), "DIFF_OUT": str(out.resolve())},
+        harness_dir=harness_dir, rebuild=rebuild, timeout_s=300)
+    return json.loads(out.read_text()) if out.exists() else None
+
+
+def minimize_diff(files: dict[int, list[Path]], top_ir: dict, mode: str, seed: int, work: Path, model: str | None,
+                  harness_dir: Path | None, budget: int = 150) -> dict | None:
+    """두 후보(files의 두 키)의 출력 차이를 유지하는 가장 작은 자극을 찾는다 (시뮬레이션만, 에이전트 없음).
+    1) 차이 지점 뒤를 잘라 내고 2) 리셋, backpressure, 단독 입력 사건을 delta debugging으로 지운다."""
+    ca, cb = sorted(files)
+    cfg = diff_cfg(top_ir, mode, seed, model, harness_dir)
+    plan = make_plan(cfg)
+    built: set[int] = set()
+    runs = 0
+    last: dict = {}
+
+    def differs(p: dict) -> dict | None:
+        nonlocal runs
+        runs += 1
+        recs = []
+        for c in (ca, cb):
+            recs.append(run_diffsim(files[c], top_ir, mode, seed, work / f"c{c}", model, harness_dir, plan=p,
+                                    rebuild=c not in built))
+            built.add(c)
+        if None in recs:
+            d = {"kind": "sim_failed", "a_ok": recs[0] is not None, "b_ok": recs[1] is not None}
+        else:
+            d = compare(recs[0], recs[1])
+        if d:
+            last.update(diff=d, recs=recs)
+        return d
+
+    d = differs(plan)
+    if not d:
+        return None
+    anchor = next((t[1] for t in (d.get("a"), d.get("b")) if t), None) or \
+        max([t[1] for t in d.get("a_prev", []) + d.get("b_prev", [])], default=plan["total"])
+    for margin in (50, 200, 800):
+        tp = truncate(plan, anchor + margin)
+        if differs(tp):
+            plan = tp
+            break
+    eps, n = episodes(plan), 2
+    while eps and runs < budget:
+        n = min(n, len(eps))
+        size = -(-len(eps) // n)
+        for i in range(0, len(eps), size):
+            chunk = eps[i:i + size]
+            p2 = without(plan, chunk)
+            if differs(p2):
+                plan, eps = p2, eps[:i] + eps[i + size:]
+                n = max(n - 1, 2)
+                break
+            if runs >= budget:
+                break
+        else:
+            if n >= len(eps):
+                break
+            n = min(n * 2, len(eps))
+    final = differs(plan) or last.get("diff")
+    return {"plan": plan, "difference": final, "episodes": len(episodes(plan)), "total_cycles": plan["total"], "runs": runs,
+            "inputs_accepted": {"A": last["recs"][0]["inputs"] if last.get("recs") and last["recs"][0] else None,
+                                "B": last["recs"][1]["inputs"] if last.get("recs") and last["recs"][1] else None}}
+
+
+def diff_window(rec: dict, diff: dict, limit: int = 300) -> list:
+    """차이가 난 곳까지의 자극 사건(리셋, ready, 단독 입력 변화)."""
+    ev = rec["events"]
+    if rec.get("probe_at") is not None:
+        last = [max([c for c in r if c < rec["probe_at"]], default=0) for r in rec["resets"].values()]
+        start = min(last) - 100
+        ev = [e for e in ev if e[1] >= start and e[1] <= rec["probe_at"]]
+    elif diff.get("kind") == "data":
+        ev = [e for e in ev if diff["a"][1] - 300 <= e[1] <= diff["a"][1]]
+    return ev[-limit:]
+
+
+def load_decisions(run_dir: Path) -> list[dict]:
+    p = Path(run_dir) / "decisions.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
 
 
 def _sim_type(rule: str) -> str:

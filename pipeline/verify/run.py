@@ -128,9 +128,11 @@ SIM_TIMEOUT_S = float(os.environ.get("CHIPDEPT_SIM_TIMEOUT", "900"))
 def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir: Path,
         build_args: list[str] | None = None, seed: int | None = None, seeds: list[int] | None = None,
         harness_dir: Path | None = None, trace: Path | None = None, env: dict[str, str] | None = None,
-        timescale: tuple[str, str] | None = None, coverage: bool = False, timeout_s: float = SIM_TIMEOUT_S) -> StageResult:
+        timescale: tuple[str, str] | None = None, coverage: bool = False, timeout_s: float = SIM_TIMEOUT_S,
+        rebuild: bool = True) -> StageResult:
     """E2. cocotb + Verilator. 빌드 실패도 이 단계의 실패로 낸다.
 
+    rebuild=False면 build_dir에 이미 만든 시뮬레이터를 다시 쓴다 (같은 RTL로 자극만 바꿔 여러 번 돌릴 때).
     시드 하나의 실행이 timeout_s초를 넘으면 시뮬레이터를 끝내고 `SIM_TIMEOUT`으로 낸다 (RTL이 멈춰 테스트가 끝나지 않을 때).
 
     seeds를 주면 초기값을 무작위화해 시드마다 실행하고(T1, Verilator 시드만 바꾸고 Python random 시드는 seed로 고정), 시드에 따라 실패하는 테스트가 달라지면
@@ -145,9 +147,10 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     build_log = build_dir / "build.log"
     runner = get_runner("verilator")
     try:
+        # runner는 test 전에 같은 객체에서 build를 불러야 한다. 다시 쓸 때는 always=False로 소스가 바뀌었을 때만 빌드한다
         runner.build(sources=[Path(f) for f in files], hdl_toplevel=top, build_dir=build_dir,
                      build_args=[*(build_args or []), *(RANDOM_INIT_BUILD if seeds else []), *(COVERAGE_BUILD if coverage else [])],
-                     always=True,
+                     always=rebuild or not (build_dir / top).exists(),
                      log_file=build_log, timescale=timescale)
     except (Exception, SystemExit):
         text = build_log.read_text(errors="replace") if build_log.exists() else ""

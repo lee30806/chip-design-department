@@ -57,11 +57,13 @@ elif mode == "roles":
     # FAKE_FILES: {"Architect": {"상대 경로": 내용 또는 "@원본 파일"}, "Author": {...}, ...}. 스케줄러 흐름 시험용.
     # FAKE_LOG가 있으면 실행한 역할을 한 줄씩 남긴다 (재개 시험에서 다시 실행됐는지 보려고).
     task = (cwd / "TASK.md").read_text()
+    # 키가 "역할|표지"면 과제 본문이나 작업 디렉터리 이름에 표지가 있을 때만 맞는다 (먼저 적은 키가 우선).
     for role, files in json.loads(os.environ["FAKE_FILES"]).items():
-        if f"{role} 에이전트" in task:
+        name, _, marker = role.partition("|")
+        if f"{name} 에이전트" in task and (marker in task or marker in str(cwd)):
             if os.environ.get("FAKE_LOG"):
                 with open(os.environ["FAKE_LOG"], "a") as f:
-                    f.write(role + "\n")
+                    f.write(role.replace(" ", "_") + "\n")
             for rel, content in files.items():
                 p = cwd / rel
                 p.parent.mkdir(parents=True, exist_ok=True)
