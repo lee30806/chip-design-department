@@ -118,6 +118,8 @@ class Gateway:
             out[sv.name] = {"text": sv.read_text(encoding="utf-8"),
                             "srcmap": json.loads(sm.read_text(encoding="utf-8")) if sm.exists() else [],
                             "ir": json.loads(ir.read_text(encoding="utf-8")) if ir.exists() else None}
+        for f in sorted(d.glob("*.sdc")) if d.exists() else []:
+            out[f.name] = {"text": f.read_text(encoding="utf-8"), "srcmap": [], "ir": None}
         return out
 
     def task(self, run_id: str, name: str) -> dict:

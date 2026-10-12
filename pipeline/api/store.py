@@ -365,12 +365,15 @@ class Store:
             self._rerun_allowed(rec["run_id"], f"SPEC 변경 {fid}")
             parent = self.run_dir(rec["run_id"])
             new_spec = (self.root / "spec_changes" / fid / "spec.md").read_text(encoding="utf-8")
-            if rec["spec_diff"]["l1_changed"]:
+            # 영향은 결정할 때 다시 계산한다 (요청 뒤 SPEC 해석이 바뀌었을 수 있음)
+            sd = spec_diff.diff(parent / "spec.md", self.root / "spec_changes" / fid / "spec.md")
+            out["reqs"], out["spec_diff"] = spec_diff.affected_reqs(sd), sd
+            if spec_diff.full_rerun(sd):
                 new = self.submit(new_spec, by, None, self.meta(rec["run_id"])["config"], _parent=rec["run_id"], _kind="spec_change_full")
             else:
                 new = self.submit(new_spec, by, None, self.meta(rec["run_id"])["config"], _parent=rec["run_id"], _kind="spec_change",
                                   _seed={"parent": str(parent), "kind": "spec_change", "old_spec": str(parent / "spec.md"),
-                                         "spec_diff": rec["spec_diff"]})
+                                         "spec_diff": sd})
             out["new_run"] = new["run_id"]
         self._append("feedback.jsonl", out)
         return out

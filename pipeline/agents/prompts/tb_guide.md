@@ -16,7 +16,7 @@ class Model:
 @cocotb.test()
 async def basic(dut):
     h = make(dut, Model(), name="basic")  # name은 테스트마다 달라야 한다
-    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: L1 포트 값 dict
+    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: L1 포트 값 dict (그 도메인의 리셋 포트 포함, 클럭 제외)
     h.cover_protocol("m_axis", "REQ-ID")   # valid/ready 규칙 체커가 이 번들을 검사하면 그 요구사항을 실행한 것으로 셈
     h.set_ready("m_axis", [1, 0, 1])       # 출력 번들의 ready 패턴 (backpressure)
     await h.start()                       # 클럭 시작, 리셋, 표본 시작
@@ -28,6 +28,7 @@ async def basic(dut):
 - 기대 출력과 실제 출력은 순서대로 비교한다. 출력이 기대보다 먼저 와도 된다 (프레임 끝에서야 기대를 알 수 있는 모델).
 - 1비트 단독 출력은 1인 사이클마다, 여러 비트 단독 출력은 값이 바뀔 때마다 트랜잭션 하나가 된다.
 - 리셋이나 pause 같은 입력은 `dut.<포트>.value = 1`로 직접 바꿀 수 있다. 클럭 에지는 `from cocotb.triggers import ClockCycles`, `await ClockCycles(dut.<클럭>, n)`.
+- 속성 표본은 하강 에지 뒤에 읽는다. 동기 리셋이면 표본에서 리셋이 1인 사이클의 출력은 아직 리셋 전 값이고, 다음 사이클 표본부터 리셋 값이다.
 - 테스트는 SPEC의 요구사항 ID를 기대 출력, 속성, `cover_protocol`로 모두 하나 이상 실행해야 한다.
 
 ## 시나리오

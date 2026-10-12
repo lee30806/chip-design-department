@@ -297,7 +297,7 @@ class Harness:
         self.protocol_reqs[bundle] = req
 
     def add_property(self, name: str, domain: str, fn, req: str | None = None) -> None:
-        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값."""
+        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (그 도메인의 리셋 포트 포함, 클럭 제외)."""
         self.properties.append((name, domain, fn, req))
 
     async def drain(self, extra: int = 5, timeout: int = 10000) -> None:
@@ -352,7 +352,8 @@ class Harness:
     async def _loop(self, domain: str) -> None:
         clk = getattr(self.dut, self.cfg["clocks"][domain][0])
         drivers = [d for n, d in self.drivers.items() if self._domain_of(n) == domain]
-        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain]
+        # 속성 표본에는 그 도메인의 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 클럭은 넣지 않는다.
+        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + [self.cfg["resets"][domain][0]]
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
         first = True
         while True:

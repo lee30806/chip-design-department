@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Sanity와 PI Seat의 검사 도구 (오픈소스 대체). 사내 툴(SpyGlass, DC, Formality, PrimeTime 등)로 바꿀 자리다.
+
+    eda lint  <rtl 디렉터리> --top T     Verilator lint -Wall                      (Sanity)
+    eda synth <rtl 디렉터리> --top T     Yosys 일반 합성. 면적과 경고                 (Synthesis)
+    eda lec   <rtl 디렉터리> --top T     RTL과 합성 넷리스트의 형식 등가 (Yosys equiv) (LEC)
+                                       이름 대조로 증명 못한 점이 남으면 리셋부터 --bmc 사이클 순차 등가 (--reset 포트)
+    eda sta   <rtl 디렉터리> --top T     일반 셀 라이브러리로 매핑 뒤 최악 경로 지연 대 SDC 클럭 주기 (STA)
+    eda sdc   <rtl 디렉터리> --top T     SDC 골격과 RTL 포트 대조                    (SDC Lint)
+
+<rtl 디렉터리>에는 `deptctl export`로 받은 `*.sv`와 `<top>.sdc`가 있다. 결과는 `--out`(기본 ./eda/<검사>/)에 남고,
+리포트 줄은 모두 같은 형식이다 (`config/report_formats/eda.json`). 리포트는 고치지 말고 그대로 Design-lead에게 넘긴다.
+
+    <검사> <ERROR|WARNING|INFO> <파일>:<줄>|- <메시지>
+
+STA의 셀 지연은 `department/tools/generic.lib`(공정 값이 아님)이고, 사내 라이브러리로 바꾸면 의미 있는 값이 된다.
+"""
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+TOOLS = Path(__file__).resolve().parents[1] / "tools"
+LIB = TOOLS / "generic.lib"
+ABC_SCRIPT = "strash\n&get -n\n&fraig -x\n&put\nscorr\ndc2\ndretime\nstrash\n&get -n\n&dch -f\n&nf {D}\n&put\ntopo\nstime -p\n"
+CLK_TO_Q, SETUP = 0.080, 0.040   # generic.lib의 DFF
+BMC_DEPTH = 15                   # LEC 보완 검사의 사이클 수 (--bmc)
+RESETS: list[str] = []           # LEC 보완 검사에서 첫 사이클에 거는 리셋 포트 (--reset, _n이면 low 활성)
+
+
+def svs(rtl: Path) -> list[str]:
+    return [str(p) for p in sorted(rtl.glob("*.sv"))]
+
+
+def yosys(script: str, log: Path) -> tuple[int, str]:
+    p = subprocess.run(["yosys", "-q", "-l", str(log), "-p", script], capture_output=True, text=True)
+    return p.returncode, log.read_text(errors="replace") if log.exists() else p.stdout + p.stderr
+
+
+def line(check: str, sev: str, where: str, msg: str) -> str:
+    return f"{check} {sev} {where} {' '.join(msg.split())}"
+
+
+def where_of(text: str) -> tuple[str, str]:
+    """yosys 메시지의 `파일:줄` 위치 → (위치, 나머지 메시지)."""
+    m = re.search(r"(?:at )?([\w./-]+\.s?v):(\d+)(?:\.\d+(?:-\d+\.\d+)?)?", text)
+    if not m:
+        return "-", text
+    return f"{Path(m.group(1)).name}:{m.group(2)}", text
+
+
+def lint(rtl: Path, top: str, out: Path) -> list[str]:
+    p = subprocess.run(["verilator", "--lint-only", "-Wall", "--top-module", top, *svs(rtl)], capture_output=True, text=True)
+    (out / "lint.log").write_text(p.stdout + p.stderr)
+    rep = []
+    for ln in (p.stdout + p.stderr).splitlines():
+        m = re.match(r"^%(Warning|Error)(?:-([A-Z0-9_]+))?: (?:([^:\s]+):(\d+):(?:\d+:)?\s*)?(.*)$", ln)
+        if m and not m.group(5).startswith("Exiting due to"):
+            loc = f"{Path(m.group(3)).name}:{m.group(4)}" if m.group(3) else "-"
+            rep.append(line("LINT", "ERROR" if m.group(1) == "Error" else "WARNING", loc, f"[{m.group(2) or m.group(1)}] {m.group(5)}"))
+    return rep or [line("LINT", "INFO", "-", "경고 없음")]
+
+
+def synth(rtl: Path, top: str, out: Path) -> list[str]:
+    rc, log = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; synth -flatten -top {top}; tee -o {out}/stat.txt stat; "
+                    f"write_verilog -noattr {out}/netlist.v", out / "synth.log")
+    rep = []
+    for ln in log.splitlines():
+        m = re.match(r"^(?:([\w./-]+\.s?v):(\d+): )?(Warning|ERROR): (.*)$", ln)
+        if m:
+            loc = f"{Path(m.group(1)).name}:{m.group(2)}" if m.group(1) else where_of(m.group(4))[0]
+            rep.append(line("SYNTH", "ERROR" if m.group(3) == "ERROR" else "WARNING", loc, m.group(4)))
+    if rc != 0 and not any(" ERROR " in r for r in rep):
+        rep.append(line("SYNTH", "ERROR", "-", f"합성 실패 (종료 코드 {rc})"))
+    stat = (out / "stat.txt").read_text() if (out / "stat.txt").exists() else ""
+    cells = re.search(r"(\d+)\s+cells", stat)
+    rep.append(line("SYNTH", "INFO", "-", f"셀 {cells.group(1) if cells else '?'}개. 자세한 것은 stat.txt"))
+    return rep
+
+
+def lec(rtl: Path, top: str, out: Path) -> list[str]:
+    net = out / "netlist.v"
+    if not net.exists():
+        rc, _ = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; synth -flatten -top {top}; write_verilog -noattr {net}", out / "synth.log")
+        if rc != 0:
+            return [line("LEC", "ERROR", "-", "넷리스트를 만들지 못함 (합성 실패)")]
+    # RTL 쪽 메모리는 플립플롭으로 풀어 넷리스트와 같은 모양으로 비교한다 (SAT 모델이 없는 $mem 셀)
+    rc, log = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gold; design -stash gold; "
+                    f"read_verilog {net}; prep -flatten -top {top}; rename {top} gate; design -stash gate; "
+                    "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
+                    "equiv_make gold gate equiv; hierarchy -top equiv; async2sync; equiv_simple -seq 5; equiv_induct -seq 5; "
+                    "equiv_status", out / "lec.log")
+    unproven = re.findall(r"Unproven \$equiv \S+: (\S+) (\S+)", log)
+    m = re.search(r"Of those cells (\d+) are proven and (\d+) are unproven", log)
+    if not m:
+        return [line("LEC", "ERROR", "-", "등가 검사를 끝내지 못함. lec.log를 볼 것")]
+    if not unproven:
+        return [line("LEC", "INFO", "-", f"등가 증명됨: {m.group(1)}개")]
+    # 이름 대조 증명이 안 된 점이 남음 (합성의 FSM 재인코딩 등). 리셋에서 출발하는 유한 사이클 순차 등가로 판정한다.
+    rep = [line("LEC", "WARNING", "-", f"이름 대조로 증명 못함: {g} (gold) 대 {t} (gate)") for g, t in unproven]
+    rst = RESETS or ["rst"]
+    sets = " ".join(f"-set-at 1 in_{r} {0 if r.endswith('_n') else 1}" for r in rst)
+    rc, blog = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gold; design -stash gold; "
+                     f"read_verilog {net}; prep -flatten -top {top}; rename {top} gate; design -stash gate; "
+                     "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
+                     "miter -equiv -flatten -make_outputs gold gate miter; hierarchy -top miter; async2sync; dffunmap; "
+                     f"sat -verify -seq {BMC_DEPTH} {sets} -set-init-undef -set-def-inputs -prove trigger 0 miter", out / "lec_bmc.log")
+    if "SAT proof finished - no model found: SUCCESS" in blog:
+        rep.append(line("LEC", "INFO", "-", f"리셋({', '.join(rst)})에서 {BMC_DEPTH}사이클까지 출력 등가 증명됨 (유한 깊이, 무한 증명 아님). lec_bmc.log"))
+    elif rc != 0 and "failed" in blog.lower():
+        rep.append(line("LEC", "ERROR", "-", f"리셋에서 {BMC_DEPTH}사이클 안에 출력이 다름: 반례는 lec_bmc.log"))
+    else:
+        rep.append(line("LEC", "ERROR", "-", "유한 깊이 등가 검사를 끝내지 못함. lec_bmc.log를 볼 것"))
+    return rep
+
+
+def clocks(rtl: Path, top: str) -> dict[str, tuple[str, float]]:
+    sdc = rtl / f"{top}.sdc"
+    out = {}
+    for m in re.finditer(r"create_clock\s+-name\s+(\S+)\s+-period\s+([\d.]+)\s+\[get_ports\s+(\S+?)\]",
+                         sdc.read_text() if sdc.exists() else ""):
+        out[m.group(1)] = (m.group(3), float(m.group(2)))
+    return out
+
+
+def sta(rtl: Path, top: str, out: Path) -> list[str]:
+    (out / "abc.script").write_text(ABC_SCRIPT)
+    clk = clocks(rtl, top)
+    if not clk:
+        return [line("STA", "ERROR", "-", f"{top}.sdc에 클럭이 없음")]
+    period = min(p for _, p in clk.values())
+    rc, log = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; synth -flatten -top {top}; dfflibmap -liberty {LIB}; "
+                    f"abc -liberty {LIB} -D {period * 1000:.0f} -script {out}/abc.script", out / "sta.log")
+    d = re.findall(r"Delay =\s+([\d.]+) ps", log)
+    if rc != 0 or not d:
+        return [line("STA", "ERROR", "-", "지연을 구하지 못함. sta.log를 볼 것")]
+    path = max(float(x) for x in d) / 1000 + CLK_TO_Q + SETUP
+    slack = period - path
+    name = min(clk, key=lambda k: clk[k][1])
+    sev = "ERROR" if slack < 0 else "INFO"
+    return [line("STA", sev, "-", f"클럭 {name} 주기 {period:.3f}ns, 최악 경로 {path:.3f}ns (논리 {path - CLK_TO_Q - SETUP:.3f} + clk-to-q + setup), "
+                 f"slack {slack:.3f}ns (일반 셀 라이브러리 값)")]
+
+
+def sdc(rtl: Path, top: str, out: Path) -> list[str]:
+    sdcf = rtl / f"{top}.sdc"
+    if not sdcf.exists():
+        return [line("SDC", "ERROR", "-", f"{top}.sdc가 없음")]
+    top_sv = (rtl / f"{top}.sv").read_text()
+    header = top_sv[top_sv.index(f"module {top}"):top_sv.index(");") + 2]
+    ports = {m.group(2): m.group(1) for m in re.finditer(r"\b(input|output|inout)\b[^,;)]*?\b(\w+)\s*(?=[,)])", header)}
+    text = sdcf.read_text()
+    rep = []
+    clk = clocks(rtl, top)
+    for name, (port, period) in clk.items():
+        if port not in ports:
+            rep.append(line("SDC", "ERROR", f"{sdcf.name}:{_ln(text, port)}", f"create_clock {name}: RTL에 없는 포트 {port}"))
+        if period <= 0:
+            rep.append(line("SDC", "ERROR", sdcf.name + ":1", f"create_clock {name}: 주기가 0 이하"))
+    for p, d in ports.items():
+        if p in {c[0] for c in clk.values()}:
+            continue
+        if d == "input" and f"set_input_delay" not in text:
+            rep.append(line("SDC", "WARNING", "-", f"입력 포트 {p}에 set_input_delay가 없음 (사람이 쓰는 제약에서 넣음)"))
+        if d == "output" and f"set_output_delay" not in text:
+            rep.append(line("SDC", "WARNING", "-", f"출력 포트 {p}에 set_output_delay가 없음 (사람이 쓰는 제약에서 넣음)"))
+    return rep or [line("SDC", "INFO", "-", "문제 없음")]
+
+
+def _ln(text: str, needle: str) -> int:
+    return next((i + 1 for i, ln in enumerate(text.splitlines()) if needle in ln), 1)
+
+
+def main() -> int:
+    global BMC_DEPTH
+    ap = argparse.ArgumentParser(prog="eda", description="Sanity와 PI 검사 (오픈소스 대체)")
+    ap.add_argument("check", choices=["lint", "synth", "lec", "sta", "sdc"])
+    ap.add_argument("rtl", type=Path)
+    ap.add_argument("--top", required=True)
+    ap.add_argument("--out", type=Path)
+    ap.add_argument("--reset", action="append", default=[], help="lec: 첫 사이클에 거는 리셋 포트 (여러 번 가능, 기본 rst)")
+    ap.add_argument("--bmc", type=int, default=BMC_DEPTH, help="lec: 이름 대조 증명이 안 될 때 리셋부터 볼 사이클 수")
+    a = ap.parse_args()
+    BMC_DEPTH = a.bmc
+    RESETS.extend(a.reset)
+    for t in ("verilator" if a.check == "lint" else "yosys",):
+        if not shutil.which(t):
+            sys.exit(f"{t}가 없음")
+    out = a.out or Path("eda") / a.check
+    out.mkdir(parents=True, exist_ok=True)
+    rep = {"lint": lint, "synth": synth, "lec": lec, "sta": sta, "sdc": sdc}[a.check](a.rtl, a.top, out)
+    (out / "report.txt").write_text("\n".join(rep) + "\n")
+    print("\n".join(rep))
+    print(f"(리포트: {out / 'report.txt'})", file=sys.stderr)
+    return 1 if any(" ERROR " in r for r in rep) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

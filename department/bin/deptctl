@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Seat의 게이트웨이 클라이언트. Seat 진입점이 준 API 키(자기 키만 읽을 수 있음)로 게이트웨이를 부른다.
 
-    deptctl runs | status <실행> | detail <실행> | review <실행> | rtl <실행> | pending | specs | spec <SPEC>
+    deptctl runs | status <실행> | detail <실행> | review <실행> | rtl <실행> | pending | specs | spec <SPEC> [--markdown]
+    deptctl export <실행> <디렉터리>                         최종 RTL(*.sv)과 SDC를 파일로 받음 (통과한 실행)
+    deptctl signoff <실행> --kind dv|pi --decision pass|fail --note "..."   (DV Seat: dv, PI Seat: pi. 최종 승인된 실행)
     deptctl submit <SPEC 작업 공간 ID> [--config JSON]      (RTL Engineer, Chip-lead. 고정된 SPEC만)
     deptctl feedback <body.json>                          (Design-lead만)
 
@@ -20,6 +22,7 @@ ROLE = os.environ.get("CHIPDEPT_SEAT_ROLE", "none")
 SEAT = os.environ.get("CHIPDEPT_SEAT", "?")
 GATEWAY = os.environ.get("CHIPDEPT_GATEWAY", "http://127.0.0.1:8750")
 WRITE_CMDS = {"submit": {"rtl-engineer", "chip-lead"}, "feedback": {"design-lead"}}
+POD = (os.environ.get("CHIPDEPT_SEAT") or "x.x").split(".")[0]
 
 
 def key() -> str:
@@ -49,7 +52,18 @@ def main() -> int:
         sub.add_parser(n)
     for n in ("status", "detail", "review", "rtl"):
         sub.add_parser(n).add_argument("run_id")
-    sub.add_parser("spec").add_argument("spec_id")
+    s = sub.add_parser("spec")
+    s.add_argument("spec_id")
+    s.add_argument("--markdown", action="store_true", help="SPEC 원문(고정된 판이 있으면 그 판)만 출력")
+    s = sub.add_parser("export")
+    s.add_argument("run_id")
+    s.add_argument("dir", type=Path)
+    if POD in ("dv", "pi"):
+        s = sub.add_parser("signoff")
+        s.add_argument("run_id")
+        s.add_argument("--kind", required=True, choices=["dv", "pi"])
+        s.add_argument("--decision", required=True, choices=["pass", "fail"])
+        s.add_argument("--note", required=True)
     allowed = {c for c, roles in WRITE_CMDS.items() if ROLE in roles}
     if "submit" in allowed:
         s = sub.add_parser("submit")
@@ -76,6 +90,17 @@ def main() -> int:
         out = call("GET", f"/api/runs/{a.run_id}/detail")["review"]
     elif a.cmd == "spec":
         out = call("GET", f"/api/specs/{a.spec_id}")
+        if a.markdown:
+            print(out["markdown"])
+            return 0
+    elif a.cmd == "export":
+        files = call("GET", f"/api/runs/{a.run_id}/rtl")
+        a.dir.mkdir(parents=True, exist_ok=True)
+        for name, f in files.items():
+            (a.dir / name).write_text(f["text"], encoding="utf-8")
+        out = {"dir": str(a.dir), "files": sorted(files)}
+    elif a.cmd == "signoff":
+        out = call("POST", f"/api/runs/{a.run_id}/signoff", {"kind": a.kind, "decision": a.decision, "note": a.note})
     elif a.cmd == "submit":
         out = call("POST", "/api/runs", {"spec_id": a.spec_id, "config": json.loads(a.config)})
     else:

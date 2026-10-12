@@ -14,7 +14,8 @@
 | P5 파이프라인 API와 환류 입력 | **완료 (가능한 범위)** | 사내 툴 리포트 양식은 샘플을 받으면 양식 파일만 추가 |
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
-| P8 이후 | 시작 전 | |
+| P8 첫 Block Top End-to-End | **진행 중** | 신규 블록 `axis_crc_append`, agy Seat, 오픈소스 대체 EDA |
+| P9 | 시작 전 | |
 
 ## 제외 항목 (사용자 결정)
 
@@ -45,6 +46,110 @@
 | 에이전트 단독 평가 나머지 (Author, Verifier, Architect 각 3블록, Repair cobs) | P4 | agy 사용량 여유 |
 
 ## 진행 기록
+
+### 2026-10-12 P8 시작: 신규 블록, 대체 EDA, agy Seat 운영
+
+사용자 결정: 새 SPEC을 직접 쓴다, PI와 Sanity는 오픈소스로 대체 설치한다, Seat 일은 agy Seat가 직접 한다.
+
+- **신규 블록 `axis_crc_append`** (`blocks/axis_crc_append/block_spec.md`, 이식 블록이 아님):
+  - AXI-Stream 바이트 프레임을 통과시키며 CRC-16/CCITT-FALSE 2바이트를 덧붙이고, 프레임 수(`stat_frames`)를 냅니다.
+  - 동작 기준은 200 MHz입니다. 요구사항은 기능 12개, 타이밍 3개, 예외 3개이고, 예시 시나리오가 3개 있습니다.
+  - SPEC 검사에서 오류와 경고는 0건이고, 처음 판의 REQ_MULTI 7건은 요구사항을 나눠 없앴습니다.
+- **대체 EDA:**
+  - Yosys 0.69를 Homebrew로 설치했습니다. OpenSTA와 eqy는 Homebrew에 없습니다.
+  - `department/bin/eda`: lint(Verilator), synth(Yosys), lec(Yosys 형식 등가: RTL 대 넷리스트, 메모리는 플립플롭으로 풀어 비교), sta(`department/tools/generic.lib` 일반 셀로 매핑 뒤 ABC `stime` 최악 경로 + clk-to-q + setup 대 SDC 주기), sdc(SDC 대 RTL 포트).
+  - 리포트 양식 `config/report_formats/eda.json`을 더했습니다.
+  - 확인한 것:
+    - adapter RTL에서 다섯 검사가 모두 동작합니다 (LEC 173개 등가 증명).
+    - 넷리스트에 버그를 넣으면 LEC가 등가 아님 2개를 냅니다.
+  - 제약: `axis_async_fifo`(메모리 1024단을 플립플롭 8만 5천 셀로 풀어냄)는 LEC가 15분 넘게 끝나지 않았습니다. 큰 메모리는 사내 LEC나 메모리 블랙박스 처리가 필요합니다.
+- **파이프라인과 게이트웨이:**
+  - 통합 때 Block Top SDC 골격과 표준 셀을 `rtl/`에 남깁니다.
+  - 게이트웨이 RTL 조회에 SDC가 들어갑니다.
+  - `deptctl`에 `export`(RTL과 SDC를 파일로), `spec --markdown`, `signoff`(DV/PI Seat)를 더했습니다.
+- **운영 환경:**
+  - 게이트웨이 계정: admin, op(운영, 설계 역할), sjlee(승인자, Seungjoon Lee). 초기 비밀번호는 `~/.cache/chip-design-department/gateway/initial_passwords.txt`(0600)에 있습니다.
+  - 부서 rig를 agent 모드로 올렸습니다 (Seat 15개 agy, 파이프라인 API, 게이트웨이).
+- **agy 명령 확인:**
+  - agy가 명령마다 실행 확인을 물어 무인 Seat가 멈췄습니다.
+  - 권한은 OS sandbox가 강제하므로 Seat의 agy를 `--dangerously-skip-permissions`로 띄우게 바꿨습니다 (`department/bin/seat`).
+  - 일하던 Seat 6개는 새로 띄우고 지시를 다시 보냈습니다.
+- **진행 순서:**
+  1. SPEC 고정: 운영이 SPEC을 올리고 Q-01에 답한 뒤 고정을 요청했고, 사용자가 승인했습니다 (기록: sjlee, 판 `52985d0f0a75`).
+  2. 실행 제출과 병렬 준비:
+     - RTL Engineer Seat가 실행 `axis_crc_append-20261012-175530-0a82`를 제출했습니다 (`seat-design-rtl`).
+     - DV Pod: DV-lead가 계획(`dv_plan.md`)을 썼습니다. vPlan은 요구사항 ID별 검증 표, TB는 cocotb와 Verilator 독립 TB(파이썬 CRC 참조 모델, 시나리오 3개, backpressure 무작위), Checker는 SVA 모듈(lint 통과)을 만들었습니다.
+     - Power Intent Seat가 UPF(단일 도메인 PD_TOP)를 썼습니다.
+  3. 파이프라인 진행 (17:55\~19:23): Architect가 `crc16_ccitt`(조합 CRC)와 `axis_crc_core`(FSM, 핸드셰이크)로 나눴습니다. c0은 Repair 3회 뒤, c1은 Repair 1회 뒤 같은 테스트(`test_reset_and_recovery`의 CRC-08 검사)에서 Arbiter가 `test_wrong`으로 판정해 기댓값 변경 E1, E2가 대기에 올랐습니다.
+     - 원인 확인: 하니스는 속성 검사 sample에서 domains로 유도한 클럭/리셋 포트를 뺍니다 (`pipeline/tb/gen.py:80`). Verifier 테스트의 `s.get("rst")`가 늘 `None`이라 리셋 중 `stat_frames=0`(CRC-E01대로)을 오류로 봤습니다.
+     - 사용자가 E1, E2를 승인했고 게이트웨이에 sjlee로 기록했습니다 (20:00:25, 승인 기록 2, 3). 실행이 재개됐습니다.
+     - 재개 뒤 20:15에 E3, E4로 다시 멈췄습니다. 고친 검사기가 리셋 첫 사이클(cycle 11)에 바로 `stat_frames=0`을 요구했는데, SPEC 2절은 동기 리셋이라 RTL은 다음 에지(cycle 12)에 0이 됐습니다. 두 후보 모두 Arbiter `test_wrong`. 사용자가 승인했고 sjlee로 기록했습니다 (20:50:58, 승인 기록 4, 5).
+     - 회고 후보: CRC-E01 "rst=1인 동안 ... stat_frames=0"은 동기 리셋이면 첫 사이클에 지킬 수 없는 표현입니다. "rst=1을 본 다음 클럭부터"로 SPEC 문구를 다듬을 거리입니다.
+     - 20:59 실행 통과. 선택 c1(`axis_crc_core`, `crc16_ccitt` 모두). Agent 실행 20회, 후보 4개 모두 통과(c0 Repair 3회, c1 1회), 통합 E1 깨끗, E2 Verifier 2개 통과. 검토 항목 14개(가정 8, 기댓값 변경 4, 열린 질문 1, 모델 계열 1).
+  4. Sanity: design.sanity가 `deptctl export`와 `eda lint`를 돌려 ERROR 0, WARNING 0을 Design-lead용 리포트로 남겼습니다. 같은 lint를 직접 돌려 확인했습니다.
+     - Seat 9개(lead.chip, design.lead, design.arch, design.sanity, pi.*의 5개)가 아직 확인 모드로 떠 있어 Sanity가 첫 명령에서 멈췄습니다. 모두 `--dangerously-skip-permissions`로 새로 띄웠습니다 (이제 15개 모두).
+  5. 최종 승인: 사용자가 승인했고 sjlee로 기록했습니다 (22:29:40, 승인 기록 6).
+  6. DV/PI 판정 시작: dv.tb에 독립 TB 실행, pi.synth/lec/sta/sdc에 `eda` 검사를 지시했습니다.
+     - DV: 처음 6개 중 5개 실패. 원인은 TB 결함이었습니다 (모니터와 드라이버가 상승 에지 뒤 ReadOnly에서 읽어, 조합 통과 RTL에서 다음 바이트를 봄. test_01은 `m_axis_tready`를 주지 않고 `s_axis_tready=1`을 기대). TB는 DV Pod 산출물이라 dv.tb가 고쳤고(에지 직전 FallingEdge+ReadOnly 샘플링) 6/6 통과. 운영이 따로 다시 돌려 6/6과 참조 모델의 SPEC 시나리오 값(29B1, E1F0, 043B)을 확인했습니다.
+     - 합성: 셀 163, 경고 0. STA: slack 4.075ns (일반 셀 라이브러리, 레지스터 사이 경로만). SDC: ERROR 0, 입출력 지연 없음 WARNING 12 (골격이라 예상됨).
+     - LEC: 33개 "등가 아님"으로 나왔으나 실제로는 "이름 대조로 증명 못함"이었습니다. 합성의 `fsm_recode`가 상태 인코딩을 바꿔 equiv_make의 이름 대조가 안 됩니다. 귀납(`sat -tempinduct`)은 도달 불가 상태 때문에 실패하고, RTL 쪽에 `fsm`을 맞춰 적용해도 18개가 남았습니다. 리셋부터 15사이클 miter BMC는 증명됨(약 95초), 40사이클은 15분 안에 끝나지 않았습니다.
+     - `eda lec` 수정: 남은 점을 WARNING "이름 대조로 증명 못함"으로 내고, 리셋부터 `--bmc`(기본 15) 사이클 순차 등가 검사를 덧붙입니다 (`--reset` 포트, `lec_bmc.log`). pi.lec가 고친 도구로 다시 돌려 증명됨.
+     - 회고 후보: 대체 LEC는 무한 증명을 못 합니다. 사내 Formality/Conformal로 바꾸거나, 합성에서 FSM 재인코딩을 끄는 선택지를 PI가 정해야 합니다.
+     - RTL은 입력→출력 조합 통과 경로(`s_axis_tdata`→`m_axis_tdata` 등)가 있고 현재 STA는 이 경로를 보지 않습니다. PI-lead 판단에 넘겼습니다.
+  7. DV/PI 판정: DV-lead pass (22:55:45, 공백: SVA 미실행, 16비트 카운터 롤오버 미검증). PI-lead fail: 조합 통과 경로 3개 때문에 SoC 통합 시 200MHz 타이밍과 ready/valid 조합 루프 위험. 환류는 `spec_change`(source `sta`): CRC-T01을 N+3클럭으로, 9절에 출력 레지스터/스키드 버퍼 의무와 조합 통과 금지 추가.
+     - Seat는 다른 worktree를 못 읽으므로 운영이 PI-lead 요청서를 Design-lead의 `inbox/`로 옮겼습니다. Design-lead가 고정판을 바탕으로 개정해(CRC-E01도 "rst=1을 본 다음 클럭부터"로) `deptctl feedback`으로 F0001을 제출했습니다. SPEC 변경 승인 대기입니다.
+     - **파서 버그 발견:** 요구사항 ID 정규식이 `CRC-T01`, `CRC-E01`처럼 숫자 앞에 문자가 붙은 ID를 못 읽었습니다. golden SPEC의 `ADP-T01`, `AFIFO-E01` 등도 P1부터 요구사항으로 다뤄지지 않았습니다. F0001의 `spec_diff`가 비어 있어 드러났습니다. `REQ_ID`를 `...-[A-Z]?\d+`로 고쳤습니다.
+     - 전체 테스트 227 통과, 3 건너뜀. 파이프라인 API 서버를 같은 명령으로 다시 띄워 고친 코드를 반영했습니다.
+     - 사용자가 F0001을 승인했고 sjlee로 기록했습니다 (23:53:21, 승인 기록 7). 결정 때 다시 계산한 영향: 바뀐 요구사항 CRC-E01, CRC-T01, `constraints_changed` → 처음부터 다시 실행 `axis_crc_append-20261012-235321-b60e` (`spec_change_full`, 부모는 첫 실행).
+     - 개정 SPEC을 DV Seat들의 `inbox/`에 넣고 dv.tb에 TB 갱신을 지시했습니다.
+     - **SPEC 변경 경로 보완:** 9절(구현 제약)이 바뀌면 `constraints_changed`로 처음부터 다시 실행합니다 (구조 제약은 테스트로 드러나지 않아 실패 모듈만 고치는 경로로는 반영 안 됨). 영향은 결정할 때 다시 계산합니다 (요청 뒤 해석이 바뀐 F0001에도 적용되도록).
+     - 회고 후보: 검토 항목의 기댓값 변경 문구가 결정 뒤에도 "(사람 승인 대기)"로 남습니다. 결정 결과로 바꿔 보여야 합니다.
+     - 회고 후보: `add_property` 문서는 "sample은 L1 포트 값"이라고만 해서 Verifier가 리셋 포트가 있다고 가정했습니다. sample에 리셋 포트를 넣거나 문서와 Verifier 지침에 명시하는 조정이 필요합니다.
+  8. **F0001 재실행 실패와 하니스 수정** (2026-10-13 00:53~01:02)
+     - `axis_crc_append-20261012-235321-b60e`가 `failed`로 끝났습니다 (에이전트 8회). 두 후보 모두 Repair가 `interface_change`로 멈췄습니다. 원인은 RTL이 아니라 같은 리셋 표본 결함의 세 번째 발생입니다. v0 체커는 `sample.get("rst", 0)`이라 테스트 중간 리셋을 모르고 리셋 뒤 `stat_frames`=1을 기대했습니다(test_reset_recovery). v1 체커는 `s["rst"]`라 모든 테스트가 KeyError로 실패했습니다. Repair는 테스트 결함을 L1 변경 요청으로 올려 Arbiter로 가지 않았습니다.
+     - **하니스 수정 (회고 후보를 앞당겨 반영):** 속성 표본에 그 도메인의 리셋 포트를 넣습니다 (`pipeline/tb/lib.py`, 클럭은 제외). `add_property` 문서와 `tb_guide.md`에 표본 내용과 동기 리셋 시점(리셋 1인 표본의 출력은 아직 리셋 전 값, 다음 표본부터 리셋 값)을 적었습니다. 하니스 시험 TB에 `reset_in_sample` 속성을 더했습니다.
+     - 확인: 실패한 실행의 v0, v1 TB를 고친 하니스로 c1_r1 RTL에 다시 돌려 둘 다 통과(5/5, 5/5). 전체 테스트 227 통과, 3 건너뜀. 하니스 시험 7 통과.
+     - 같은 승인 SPEC(sha 4bc9a419d8799b28)으로 처음부터 다시 실행 `axis_crc_append-20261013-010208-674c` (`spec_change_full`, 부모는 첫 실행, 제출자 operator). F0001 승인 범위의 재실행이고 새 사람 결정은 없습니다. 같은 Block Top의 환류 재실행은 2회째입니다 (상한 3).
+     - dv.tb의 F0001 TB 갱신 확인: CRC-T01(`elapsed_clocks <= N+3`), CRC-E01(다음 클럭부터) 반영, 기존 RTL에서 6/6 통과.
+     - 회고 후보: Repair가 Verifier 체커 결함을 `interface_change`로 분류하면 Arbiter를 거치지 않고 실패로 끝납니다. Repair 사유가 테스트 쪽을 가리키면 Arbiter로 보내는 경로가 필요합니다.
+  9. **F0001 재실행 통과와 Sanity** (2026-10-13 01:34~)
+     - `axis_crc_append-20261013-010208-674c` 통과 (01:34, 에이전트 5회, 약 32분). `axis_crc_core` 두 후보 모두 Repair 없이 통과, 두 Verifier 통과, 후보 간 차분 시뮬레이션 차이 없음. 선택 c0. 기댓값 변경 요청 없음. 하니스 수정 뒤 첫 실행 비용이 첫 실행(20회, 약 3시간)보다 크게 줄었습니다.
+     - RTL 확인: `s_axis_tready`, `m_axis_tdata/tvalid/tlast`가 모두 레지스터 출력입니다 (출력 레지스터 + skid). 조합 통과 구조가 없어졌습니다. 정식 확인은 PI에서 합니다.
+     - 검토 항목(가정 제외): CRC-E03 미정의(리셋 시 프레임 도중 바이트 처리), Q-01 CRC 바이트 순서 파라미터화, REQ_MULTI(CRC-E01 문장 둘).
+     - design.sanity: `deptctl export`로 받은 RTL이 실행 RTL과 같음을 확인했습니다. `eda lint` ERROR 0, WARNING 0 (`sanity/lint2/`), 리포트에 "F0001 재실행 (674c)" 절이 추가됐습니다.
+     - 사용자가 최종 승인했고 sjlee로 기록했습니다 (01:36:16, 승인 기록 8). 검토 항목 셋은 회고와 다음 SPEC 개정으로 넘깁니다.
+     - DV: dv.tb가 F0001 TB로 새 RTL에서 6/6 통과 (운영이 복사본으로 다시 돌려 6/6 확인). dv.lead가 DV pass (01:39:57).
+     - PI (Seat마다 직접 export): synth 233셀 경고 없음 (첫 실행 163셀, skid 버퍼 추가분), LEC 이름 대조 못한 84점은 WARNING이고 리셋에서 15사이클 출력 등가 증명, STA slack 4.030ns, SDC 입출력 지연 경고 12건(사람이 쓰는 제약).
+     - 조합 통과 경로 확인: STA 대체는 레지스터 사이 경로만 보므로 운영이 yosys로 입력→출력 조합 경로를 찾았습니다(`select o:* %ci*:-<FF> i:* %i`). 첫 실행 RTL에서는 `m_axis_tready`, `s_axis_tvalid`, `s_axis_tdata`가 나와 검사가 유효함을 확인했고, 새 RTL에서는 없습니다. pi.lead에 증거로 넘겼고 pi.lead가 PI pass (01:41:43).
+     - 회고 후보: 조합 통과 경로 검사를 `eda sta`(또는 별도 `eda` 검사)에 넣어 PI Seat가 직접 보게 합니다. 이번 첫 실행의 fail은 pi.lead가 RTL을 읽고 찾은 것입니다.
+     - RTL Freeze 승인 대기: 새 실행은 `ready: true`. 첫 실행(0a82)의 RTL Freeze 항목은 PI fail로 `ready: false`인 채 남아 있습니다.
+  10. **RTL Freeze** (2026-10-13 01:42): 사용자가 674c의 RTL Freeze를 승인했고 sjlee로 기록했습니다 (승인 기록 9). 첫 실행 0a82의 RTL Freeze 항목은 "F0001로 대체됨"으로 반려했습니다 (승인 기록 10, 사용자 결정).
+
+#### P8 완료 기준 점검
+
+- **RTL Freeze 도달:** `axis_crc_append-20261013-010208-674c` (SPEC sha 4bc9a419d8799b28).
+- **환류 4형태 분류와 기록:** 부서 환류는 F0001 하나이고 `spec_change`(source `sta`, seat-design-lead)로 기록됐습니다. 결정 기록은 F0001-D(sjlee)입니다. `check_report`, `generator_bug`, `config_change`로 들어온 것은 없습니다. 운영이 직접 고친 툴 결함 다섯(하니스 리셋 표본, `eda lec`, 요구사항 ID 정규식, `spec_diff` 9절, 9절 변경 경로)은 부서 환류가 아니라 이 기록에만 있습니다. 부서에서 들어왔다면 `generator_bug`로 분류할 것들입니다.
+  - 기록 공백: F0001-D의 `new_run`은 하니스 결함으로 실패한 b60e를 가리킵니다. 다시 돌린 674c는 계보(root 0a82)로만 연결됩니다.
+- **회고의 조정안:** 아래.
+
+#### P8 회고: 조정안
+
+실측: 에이전트 실행이 첫 실행 20회(약 3시간), b60e 8회(하니스 결함으로 버림), 674c 5회(약 32분)로 계보 합계 33회였습니다. 사람 결정은 SPEC 고정 1, 기댓값 변경 4, 최종 승인 2, SPEC 변경 1, RTL Freeze 2였습니다. 기댓값 변경 4건과 b60e 실패는 모두 같은 원인(속성 표본에 리셋 없음)이었고, 하니스를 고친 뒤 첫 실행은 Repair와 사람 결정 없이 통과했습니다.
+
+- **검토 항목 조건**
+  1. Repair가 `interface_change`를 내도 사유가 테스트나 체커를 가리키면 Arbiter로 보냅니다. 지금은 Arbiter 없이 실패로 끝납니다 (b60e).
+  2. 같은 테스트와 속성이 두 후보에서 같은 이유로 실패하면 한 항목으로 묶습니다 (E1/E2, E3/E4는 같은 결정을 두 번 받음).
+  3. 기댓값 변경 항목은 결정 뒤 결정 결과(승인자, 시각)로 바꿔 보입니다. 지금은 "(사람 승인 대기)"로 남습니다.
+  4. ASSUMPTION(실행마다 7~8개)은 L1, 타이밍, 리셋을 건드리는 것만 검토 항목으로 올리고 나머지는 Architect 기록으로 둡니다. MODEL_FAMILY는 역할 설정이 바뀔 때만 올립니다.
+  5. SPEC 변경 요청에도 SPEC 툴 검사를 돌려 승인 항목에 붙입니다. F0001이 새로 만든 REQ_MULTI(CRC-E01 문장 둘)는 승인 뒤 실행에서야 드러났습니다.
+  6. 9절에 레지스터 출력 같은 구조 제약이 있으면 입력→출력 조합 경로 검사를 E1 단계에 넣어 위반을 검토 항목으로 냅니다. PI의 `eda`에도 같은 검사를 더합니다 (이번 fail은 pi.lead가 RTL을 읽어 찾았음).
+- **반복 상한**
+  1. `repair_per_candidate` 5 → 3. 이번 Repair 4회(c0 3, c1 1)는 모두 테스트 쪽 결함 때문이었습니다. 같은 테스트가 Repair 두 번 연속 실패하면 상한 전에 Arbiter를 부릅니다.
+  2. 환류 재실행 상한 `RERUN_LIMIT` 3은 그대로 둡니다 (2회 사용). 다만 툴 결함으로 버린 실행은 사유와 함께 따로 기록하고, 상한 계산에서 빼는 것을 사람이 정할 수 있게 합니다.
+- **예산**
+  1. `budget_agent_runs` 200은 실측의 10배입니다 (한 실행 최대 20회). 실행당 60(실측 최대의 3배)으로 낮추고, 같은 Block Top 계보 합계를 따로 보여 줍니다.
+  2. 시간: 하니스 수정 뒤 실행이 약 32분이었습니다. 실행 하나가 2시간을 넘으면 운영에게 알립니다.
+- **P9로 넘길 것:** 대체 LEC의 무한 증명 불가(사내 Formality/Conformal 또는 FSM 재인코딩 끄기), CRC-E03 미정의와 Q-01(다음 SPEC 개정), DV 공백(SVA 미실행, 16비트 카운터 롤오버), 하니스 수정 이전 golden 블록들의 Verifier 체커 재확인.
 
 ### 2026-10-12 P7 게이트웨이와 Web UI 1차
 

@@ -62,6 +62,20 @@ def test_spec_diff(tmp_path):
     assert spec_diff.diff(SPEC, new)["l1_changed"]
 
 
+def test_spec_diff_timing_exception_and_constraints(tmp_path):
+    """6, 7번 섹션의 문자 섞인 ID(ADP-T01, ADP-E01)도 요구사항이고, 9번 섹션(구현 제약)이 바뀌면 처음부터 다시 실행한다."""
+    text = SPEC.read_text()
+    new = tmp_path / "new.md"
+    t01 = next(ln for ln in text.splitlines() if ln.startswith("- ADP-T01"))
+    e01 = next(ln for ln in text.splitlines() if ln.startswith("- ADP-E01"))
+    new.write_text(text.replace(t01, t01 + " 문장 추가.").replace(e01, e01 + " 문장 추가."))
+    d = spec_diff.diff(SPEC, new)
+    assert d["changed"] == ["ADP-E01", "ADP-T01"] and not d["constraints_changed"] and not spec_diff.full_rerun(d)
+    new.write_text(text.replace("### 필수 구조\n", "### 필수 구조\n- 출력은 레지스터에서 낸다.\n", 1))
+    d = spec_diff.diff(SPEC, new)
+    assert d["constraints_changed"] and not d["l1_changed"] and spec_diff.full_rerun(d)
+
+
 def test_feedback_schema_rejects_unknown_form():
     from jsonschema import Draft202012Validator
     schema = json.loads((ROOT / "schema" / "feedback.schema.json").read_text())

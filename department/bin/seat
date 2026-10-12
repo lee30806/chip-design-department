@@ -87,7 +87,9 @@ def main() -> int:
         if os.environ.get("CHIPDEPT_REAL_HOME"):
             env["HOME"] = os.environ["CHIPDEPT_REAL_HOME"]
         trust_worktree(wt.resolve(), Path(env["HOME"]))
-        cmd = ["agy", "--model", s.get("model", seatlib.ROSTER["model"]), "-i",
+        # 권한은 OS sandbox가 강제하므로(쓰기 범위, 다른 Seat 키, 게이트웨이 토큰) agy의 명령별 확인은 끈다.
+        # 확인을 켜 두면 무인 Seat가 명령마다 멈춘다.
+        cmd = ["agy", "--model", s.get("model", seatlib.ROSTER["model"]), "--dangerously-skip-permissions", "-i",
                f"너는 {s['label']} Seat다. AGENTS.md의 지침을 읽고, 지시를 기다려라."]
     os.execvpe("sandbox-exec", ["sandbox-exec", "-f", str(prof), *cmd], env)
 

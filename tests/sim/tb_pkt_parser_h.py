@@ -45,6 +45,8 @@ def properties(h):
 
     h.add_property("ready_always", "sys", ready_always, "FR-04")
     h.add_property("pkt_valid_pulse", "sys", pulse, "FR-05")
+    # 표본에는 리셋 포트도 있다 (표본은 리셋을 푼 사이클부터 읽으므로 이 테스트에서는 늘 비활성)
+    h.add_property("reset_in_sample", "sys", lambda s, c: None if s.get("rst_n") == 1 else f"rst_n={s.get('rst_n')}")
 
 
 def packet(n, rng=None, gap=0):

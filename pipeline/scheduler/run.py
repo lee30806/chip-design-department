@@ -705,6 +705,12 @@ class Run:
             # 외부 리포트를 IR 노드에 대응시킬 때 쓴다
             (rtl / f"{n}.srcmap.json").write_text(json.dumps(e.sourcemap, ensure_ascii=False), encoding="utf-8")
             (self.dir / "ir" / f"{n}.ir.json").write_text(json.dumps(lib[n], ensure_ascii=False, indent=1), encoding="utf-8")
+            if m.role in ("top", "block_top"):   # SDC 골격 (PI의 STA, SDC 검사 입력)
+                from pipeline.emitter.sdc import emit_sdc
+                (rtl / f"{n}.sdc").write_text(emit_sdc(m, mods), encoding="utf-8")
+        for cell in self.cells:   # 표준 셀(동기화 셀 등)도 RTL과 함께 둔다
+            if Path(cell).suffix == ".sv" and Path(cell).exists():
+                (rtl / Path(cell).name).write_text(Path(cell).read_text(encoding="utf-8"), encoding="utf-8")
         self.finish_step("integration", {"ok": final["ok"], "e1": final["e1"], "e2": [{k: x[k] for k in ("verifier", "ok")} for x in final["e2"]]})
         return final
 
