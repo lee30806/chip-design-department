@@ -108,6 +108,29 @@ AUGMENT = """\
 
 DIFF_VERDICT = "out/diff_verdict.json"
 
+SPEC_UPDATE = """\
+# 과제: {module} 모듈 테스트를 개정된 SPEC에 맞추기
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. SPEC이 개정되었다(사람 승인). 네 테스트 `{out}`를 새 SPEC에 맞춘다. RTL은 볼 수 없다.
+
+## 입력
+- `{out}`: 지금 테스트 (이전 SPEC 기준. 이 파일을 고친다)
+- `spec.md`: 새 SPEC, `spec_old.md`: 이전 SPEC
+- `spec_diff.json`: 바뀐 것. `added`, `removed`, `changed`(요구사항 ID), `scenarios_added`, `scenarios_changed`, `scenarios_removed`
+- `l1.json`, `harness/{module}_harness.py`, `tb_guide.md`: 처음 테스트를 쓸 때와 같다
+
+## 할 일
+1. 바뀐 요구사항의 기댓값, 속성을 새 SPEC대로 고친다. 더해진 요구사항은 검사를 더하고, 지워진 요구사항의 검사는 뺀다.
+2. 더해지거나 바뀐 예시 시나리오(8번 섹션)는 directed 테스트로 쓴다. DV에서 찾은 기능 버그는 이 시나리오로 들어온다.
+3. 바뀌지 않은 요구사항의 검사는 그대로 둔다.
+4. 고칠 것이 없으면(바뀐 내용이 이 테스트와 관계없으면) 테스트를 바꾸지 말고 `out/diff_verdict.json`에
+   `{{"no_change": true, "reason": "..."}}`를 쓴다.
+5. 테스트를 바꿨으면 `python3 tools/pl.py model {out} l1.json`이 `"ok": true`가 될 때까지 고친다.
+
+## 규칙
+- `out/` 밖의 파일은 만들거나 고치지 않는다.
+"""
+
 
 def out_rel(module: str) -> str:
     return f"out/test_{module}.py"
@@ -137,6 +160,35 @@ def make_augment_task(name: str, l1: dict, spec: str | Path, test_file: Path, di
     t.inputs["diff.json"] = json.dumps(diff, ensure_ascii=False, indent=1)
     t.text = AUGMENT.format(module=module, out=out_rel(module))
     return t
+
+
+def make_spec_update_task(name: str, l1: dict, spec: str | Path, old_spec: str | Path, test_file: Path, spec_diff: dict) -> Task:
+    module = l1["module"]
+    t = make_task(name, l1, spec)
+    t.inputs[out_rel(module)] = Path(test_file)
+    t.inputs["spec_old.md"] = Path(old_spec)
+    t.inputs["spec_diff.json"] = json.dumps(spec_diff, ensure_ascii=False, indent=1)
+    t.text = SPEC_UPDATE.format(module=module, out=out_rel(module))
+    return t
+
+
+def no_change(work: Path) -> str | None:
+    """SPEC 개정 작업에서 Verifier가 고칠 것이 없다고 답했으면 그 이유."""
+    try:
+        v = json.loads((Path(work) / DIFF_VERDICT).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return str(v.get("reason", "")) if v.get("no_change") is True else None
+
+
+def check_spec_update(l1: dict, before: str):
+    inner = check(l1, before)
+
+    def _check(work: Path) -> list[str]:
+        if (reason := no_change(work)) is not None:
+            return [] if reason.strip() else ["no_change=true의 이유(reason)가 없음"]
+        return inner(work)
+    return _check
 
 
 def spec_undefined(work: Path) -> str | None:

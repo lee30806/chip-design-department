@@ -49,7 +49,9 @@ class BudgetExceeded(RuntimeError):
 
 class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
-                 isolate: bool = True, seeds: list[int] | None = None):
+                 isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None):
+        """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
+        "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +65,8 @@ class Run:
         else:
             self.state = {"spec": str(self.spec_path), "status": "running", "steps": {}, "review": [], "events": [],
                           "agent_runs": 0}
+            if seed:
+                self.state["seed"] = seed
 
     # -- 기록 --
     @staticmethod
@@ -201,9 +205,21 @@ class Run:
         self.finish_step("spec", {"gate": res["gate"], "errors": [i for i in res["issues"] if i["severity"] == "error"]})
         return res["gate"] == "pass"
 
+    def parent_state(self) -> dict | None:
+        seed = self.state.get("seed")
+        return json.loads((Path(seed["parent"]) / "state.json").read_text(encoding="utf-8")) if seed else None
+
     def step_architect(self) -> dict | None:
         if (s := self.done("architect")) is not None:
             return s
+        if (ps := self.parent_state()) is not None:
+            # 재실행: 이전 실행의 모듈 트리와 동결을 그대로 쓴다 (L1이 바뀌는 SPEC 개정은 처음부터 다시 실행)
+            tree = ps["steps"]["architect"]
+            (self.dir / "ir").mkdir(exist_ok=True)
+            for n, ir in [(tree["top"]["module"], tree["top"]), *tree["children"].items()]:
+                (self.dir / "ir" / f"{n}.l1.json").write_text(json.dumps(ir, ensure_ascii=False, indent=1), encoding="utf-8")
+            self.finish_step("architect", tree)
+            return tree
         top_l1, _ = block_top_l1(load_spec(self.spec_path))
         res = self.agent("architect", architect.make_task("architect", top_l1, self.spec_path), architect.check(top_l1))
         if not res.ok:
@@ -225,6 +241,29 @@ class Run:
         if (s := self.done("verifiers")) is not None:
             return s
         l1 = {k: top_ir[k] for k in ("module", "role", "params", "domains", "ports") if k in top_ir}
+        if (ps := self.parent_state()) is not None:
+            tbs = list(ps["steps"]["verifiers"])
+            seed = self.state["seed"]
+            if seed["kind"] == "spec_change":
+                for k in range(len(tbs)):
+                    before = Path(tbs[k]).read_text(encoding="utf-8")
+                    res = self.agent("verifier", verifier.make_spec_update_task(
+                        f"verifier/v{k}/spec_update", l1, self.spec_path, seed["old_spec"], Path(tbs[k]), seed["spec_diff"]),
+                        verifier.check_spec_update(l1, before))
+                    if not res.ok:
+                        self.review("VERIFIER_SPEC_UPDATE_FAILED", f"Verifier {k}가 개정된 SPEC에 테스트를 맞추지 못함: {res.errors[:3]}",
+                                    "verifier")
+                        continue
+                    if (why := verifier.no_change(Path(res.workdir))) is not None:
+                        self.event("spec_update", f"Verifier {k}: 고칠 것 없음 ({why[:200]})")
+                        continue
+                    new = res.outputs[verifier.out_rel(l1["module"])]
+                    self.state.setdefault("tb_history", []).append({"verifier": k, "from": tbs[k], "to": new, "spec_update": True})
+                    tbs[k] = new
+                self.verifier_diff_review(tbs, l1, "SPEC 개정 후 ")
+            self.seed_modules(ps)
+            self.finish_step("verifiers", tbs)
+            return tbs
         names = [f"verifier/v{k}" for k in range(self.roles.counts.get("verifier", 1))]
         with ThreadPoolExecutor(len(names)) as ex:
             results = list(ex.map(lambda n: self.agent("verifier", verifier.make_task(n, l1, self.spec_path),
@@ -236,6 +275,56 @@ class Run:
             self.verifier_diff_review(tbs, l1)
         self.finish_step("verifiers", tbs)
         return tbs
+
+    def seed_modules(self, ps: dict) -> None:
+        """이전 실행에서 고른 모듈 IR을 후보 하나(c0)로 들여온다. 다시 쓰지 않고 검증부터 한다."""
+        tree = ps["steps"]["architect"]
+        chosen = ps.get("chosen") or {}
+        parent = Path(self.state["seed"]["parent"])
+        for m, ch in tree["children"].items():
+            if ch.get("role") != "module" or m not in chosen:
+                continue
+            src = json.loads((parent / "modules" / f"{m}__c{chosen[m]}.json").read_text(encoding="utf-8"))
+            self.save_mod(f"{m}/c0", {"status": "running", "repairs": 0, "hashes": [ir_hash(src["ir"])], "history": [],
+                                      "ir": src["ir"], "from_parent": f"{m}/c{chosen[m]}"})
+        self.state["author_count"] = 1
+
+    def step_external_repair(self, tree: dict) -> None:
+        """외부 검사 리포트에서 조각 내부로 분류된 항목을 그 모듈의 Repair로 고친다. 이어서 일반 검증 루프를 탄다."""
+        seed = self.state.get("seed") or {}
+        if seed.get("kind") != "external_repair" or self.done("external_repair") is not None:
+            return
+        done = {}
+        for m, items in sorted(seed.get("failures", {}).items()):
+            key = f"{m}/c0"
+            st = self.mod_state(key)
+            if "ir" not in st:
+                self.review("EXTERNAL_UNKNOWN_MODULE", f"외부 리포트의 모듈 {m}이 이번 실행에 없음", m)
+                continue
+            failure = {"classified": items, "report": None,
+                       "source": "외부 검사 리포트. 파이프라인 안의 테스트는 통과했지만 외부 툴이 이 줄을 지적함"}
+            res = self.agent("repair", repair.make_task(f"repair/{m}/c0/external", st["ir"], self.spec_path, failure, []),
+                             repair.check(st["ir"]))
+            st["repairs"] += 1
+            if not res.ok:
+                st.update(status="failed", reason=f"외부 리포트 Repair 실패: {res.errors[:3]}")
+                self.save_mod(key, st)
+                done[m] = "failed"
+                continue
+            patches = json.loads(Path(res.outputs[repair.OUT]).read_text())
+            if (reason := repair.interface_change(patches)) is not None:
+                self.review("INTERFACE_CHANGE", f"{m}: 외부 리포트를 고치려면 L1 변경이 필요함: {reason}", res.workdir, "repair")
+                st.update(status="interface_change")
+                self.save_mod(key, st)
+                done[m] = "interface_change"
+                continue
+            new = apply(st["ir"], patches)
+            st["hashes"].append(ir_hash(new.ir))
+            st["history"] += patches
+            st["ir"] = new.ir
+            self.save_mod(key, st)
+            done[m] = "patched"
+        self.finish_step("external_repair", done)
 
     def verifier_diff_review(self, tbs: list[str], l1: dict, when: str = "") -> None:
         hdir = self.dir / "harness"
@@ -458,7 +547,7 @@ class Run:
         """모듈마다 Author 후보를 병렬로 돌리고, 같은 번호 후보끼리 묶어 검증한 뒤 묶음을 고른다.
         자식부터(여기서는 Block Top의 자식 한 단계)."""
         mods = [n for n, c in tree["children"].items() if c.get("role") == "module"]
-        n = self.roles.counts.get("author", 1)
+        n = self.state.get("author_count") or self.roles.counts.get("author", 1)
         jobs = [(m, c) for m in mods for c in range(n)]
         with ThreadPoolExecutor(max(1, len(jobs))) as ex:
             list(ex.map(lambda mc: self.author_step(mc[0], mc[1], tree), jobs))
@@ -611,7 +700,10 @@ class Run:
         rtl.mkdir(exist_ok=True)
         mods = {n: Module(r) for n, r in lib.items()}
         for n, m in mods.items():
-            (rtl / f"{n}.sv").write_text(emit(m, mods).text, encoding="utf-8")
+            e = emit(m, mods)
+            (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
+            # 외부 리포트를 IR 노드에 대응시킬 때 쓴다
+            (rtl / f"{n}.srcmap.json").write_text(json.dumps(e.sourcemap, ensure_ascii=False), encoding="utf-8")
             (self.dir / "ir" / f"{n}.ir.json").write_text(json.dumps(lib[n], ensure_ascii=False, indent=1), encoding="utf-8")
         self.finish_step("integration", {"ok": final["ok"], "e1": final["e1"], "e2": [{k: x[k] for k in ("verifier", "ok")} for x in final["e2"]]})
         return final
@@ -633,6 +725,7 @@ class Run:
                 self.state["status"] = "failed"
                 self.review("VERIFIER_FAILED", "쓸 수 있는 Verifier 테스트가 없음")
                 return self.report()
+            self.step_external_repair(tree)
             chosen = self.step_modules(tree, tbs)
             mods = [n for n, c in tree["children"].items() if c.get("role") == "module"]
             if len(chosen) < len(mods):
@@ -641,6 +734,8 @@ class Run:
                 return self.report()
             final = self.step_integrate(tree, chosen, tbs)
             self.state["status"] = "pass" if final["ok"] else "failed"
+            if (self.state.get("seed") or {}).get("kind") == "external_repair" and final["ok"]:
+                self.review("EXTERNAL_RECHECK", "외부 리포트 항목을 고쳤고 파이프라인 검증은 통과함. 외부 툴로 다시 확인해야 함", "integration")
         except BudgetExceeded as e:
             self.state["status"] = "budget_exceeded"
             self.review("BUDGET", str(e))
@@ -852,8 +947,12 @@ def main(argv=None) -> int:
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--roles", default=str(ROOT / "config" / "roles.json"))
     ap.add_argument("--cells", nargs="*")
+    ap.add_argument("--seed", type=Path, help="재실행 정보(JSON). 처음 실행할 때만 읽는다")
+    ap.add_argument("--no-isolate", action="store_true", help="격리하지 않음 (가짜 agent를 쓰는 시험 전용)")
     args = ap.parse_args(argv)
-    run = Run(Path(args.run_dir), Path(args.spec), roles_mod.load(args.roles), [Path(c) for c in args.cells] if args.cells else None)
+    seed = json.loads(args.seed.read_text(encoding="utf-8")) if args.seed else None
+    run = Run(Path(args.run_dir), Path(args.spec), roles_mod.load(args.roles), [Path(c) for c in args.cells] if args.cells else None,
+              isolate=not args.no_isolate, seed=seed)
     rep = run.execute()
     print(json.dumps({k: rep[k] for k in ("status", "agent_runs", "chosen", "candidates")}, ensure_ascii=False, indent=1))
     return 0 if rep["status"] == "pass" else 1

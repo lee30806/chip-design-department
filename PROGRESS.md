@@ -11,7 +11,8 @@
 | P2 결정론적 툴 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 남은 항목은 아래 대기 항목 (조건 충족 시 진행) |
 | P3 SPEC 변환과 검사 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 입력: I3C 예시 SPEC. 남은 항목은 대기 항목 (조건 충족 시 진행) |
 | P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`) |
-| P5 이후 | 시작 전 | |
+| P5 파이프라인 API와 환류 입력 | **완료 (가능한 범위)** | 사내 툴 리포트 양식은 샘플을 받으면 양식 파일만 추가 |
+| P6 이후 | 시작 전 | |
 
 ## 제외 항목 (사용자 결정)
 
@@ -31,11 +32,46 @@
 | 블록 다이어그램 파싱 (Visio, SVG)과 경계 신호 교차 검사 | P3 | 다이어그램 원본과 그림 작성 규칙 |
 | IP-XACT와 레지스터 맵 대조 | P3 | IP-XACT 파일 |
 | Linux 서버에서 에이전트 격리 (bubblewrap 등) | P4 | 폐쇄망 서버 환경 |
+| 사내 툴 리포트 양식 (Superlint, Xprop, DFT, DCLint, 합성, LEC) | P5 | 실제 리포트 샘플. `config/report_formats/`에 양식 파일만 추가 |
+| 승인된 RTL을 읽기 전용 브랜치로 제공 | P5 | 사내 Git 서버와 브랜치 규칙 (지금은 통과한 실행의 RTL을 API로 읽기 전용 제공) |
+| API 인증 | P5 → P7 | 게이트웨이 (지금은 `X-Role` 헤더로 역할을 밝힘) |
 | 동결 해제 전파 (L1 변경 요청 → Architect 재실행, 진행 중 루프 취소) | P4 | L1 변경이 실제로 필요한 블록 (P8) |
 | 두 단계 이상의 모듈 트리 | P4 | 하위 모듈이 다시 나뉘는 블록 (P8) |
 | 에이전트 단독 평가 나머지 (Author, Verifier, Architect 각 3블록, Repair cobs) | P4 | agy 사용량 여유 |
 
 ## 진행 기록
+
+### 2026-10-12 P5 파이프라인 API와 환류 입력
+
+사용자 결정: 외부 리포트는 나중에 양식 파일만 고쳐 반영할 수 있게 하고, 지금은 가능한 범위만 구현합니다.
+
+- **리포트 양식 파일:** `config/report_formats/<이름>.json` + `pipeline/feedback/reports.py`.
+  - 정규식의 이름 있는 그룹(severity, rule, file, line, message)으로 줄을 `Finding`으로 바꿉니다.
+  - 기본값, 여러 줄 메시지(continuation), 무시할 줄(ignore), 심각도 대응(severity_map)을 지원합니다.
+  - 양식 파일 검사가 있고, 사용법은 `config/report_formats/README.md`에 적었습니다.
+  - 지금 있는 양식: `verilator`(파이프라인 E1 파서와 같은 결과), `iverilog`(실제 출력으로 시험).
+- **환류 스키마:** `schema/feedback.schema.json`. 네 형태(검사 실패 리포트, SPEC 변경 요청, 생성기 버그 리포트, 설정 변경)만 받고 그 밖의 필드는 거부합니다.
+- **저장소와 API:** `pipeline/api/store.py`, `server.py`(표준 라이브러리 HTTP), `__main__.py`(CLI).
+  - 실행 제출: SPEC 원문과 설정 → 실행 ID. 스케줄러를 별도 프로세스로 돌립니다.
+  - 조회: 상태, 모듈, 검토 항목, 보고서, 승인 대기, 최종 RTL(통과한 실행만, 읽기 전용), 이력.
+  - 기댓값 수정 결정과 이어서 실행.
+  - 역할은 `X-Role` 헤더로 밝힙니다: 제출은 rtl-engineer/chip-lead, 환류는 design-lead, SPEC 변경 승인은 chip-lead/rtl-engineer.
+- **검사 실패 리포트 처리:**
+  - 양식으로 파싱하고, 실행의 소스맵(`rtl/*.srcmap.json`, 통합 때 저장)으로 분류합니다.
+  - 조각 내부(Repair 대상)는 재실행 `external_repair`로 넘깁니다. 이 재실행은 부모 실행의 선택 IR을 들여와 해당 모듈만 Repair한 뒤 전체 검증을 다시 합니다. 끝나면 `EXTERNAL_RECHECK` 검토 항목을 남깁니다.
+  - 골격은 `generator_bugs.jsonl`에, 인터페이스 변경은 알림으로 보냅니다.
+- **SPEC 변경 요청:**
+  - 제출하면 `spec_diff`로 바뀐 요구사항, 시나리오, L1 변경 여부를 계산해 승인 대기로 둡니다.
+  - 승인되면 두 갈래로 나뉩니다.
+    - L1이 같으면 재실행 `spec_change`: Verifier가 테스트만 새 SPEC에 맞추고(고칠 것이 없으면 `no_change`), 선택된 RTL을 다시 검증해 실패한 모듈만 고칩니다.
+    - L1이 바뀌면 처음부터 다시 실행합니다.
+- **생성기 버그와 설정 변경:** 생성기 버그는 기록만 하고 LLM으로 보내지 않습니다. 설정 변경은 `config.json`에 남겨 다음 제출부터 반영합니다.
+- **교착 방지:**
+  - 같은 Block Top(같은 계보)의 환류 재실행이 3회에 이르면 거부하고 알립니다.
+  - 24시간 동안 상태 파일 갱신이 없으면 멈추고(`halted`) 알립니다. 서버는 1시간마다 점검하고, `watchdog` 명령으로도 점검할 수 있습니다.
+- **이력:** 모든 환류와 결정을 `feedback.jsonl`에 남깁니다. 실행 ID, 요구사항 ID, 제출자, 결과, 새 실행 ID가 들어갑니다.
+- **완료 기준 확인 (가짜 agent 시험):** verilator 양식 리포트 한 건에서 조각 내부 줄은 `lint_fragment`로 Repair 재실행되고, 골격 줄은 `lint_skeleton`으로 생성기 버그가 됩니다.
+- **시험:** `tests/test_feedback.py` 6개, `tests/sim/test_api.py` 4개(제출과 조회, 검사 리포트 재실행, SPEC 변경 재실행과 재실행 상한, 생성기 버그, 설정 변경, watchdog, HTTP). 전체 테스트 215개가 통과했습니다.
 
 ### 2026-10-12 P4 마감
 
