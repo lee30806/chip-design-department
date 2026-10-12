@@ -146,6 +146,11 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     build_dir.mkdir(parents=True, exist_ok=True)
     build_log = build_dir / "build.log"
     runner = get_runner("verilator")
+    # cocotb는 빌드 환경의 PYTHONPATH를 이 프로세스의 sys.path로 둔다. 빌드 중 make가 부르는 python3가 다른 버전이면
+    # 그 표준 라이브러리를 잘못 읽어 죽으므로, 이 인터프리터의 python3를 PATH 맨 앞에 둔다
+    py_bin = str(Path(sys.executable).parent)
+    if not os.environ.get("PATH", "").startswith(py_bin + os.pathsep):
+        os.environ["PATH"] = py_bin + os.pathsep + os.environ.get("PATH", "")
     try:
         # runner는 test 전에 같은 객체에서 build를 불러야 한다. 다시 쓸 때는 always=False로 소스가 바뀌었을 때만 빌드한다
         runner.build(sources=[Path(f) for f in files], hdl_toplevel=top, build_dir=build_dir,

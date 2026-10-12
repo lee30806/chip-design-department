@@ -1,0 +1,316 @@
+# Chip Design Department 부서 계층 (OpenRig RigSpec 0.2)
+# Seat 15개는 모두 terminal 노드이고, 시작하면 bin/seat가 Seat별 sandbox 프로필로 감싼 agy(또는 시험용 셸)로 바뀝니다.
+# 권한은 edge가 아니라 sandbox로 강제합니다 (ARCHITECTURE.md 8절). edge는 보고와 위임 관계만 나타냅니다.
+# infra Pod의 pipeline은 파이프라인 API 서버이며, Seat 세션과 실행 상태를 분리합니다.
+version: "0.2"
+name: chip-dept
+summary: 칩 설계 부서. 총괄, Design, DV, PI 네 Pod와 Seat 15개, 파이프라인 API 서버.
+culture_file: CULTURE.md
+docs:
+  - path: README.md
+pods:
+  - id: lead
+    label: 총괄
+    summary: 마일스톤, Block Top 실행 순서, 최종 승인 자료
+    continuity_policy:
+      enabled: true
+      sync_triggers: [pre_shutdown]
+      artifacts:
+        session_log: true
+        restore_brief: true
+      restore_protocol:
+        peer_driven: false
+        verify_via_quiz: false
+    members:
+      - id: chip
+        label: "Chip-lead"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat lead.chip"
+              phase: after_ready
+              idempotent: true
+    edges: []
+  - id: design
+    label: Design
+    summary: 수정 요구의 단일 창구, SPEC, 파이프라인 운영, Sanity
+    continuity_policy:
+      enabled: true
+      sync_triggers: [pre_shutdown]
+      artifacts:
+        session_log: true
+        restore_brief: true
+      restore_protocol:
+        peer_driven: false
+        verify_via_quiz: false
+    members:
+      - id: lead
+        label: "Design-lead"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat design.lead"
+              phase: after_ready
+              idempotent: true
+      - id: arch
+        label: "Architecture Engineer"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat design.arch"
+              phase: after_ready
+              idempotent: true
+      - id: rtl
+        label: "RTL Engineer"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat design.rtl"
+              phase: after_ready
+              idempotent: true
+      - id: sanity
+        label: "Sanity Engineer"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat design.sanity"
+              phase: after_ready
+              idempotent: true
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: arch
+      - kind: delegates_to
+        from: lead
+        to: rtl
+      - kind: delegates_to
+        from: lead
+        to: sanity
+  - id: dv
+    label: DV
+    summary: 파이프라인 Verifier와 독립된 검증 (Verifier 산출물 읽기 금지)
+    continuity_policy:
+      enabled: true
+      sync_triggers: [pre_shutdown]
+      artifacts:
+        session_log: true
+        restore_brief: true
+      restore_protocol:
+        peer_driven: false
+        verify_via_quiz: false
+    members:
+      - id: lead
+        label: "DV-lead"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat dv.lead"
+              phase: after_ready
+              idempotent: true
+      - id: vplan
+        label: "vPlan"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat dv.vplan"
+              phase: after_ready
+              idempotent: true
+      - id: tb
+        label: "TB"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat dv.tb"
+              phase: after_ready
+              idempotent: true
+      - id: checker
+        label: "Checker/Assertion"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat dv.checker"
+              phase: after_ready
+              idempotent: true
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: vplan
+      - kind: delegates_to
+        from: lead
+        to: tb
+      - kind: delegates_to
+        from: lead
+        to: checker
+  - id: pi
+    label: PI
+    summary: 승인된 RTL의 구현 가능성 판정, UPF
+    continuity_policy:
+      enabled: true
+      sync_triggers: [pre_shutdown]
+      artifacts:
+        session_log: true
+        restore_brief: true
+      restore_protocol:
+        peer_driven: false
+        verify_via_quiz: false
+    members:
+      - id: lead
+        label: "PI-lead"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.lead"
+              phase: after_ready
+              idempotent: true
+      - id: synth
+        label: "Synthesis"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.synth"
+              phase: after_ready
+              idempotent: true
+      - id: lec
+        label: "LEC"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.lec"
+              phase: after_ready
+              idempotent: true
+      - id: power
+        label: "Power Intent"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.power"
+              phase: after_ready
+              idempotent: true
+      - id: sta
+        label: "STA"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.sta"
+              phase: after_ready
+              idempotent: true
+      - id: sdc
+        label: "SDC Lint"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/seat pi.sdc"
+              phase: after_ready
+              idempotent: true
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: synth
+      - kind: delegates_to
+        from: lead
+        to: lec
+      - kind: delegates_to
+        from: lead
+        to: power
+      - kind: delegates_to
+        from: lead
+        to: sta
+      - kind: delegates_to
+        from: lead
+        to: sdc
+  - id: infra
+    label: Infra
+    summary: 파이프라인 API 서버. Seat sandbox 밖에서 도는 유일한 IR/RTL 쓰기 주체
+    members:
+      - id: pipeline
+        label: "Pipeline API"
+        agent_ref: "builtin:terminal"
+        profile: none
+        runtime: terminal
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "exec ./bin/pipeline-server"
+              phase: after_ready
+              idempotent: true
+    edges: []
+edges:
+  - kind: delegates_to
+    from: lead.chip
+    to: design.lead
+  - kind: delegates_to
+    from: lead.chip
+    to: dv.lead
+  - kind: delegates_to
+    from: lead.chip
+    to: pi.lead
+  - kind: escalates_to
+    from: dv.lead
+    to: design.lead
+  - kind: escalates_to
+    from: pi.lead
+    to: design.lead
+  - kind: escalates_to
+    from: design.lead
+    to: lead.chip

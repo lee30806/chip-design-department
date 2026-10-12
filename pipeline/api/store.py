@@ -176,8 +176,9 @@ class Store:
         if not self.isolate:
             cmd.append("--no-isolate")
         log = open(d / "scheduler.log", "a", encoding="utf-8")
-        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                                env={**os.environ, "PYTHONPATH": str(ROOT)})
+        # 새 세션 + 표준 입력 없음: API 서버(또는 그 터미널)를 다시 시작해도 실행은 영향을 받지 않는다
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                                env={**{k: v for k, v in os.environ.items() if k != "PYTHONHOME"}, "PYTHONPATH": str(ROOT)})
         self.procs[run_id] = proc
         meta["pid"], meta["started"] = proc.pid, _now()
         self._save_meta(run_id, meta)

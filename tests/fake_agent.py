@@ -54,6 +54,9 @@ elif mode == "quota":
     print("error: Individual quota reached. RESOURCE_EXHAUSTED (code 429)", file=sys.stderr)
     sys.exit(3)
 elif mode == "roles":
+    if os.environ.get("FAKE_DELAY"):   # 실행이 진행 중인 동안 다른 일을 시험하려고 (Seat 초기화 등)
+        import time
+        time.sleep(float(os.environ["FAKE_DELAY"]))
     # FAKE_FILES: {"Architect": {"상대 경로": 내용 또는 "@원본 파일"}, "Author": {...}, ...}. 스케줄러 흐름 시험용.
     # FAKE_LOG가 있으면 실행한 역할을 한 줄씩 남긴다 (재개 시험에서 다시 실행됐는지 보려고).
     task = (cwd / "TASK.md").read_text()

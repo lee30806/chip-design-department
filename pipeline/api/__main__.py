@@ -28,6 +28,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("serve")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8740)
+    s.add_argument("--roles", type=Path, help="역할 설정 (기본 config/roles.json)")
+    s.add_argument("--no-isolate", action="store_true", help="에이전트를 격리하지 않음 (가짜 agent를 쓰는 시험 전용)")
     s = sub.add_parser("submit")
     s.add_argument("spec", type=Path)
     s.add_argument("--by", required=True)
@@ -57,7 +59,7 @@ def main(argv=None) -> int:
     s = sub.add_parser("watchdog")
     s.add_argument("--hours", type=float, default=24.0)
     a = ap.parse_args(argv)
-    store = Store(a.store)
+    store = Store(a.store, base_roles=getattr(a, "roles", None), isolate=not getattr(a, "no_isolate", False))
     try:
         if a.cmd == "serve":
             from pipeline.api.server import serve

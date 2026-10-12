@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Seat 진입점. rig.yaml의 terminal 노드가 시작할 때 이 스크립트로 넘어온다.
+
+    seat <pod.member>
+
+1. Seat의 Git worktree를 준비한다 (`seat/<pod>-<member>` 브랜치, 저장소 밖 `$CHIPDEPT_DEPT_HOME/seats/`).
+2. 역할 지침(공통 + 역할)을 worktree의 AGENTS.md, GEMINI.md로 둔다.
+3. Seat별 sandbox 프로필로 감싼 프로세스로 바뀐다(exec). 이후 이 Seat에서 실행되는 모든 것이 프로필을 따른다.
+   CHIPDEPT_SEAT_MODE=agent(기본)면 agy, shell이면 셸 (권한 시험용).
+"""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import seatlib  # noqa: E402
+
+
+def ensure_worktree(seat_id: str) -> Path:
+    wt = seatlib.worktree(seat_id)
+    if not (wt / ".git").exists():
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        branch = os.environ.get("CHIPDEPT_SEAT_BRANCH_PREFIX", "seat/") + seat_id.replace(".", "-")
+        subprocess.run(["git", "-C", str(seatlib.REPO), "worktree", "prune"], check=False, capture_output=True)
+        subprocess.run(["git", "-C", str(seatlib.REPO), "worktree", "add", "-B", branch, str(wt), "HEAD"],
+                       check=True, capture_output=True, text=True)
+    return wt
+
+
+def write_guidance(seat_id: str, wt: Path) -> None:
+    g = seatlib.DEPT / "guidance"
+    text = (g / "common.md").read_text(encoding="utf-8") + "\n\n" + (g / f"{seat_id}.md").read_text(encoding="utf-8")
+    for name in ("AGENTS.md", "GEMINI.md"):
+        (wt / name).write_text(text, encoding="utf-8")
+    exclude = Path(subprocess.run(["git", "-C", str(wt), "rev-parse", "--git-common-dir"], capture_output=True,
+                                  text=True, check=True).stdout.strip())
+    if not exclude.is_absolute():
+        exclude = wt / exclude
+    ex = exclude / "info" / "exclude"
+    ex.parent.mkdir(parents=True, exist_ok=True)
+    cur = ex.read_text(encoding="utf-8") if ex.exists() else ""
+    add = [x for x in ("/AGENTS.md", "/GEMINI.md") if x not in cur.splitlines()]
+    if add:
+        ex.write_text(cur.rstrip("\n") + ("\n" if cur else "") + "\n".join(add) + "\n", encoding="utf-8")
+
+
+def trust_worktree(wt: Path, home: Path) -> bool:
+    """agy가 Seat 폴더마다 묻는 신뢰 확인을 없애려고, worktree를 agy CLI 설정의 trustedWorkspaces에 넣는다 (사용자 승인 2026-10-12).
+    다른 설정은 그대로 두고, 이미 있으면 쓰지 않는다. 넣었으면 True."""
+    import json
+    path = home / ".gemini" / "antigravity-cli" / "settings.json"
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except json.JSONDecodeError:
+        return False   # 설정 파일이 깨져 있으면 건드리지 않는다 (agy가 직접 묻게 둠)
+    trusted = cfg.setdefault("trustedWorkspaces", [])
+    if str(wt) in trusted:
+        return False
+    trusted.append(str(wt))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".seat.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return True
+
+
+def main() -> int:
+    seat_id = sys.argv[1]
+    s = seatlib.seat(seat_id)
+    wt = ensure_worktree(seat_id)
+    write_guidance(seat_id, wt)
+    prof = seatlib.dept_home() / "profiles" / f"{seat_id}.sb"
+    prof.parent.mkdir(parents=True, exist_ok=True)
+    prof.write_text(seatlib.profile(seat_id), encoding="utf-8")
+    env = dict(os.environ)
+    env.update(CHIPDEPT_SEAT=seat_id, CHIPDEPT_SEAT_ROLE=s.get("api_role", "none"),
+               CHIPDEPT_API=os.environ.get("CHIPDEPT_API", "http://127.0.0.1:8740"),
+               PATH=f"{seatlib.DEPT / 'bin'}:{os.environ.get('PATH', '')}")
+    os.chdir(wt)
+    if os.environ.get("CHIPDEPT_SEAT_MODE", "agent") == "shell":
+        cmd = ["/bin/zsh", "-f", "-i"]
+        env["PS1"] = f"{seat_id}> "
+    else:
+        # OpenRig는 HOME을 격리하므로 agy 로그인 정보가 있는 실제 HOME으로 돌린다
+        if os.environ.get("CHIPDEPT_REAL_HOME"):
+            env["HOME"] = os.environ["CHIPDEPT_REAL_HOME"]
+        trust_worktree(wt.resolve(), Path(env["HOME"]))
+        cmd = ["agy", "--model", s.get("model", seatlib.ROSTER["model"]), "-i",
+               f"너는 {s['label']} Seat다. AGENTS.md의 지침을 읽고, 지시를 기다려라."]
+    os.execvpe("sandbox-exec", ["sandbox-exec", "-f", str(prof), *cmd], env)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,7 +12,8 @@
 | P3 SPEC 변환과 검사 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 입력: I3C 예시 SPEC. 남은 항목은 대기 항목 (조건 충족 시 진행) |
 | P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`) |
 | P5 파이프라인 API와 환류 입력 | **완료 (가능한 범위)** | 사내 툴 리포트 양식은 샘플을 받으면 양식 파일만 추가 |
-| P6 이후 | 시작 전 | |
+| P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
+| P7 이후 | 시작 전 | |
 
 ## 제외 항목 (사용자 결정)
 
@@ -31,7 +32,9 @@
 | Word SPEC 변환 (10개 섹션 대응) | P3 | 사내 Word 양식 원본 |
 | 블록 다이어그램 파싱 (Visio, SVG)과 경계 신호 교차 검사 | P3 | 다이어그램 원본과 그림 작성 규칙 |
 | IP-XACT와 레지스터 맵 대조 | P3 | IP-XACT 파일 |
-| Linux 서버에서 에이전트 격리 (bubblewrap 등) | P4 | 폐쇄망 서버 환경 |
+| Linux 서버에서 에이전트와 Seat 격리 (계정 분리, bubblewrap 등) | P4, P6 | 폐쇄망 서버 환경 |
+| 폐쇄망 설치 (사내 npm 미러, 외부 호출 차단, 설치 문서) | P6 | 사내 환경. P0 X5 확인 목록 |
+| Sanity 연동 (E3 결과 수신, DCLint 입력, EPC 래퍼) | P6 | E3 제외, 사내 툴 |
 | 사내 툴 리포트 양식 (Superlint, Xprop, DFT, DCLint, 합성, LEC) | P5 | 실제 리포트 샘플. `config/report_formats/`에 양식 파일만 추가 |
 | 승인된 RTL을 읽기 전용 브랜치로 제공 | P5 | 사내 Git 서버와 브랜치 규칙 (지금은 통과한 실행의 RTL을 API로 읽기 전용 제공) |
 | API 인증 | P5 → P7 | 게이트웨이 (지금은 `X-Role` 헤더로 역할을 밝힘) |
@@ -40,6 +43,49 @@
 | 에이전트 단독 평가 나머지 (Author, Verifier, Architect 각 3블록, Repair cobs) | P4 | agy 사용량 여유 |
 
 ## 진행 기록
+
+### 2026-10-12 P6 부서 계층 (OpenRig)
+
+사용자 결정: OpenRig를 다시 설치해 완료 기준까지 시험합니다.
+
+- **설치:**
+  - OpenRig 0.6.6을 `~/.cache/chip-design-department/openrig`에 설치했습니다.
+  - HOME, OPENRIG_HOME, tmux 소켓(`/tmp/cdrt`), 포트(7533)를 따로 둬서 사용자 설정을 건드리지 않습니다 (P0 X5와 같은 방식).
+- **`department/`:**
+  - `rig.yaml`: Pod 4개, Seat 15개, infra Pod의 파이프라인 API 서버, edge(위임, 보고), Pod 연속성 정책. `rig spec validate`를 통과합니다.
+  - `seats.json`(명단, API 역할, DV 표시), `CULTURE.md`, `guidance/`(공통 규칙과 역할별 지침 15개).
+  - `bin/seat`: Seat 진입점.
+    - Seat별 Git worktree(저장소 밖)를 만들고, 지침을 `AGENTS.md`, `GEMINI.md`로 둡니다.
+    - Seat별 `sandbox-exec` 프로필로 감싼 agy로 바뀝니다. 시험 때는 agy 대신 셸로 바뀝니다.
+  - `bin/deptctl`: Seat의 API 클라이언트. 역할에 없는 쓰기 명령을 숨깁니다 (환류는 Design-lead만).
+  - `bin/pipeline-server`: infra Pod의 API 서버.
+  - `dept.py`: 올리기, 내리기, Seat 초기화, 스냅숏과 복구, Seat에 명령 보내기.
+- **Seat 런타임:**
+  - OpenRig는 agy를 직접 지원하지 않으므로 `terminal` 노드의 시작 동작(`send_text`)으로 Seat 진입점을 실행합니다 (P0 X3의 대안).
+  - 권한은 OpenRig의 edge가 아니라 sandbox로 강제합니다.
+- **sandbox 프로필:**
+  - 모든 Seat: 파이프라인 저장소와 RUNS 쓰기 거부. 저장소 원본과 다른 Seat의 worktree 쓰기 거부(`.git`만 허용).
+  - DV Seat: RUNS와 STORE 읽기 거부.
+- **완료 기준 시험** (`CHIPDEPT_RIG_TEST=1`, Seat는 셸 모드, 파이프라인은 가짜 agent):
+  - 권한 위반 시도가 실패합니다.
+    - DV TB Seat가 실제 실행의 Verifier 테스트를 `cat`하면 `operation not permitted`가 납니다.
+    - RTL Engineer, Design-lead, Chip-lead가 실행 상태 파일에 쓰려 하면 거부됩니다.
+    - 저장소 원본 쓰기도 거부됩니다. 자기 worktree에서 커밋은 됩니다.
+    - RTL Engineer의 `deptctl feedback`은 거부됩니다.
+  - Seat 세션 초기화가 실행에 영향을 주지 않습니다. 실행 중에 RTL Engineer, Chip-lead Seat와 API 서버 노드를 새 세션으로 띄워도 실행이 `pass`로 끝납니다.
+  - 복구: 스냅숏을 남기고 내린 뒤 복구하면, Seat에 sandbox가 다시 걸리고 실행 기록이 남아 있습니다.
+- **시험에서 찾아 고친 것:**
+  - 스케줄러 프로세스가 API 서버 터미널의 표준 입력을 물려받았습니다. 그래서 서버 노드를 초기화하면 그 뒤 시뮬레이터 빌드가 죽었습니다 (`Bad file descriptor`). 표준 입력을 `/dev/null`로 바꿨습니다.
+  - cocotb는 빌드 환경의 PYTHONPATH를 이 프로세스의 `sys.path`(3.11)로 둡니다. PATH에서 `python3`가 다른 버전(시스템 3.9)이면 Verilator 빌드가 죽었습니다. `sim()`이 이 인터프리터의 `python3`를 PATH 맨 앞에 둡니다.
+  - 데몬과 Seat에 호출한 프로세스의 파이썬 환경(PYTHONHOME 등)을 넘기지 않습니다.
+- **스냅숏 복구의 제약:** Seat를 새로 띄운(`--fresh`) 뒤에는 OpenRig가 스냅숏의 점유자가 옛것이라며 복구를 거부합니다. 그래서 `recover`는 그때 `rig.yaml`로 새로 띄웁니다. Seat 상태는 worktree와 저장소에 있으므로 결과는 같습니다.
+- **agy Seat 확인:**
+  - agent 모드로 Seat 하나를 띄워 보니 sandbox 안에서 agy가 시작됐습니다.
+  - agy가 Seat 폴더마다 처음 한 번 폴더 신뢰 확인을 받았습니다.
+  - 사용자 결정에 따라 Seat 진입점이 agent 모드로 시작할 때 자기 worktree를 agy CLI 설정의 `trustedWorkspaces`에 넣게 했습니다. 다른 설정은 그대로 두고, 중복 없이 넣고, 깨진 설정은 건드리지 않습니다.
+  - 다시 확인: 확인 없이 agy가 시작되어 `AGENTS.md`를 읽고 역할(TB)과 공통 규칙을 요약했습니다.
+  - 시험용 항목은 지웠고, 사용자 agy 설정이 시험 전과 같음을 확인했습니다.
+- **시험:** `tests/test_department.py` 7개 (기본 4개, rig 3개). rig 시험 3개는 기본 실행에서 건너뜁니다.
 
 ### 2026-10-12 P5 파이프라인 API와 환류 입력
 

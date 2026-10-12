@@ -312,6 +312,25 @@ P0의 X3\~X6 결과를 전제로 진행합니다.
 - 권한 위반 시도가 실패합니다. 예를 들어 DV Seat가 Verifier 테스트를 읽거나, Seat가 RTL에 쓰려 하면 거부됩니다.
 - Seat 세션을 초기화해도 진행 중인 실행에 영향이 없습니다.
 
+### 진행 상황 (2026-10-12)
+
+자세한 내용은 [department/README.md](./department/README.md)와 [PROGRESS.md](./PROGRESS.md)에 있습니다.
+
+- 구현했습니다:
+  - rig.yaml (Pod 4개, Seat 15개, infra Pod, edge, 연속성 정책)
+  - Seat 기본 지침 (공통과 역할별)
+  - 권한 분리 (Seat별 worktree와 Seat별 macOS sandbox 프로필)
+  - 스케줄러 배치 (infra Pod의 API 서버, 실행은 별도 세션)
+  - Seat 도구 (`deptctl`, 환류는 Design-lead만)
+  - 복구 (스냅숏, 안 되면 rig.yaml)
+- 완료 기준 두 가지를 OpenRig로 올린 rig에서 시험했습니다: 권한 위반이 실패하고, Seat 초기화가 실행에 영향을 주지 않습니다.
+- OpenRig에는 Docker Compose 서비스 묶음이 있지만, 이 맥에 Docker가 없어 API 서버를 terminal 노드로 배치했습니다.
+- 남은 것:
+  - 폐쇄망 설치
+  - Linux 격리 (계정 분리, bubblewrap)
+  - Sanity 연동 (E3 제외)
+- agy Seat의 폴더 신뢰 확인은 Seat 진입점이 자기 worktree를 agy 신뢰 목록에 넣어 해결했습니다 (사용자 승인).
+
 ---
 
 ## P7. 게이트웨이와 Web UI 1차

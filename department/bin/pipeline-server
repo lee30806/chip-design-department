@@ -1,0 +1,13 @@
+#!/bin/sh
+# 파이프라인 API 서버 (infra Pod의 terminal 노드). Seat sandbox 밖에서 도는 유일한 쓰기 주체다.
+# 스케줄러 실행은 서버와 다른 세션의 프로세스라 Seat나 이 노드를 초기화해도 멈추지 않는다.
+#   CHIPDEPT_STORE        저장소 (기본 ~/.cache/chip-design-department/dept/store)
+#   CHIPDEPT_API_PORT     포트 (기본 8740)
+#   CHIPDEPT_API_ARGS     serve에 더 넘길 인자 (시험: --roles <가짜 agent 설정> --no-isolate)
+DEPT=$(cd "$(dirname "$0")/.." && pwd)
+REPO=$(dirname "$DEPT")
+[ -n "$CHIPDEPT_REAL_HOME" ] && export HOME="$CHIPDEPT_REAL_HOME"   # agy 로그인 정보
+STORE=${CHIPDEPT_STORE:-${CHIPDEPT_DEPT_HOME:-$HOME/.cache/chip-design-department/dept}/store}
+cd "$REPO" || exit 1
+# shellcheck disable=SC2086
+exec "$REPO/.venv/bin/python" -m pipeline.api --store "$STORE" serve --port "${CHIPDEPT_API_PORT:-8740}" $CHIPDEPT_API_ARGS
