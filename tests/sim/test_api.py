@@ -170,3 +170,27 @@ def test_http_api(tmp_path):
         assert call("GET", "/feedback")[1][0]["id"] == out["id"]
     finally:
         httpd.shutdown()
+
+
+def test_http_writes_need_gateway_token(tmp_path):
+    st = _store(tmp_path)
+    httpd = serve(st, port=0, watchdog_every_s=0, token="t0k")
+    port = httpd.server_address[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def post(headers):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/feedback", method="POST",
+                                     data=json.dumps({"form": "generator_bug", "by": "lee", "description": "x"}).encode(),
+                                     headers={"Content-Type": "application/json", "X-Role": "design-lead", **headers})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+    try:
+        assert post({}) == 401 and post({"X-Gateway-Token": "nope"}) == 401   # 역할을 밝혀도 토큰 없이는 거부
+        assert post({"X-Gateway-Token": "t0k"}) == 200
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/runs") as r:   # 조회는 토큰 없이
+            assert r.status == 200
+    finally:
+        httpd.shutdown()

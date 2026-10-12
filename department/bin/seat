@@ -75,7 +75,8 @@ def main() -> int:
     prof.write_text(seatlib.profile(seat_id), encoding="utf-8")
     env = dict(os.environ)
     env.update(CHIPDEPT_SEAT=seat_id, CHIPDEPT_SEAT_ROLE=s.get("api_role", "none"),
-               CHIPDEPT_API=os.environ.get("CHIPDEPT_API", "http://127.0.0.1:8740"),
+               CHIPDEPT_GATEWAY=os.environ.get("CHIPDEPT_GATEWAY", "http://127.0.0.1:8750"),
+               CHIPDEPT_SEAT_KEY_FILE=str(seatlib.key_file(seat_id)),
                PATH=f"{seatlib.DEPT / 'bin'}:{os.environ.get('PATH', '')}")
     os.chdir(wt)
     if os.environ.get("CHIPDEPT_SEAT_MODE", "agent") == "shell":

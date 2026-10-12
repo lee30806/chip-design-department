@@ -40,8 +40,11 @@ def env(mode: str | None = None, api_args: str | None = None) -> dict:
     e.update(HOME=str(OPENRIG / "home"), OPENRIG_HOME=str(OPENRIG / "orhome"), TMUX_TMPDIR=TMUX_TMPDIR,
              OPENRIG_PORT=os.environ.get("OPENRIG_PORT", "7533"), DISABLE_AUTOUPDATER="1",
              CHIPDEPT_REAL_HOME=real_home, CHIPDEPT_DEPT_HOME=str(seatlib.dept_home()), CHIPDEPT_STORE=str(seatlib.store()),
-             CHIPDEPT_RUNS=str(seatlib.runs()), CHIPDEPT_API_PORT=os.environ.get("CHIPDEPT_API_PORT", "8740"))
+             CHIPDEPT_RUNS=str(seatlib.runs()), CHIPDEPT_API_PORT=os.environ.get("CHIPDEPT_API_PORT", "8740"),
+             CHIPDEPT_GATEWAY_HOME=str(seatlib.gateway_home()),
+             CHIPDEPT_GATEWAY_PORT=os.environ.get("CHIPDEPT_GATEWAY_PORT", "8750"))
     e["CHIPDEPT_API"] = f"http://127.0.0.1:{e['CHIPDEPT_API_PORT']}"
+    e["CHIPDEPT_GATEWAY"] = f"http://127.0.0.1:{e['CHIPDEPT_GATEWAY_PORT']}"
     if mode:
         e["CHIPDEPT_SEAT_MODE"] = mode
     if api_args is not None:
@@ -66,6 +69,11 @@ def tmux(*args: str) -> subprocess.CompletedProcess:
 def up(mode: str = "agent", api_args: str | None = None) -> dict:
     """데몬을 이 환경으로 다시 시작하고 rig를 올린다 (Seat는 데몬 환경을 물려받으므로 데몬부터 새로 띄운다)."""
     e = env(mode, api_args)
+    # 게이트웨이: 파이프라인 API 토큰과 Seat 계정, Seat별 API 키 (이미 있으면 그대로)
+    g = subprocess.run([str(seatlib.REPO / ".venv" / "bin" / "python"), "-m", "gateway", "seats", "--keys-dir", str(seatlib.keys_dir())],
+                       cwd=seatlib.REPO, env={**e, "HOME": e["CHIPDEPT_REAL_HOME"]}, capture_output=True, text=True)
+    if g.returncode != 0:
+        return {"daemon": None, "up": 1, "out": "게이트웨이 준비 실패: " + (g.stdout + g.stderr)[-1500:]}
     rig("daemon", "stop", e=e, timeout=120)
     d = rig("daemon", "start", "--no-kernel", e=e, timeout=120)
     u = rig("up", str(RIG_SPEC), "--yes", e=e, timeout=900) if "--yes" in rig("up", "--help", e=e).stdout else \

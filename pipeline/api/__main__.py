@@ -30,6 +30,7 @@ def main(argv=None) -> int:
     s.add_argument("--port", type=int, default=8740)
     s.add_argument("--roles", type=Path, help="역할 설정 (기본 config/roles.json)")
     s.add_argument("--no-isolate", action="store_true", help="에이전트를 격리하지 않음 (가짜 agent를 쓰는 시험 전용)")
+    s.add_argument("--token-file", type=Path, help="게이트웨이 토큰 파일. 있으면 쓰기 요청은 이 토큰이 있어야 함 (CHIPDEPT_API_TOKEN도 됨)")
     s = sub.add_parser("submit")
     s.add_argument("spec", type=Path)
     s.add_argument("--by", required=True)
@@ -63,7 +64,9 @@ def main(argv=None) -> int:
     try:
         if a.cmd == "serve":
             from pipeline.api.server import serve
-            httpd = serve(store, a.host, a.port)
+            import os
+            token = a.token_file.read_text(encoding="utf-8").strip() if a.token_file else os.environ.get("CHIPDEPT_API_TOKEN")
+            httpd = serve(store, a.host, a.port, token=token or None)
             print(f"파이프라인 API: http://{a.host}:{a.port} (저장소 {store.root})", flush=True)
             httpd.serve_forever()
             return 0

@@ -29,6 +29,18 @@ def store() -> Path:
     return Path(os.environ.get("CHIPDEPT_STORE", dept_home() / "store"))
 
 
+def gateway_home() -> Path:
+    return Path(os.environ.get("CHIPDEPT_GATEWAY_HOME", CACHE / "gateway"))
+
+
+def keys_dir() -> Path:
+    return dept_home() / "keys"
+
+
+def key_file(seat_id: str) -> Path:
+    return keys_dir() / f"{seat_id}.key"
+
+
 def runs() -> Path:
     return Path(os.environ.get("CHIPDEPT_RUNS", CACHE / "runs"))
 
@@ -57,7 +69,8 @@ def profile(seat_id: str) -> str:
     """Seat 하나의 sandbox 프로필 (SBPL). 뒤에 오는 규칙이 앞의 규칙보다 우선한다."""
     s = seat(seat_id)
     st, rn, seats_root, own = store(), runs(), dept_home() / "seats", worktree(seat_id)
-    for p in (st, rn, seats_root):
+    gw, keys = gateway_home(), keys_dir()
+    for p in (st, rn, seats_root, gw, keys):
         p.mkdir(parents=True, exist_ok=True)
     lines = ["(version 1)", "(allow default)",
              f";; Seat {seat_id} ({s['label']})",
@@ -68,7 +81,11 @@ def profile(seat_id: str) -> str:
              f"(deny file-write* (subpath {_q(REPO)}))",
              f"(allow file-write* (subpath {_q(REPO / '.git')}))",
              f"(deny file-write* (subpath {_q(seats_root)}))",
-             f"(allow file-write* (subpath {_q(own)}))"]
+             f"(allow file-write* (subpath {_q(own)}))",
+             ";; 게이트웨이 저장소(파이프라인 API 토큰, 계정 DB)와 다른 Seat의 API 키는 읽지 못함. 자기 키만",
+             f"(deny file-read* file-write* (subpath {_q(gw)}))",
+             f"(deny file-read* file-write* (subpath {_q(keys)}))",
+             f"(allow file-read* (literal {_q(key_file(seat_id))}))"]
     if s.get("verifier_blind"):
         lines += [";; DV: 파이프라인 Verifier 산출물과 실행 디렉터리를 읽지 못함 (승인된 RTL과 SPEC은 API로)",
                   f"(deny file-read* (subpath {_q(rn)}))",

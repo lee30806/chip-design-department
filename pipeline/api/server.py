@@ -1,4 +1,8 @@
-"""파이프라인 HTTP API (표준 라이브러리만 씀). 역할은 `X-Role` 헤더로 밝힌다 (인증은 P7 게이트웨이에서 붙임).
+"""파이프라인 HTTP API (표준 라이브러리만 씀). 역할은 `X-Role` 헤더로 밝힌다.
+
+게이트웨이 토큰을 정하면(`serve(token=...)`, CLI `--token-file`, 환경 변수 CHIPDEPT_API_TOKEN) 쓰기 요청(POST)은
+`X-Gateway-Token`이 맞을 때만 받는다. 사람과 Seat의 인증과 역할은 게이트웨이(`gateway/`)가 맡고, 여기는 게이트웨이를 믿는다.
+조회(GET)는 토큰 없이도 된다.
 
 | 메서드 | 경로 | 내용 |
 | --- | --- | --- |
@@ -14,6 +18,7 @@
 """
 from __future__ import annotations
 
+import hmac
 import json
 import re
 import threading
@@ -24,7 +29,7 @@ from pipeline.api.store import ApiError, Store
 MAX_BODY = 16 * 1024 * 1024
 
 
-def make_handler(store: Store):
+def make_handler(store: Store, token: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "chipdept-pipeline/0.1"
 
@@ -68,6 +73,8 @@ def make_handler(store: Store):
                 if path in fixed:
                     return fixed[path]()
                 raise ApiError(404, "없는 경로")
+            if token is not None and not hmac.compare_digest(self.headers.get("X-Gateway-Token") or "", token):
+                raise ApiError(401, "쓰기 요청은 게이트웨이를 거쳐야 함 (X-Gateway-Token)")
             body = self._body()
             if path == "/runs":
                 if not body.get("spec") or not body.get("by"):
@@ -108,9 +115,10 @@ def make_handler(store: Store):
     return Handler
 
 
-def serve(store: Store, host: str = "127.0.0.1", port: int = 8740, watchdog_every_s: float = 3600) -> ThreadingHTTPServer:
+def serve(store: Store, host: str = "127.0.0.1", port: int = 8740, watchdog_every_s: float = 3600,
+          token: str | None = None) -> ThreadingHTTPServer:
     """서버를 만든다. 호출한 쪽이 serve_forever()를 부른다. 진행 없는 실행은 watchdog_every_s마다 점검한다."""
-    httpd = ThreadingHTTPServer((host, port), make_handler(store))
+    httpd = ThreadingHTTPServer((host, port), make_handler(store, token))
 
     def tick():
         store.watchdog()

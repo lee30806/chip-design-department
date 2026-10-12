@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Seat의 파이프라인 API 클라이언트. Seat 역할(CHIPDEPT_SEAT_ROLE)에 맞는 명령만 보인다.
+"""Seat의 게이트웨이 클라이언트. Seat 진입점이 준 API 키(자기 키만 읽을 수 있음)로 게이트웨이를 부른다.
 
-    deptctl runs | status <id> | review <id> | report <id> | rtl <id> | pending <id> | history [<id>]
-    deptctl submit <spec.md> [--config JSON]                   (RTL Engineer, Chip-lead)
-    deptctl decide <id> <E1>... --decision approved|rejected   (RTL Engineer, Chip-lead, Design-lead)
-    deptctl feedback <body.json>                               (Design-lead만)
-    deptctl spec-decide <F0001> --decision approved|rejected   (Chip-lead, RTL Engineer)
+    deptctl runs | status <실행> | detail <실행> | review <실행> | rtl <실행> | pending | specs | spec <SPEC>
+    deptctl submit <SPEC 작업 공간 ID> [--config JSON]      (RTL Engineer, Chip-lead. 고정된 SPEC만)
+    deptctl feedback <body.json>                          (Design-lead만)
 
-역할은 Seat 진입점이 정한다. 서버도 역할을 다시 검사한다. 인증은 P7 게이트웨이에서 붙인다.
+승인과 반려는 사람(승인자 역할)이 게이트웨이 승인함에서 한다. Seat는 할 수 없다.
+권한은 게이트웨이가 Seat 계정의 역할로 다시 검사한다. 이 도구가 역할에 없는 명령을 숨기는 것은 안내일 뿐이다.
 """
 import argparse
 import json
@@ -19,16 +18,24 @@ from pathlib import Path
 
 ROLE = os.environ.get("CHIPDEPT_SEAT_ROLE", "none")
 SEAT = os.environ.get("CHIPDEPT_SEAT", "?")
-API = os.environ.get("CHIPDEPT_API", "http://127.0.0.1:8740")
-WRITE_CMDS = {"submit": {"rtl-engineer", "chip-lead"}, "decide": {"rtl-engineer", "chip-lead", "design-lead"},
-              "feedback": {"design-lead"}, "spec-decide": {"chip-lead", "rtl-engineer"}}
+GATEWAY = os.environ.get("CHIPDEPT_GATEWAY", "http://127.0.0.1:8750")
+WRITE_CMDS = {"submit": {"rtl-engineer", "chip-lead"}, "feedback": {"design-lead"}}
+
+
+def key() -> str:
+    p = os.environ.get("CHIPDEPT_SEAT_KEY_FILE")
+    try:
+        return Path(p).read_text(encoding="utf-8").strip() if p else ""
+    except OSError as e:
+        sys.exit(f"Seat API 키를 읽을 수 없음: {e}")
 
 
 def call(method: str, path: str, body=None):
-    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json", "X-Role": ROLE})
+    req = urllib.request.Request(GATEWAY + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key()}"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with opener.open(req, timeout=60) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         print(json.dumps(json.loads(e.read()), ensure_ascii=False), file=sys.stderr)
@@ -36,50 +43,43 @@ def call(method: str, path: str, body=None):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="deptctl", description=f"파이프라인 API ({SEAT}, 역할 {ROLE})")
+    ap = argparse.ArgumentParser(prog="deptctl", description=f"게이트웨이 ({SEAT}, 역할 {ROLE})")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("runs")
-    for n in ("status", "review", "report", "rtl", "pending"):
+    for n in ("runs", "pending", "specs", "me"):
+        sub.add_parser(n)
+    for n in ("status", "detail", "review", "rtl"):
         sub.add_parser(n).add_argument("run_id")
-    sub.add_parser("history").add_argument("run_id", nargs="?")
+    sub.add_parser("spec").add_argument("spec_id")
     allowed = {c for c, roles in WRITE_CMDS.items() if ROLE in roles}
     if "submit" in allowed:
         s = sub.add_parser("submit")
-        s.add_argument("spec", type=Path)
+        s.add_argument("spec_id")
         s.add_argument("--config", default="{}")
-    if "decide" in allowed:
-        s = sub.add_parser("decide")
-        s.add_argument("run_id")
-        s.add_argument("ids", nargs="+")
-        s.add_argument("--decision", required=True, choices=["approved", "rejected"])
-        s.add_argument("--note", default="")
     if "feedback" in allowed:
         sub.add_parser("feedback").add_argument("body", type=Path)
-    if "spec-decide" in allowed:
-        s = sub.add_parser("spec-decide")
-        s.add_argument("fid")
-        s.add_argument("--decision", required=True, choices=["approved", "rejected"])
-        s.add_argument("--note", default="")
-    hidden = sorted(set(WRITE_CMDS) - allowed)
+    hidden = sorted(set(WRITE_CMDS) - allowed) + ["decide", "approve"]
     if len(sys.argv) > 1 and sys.argv[1] in hidden:
-        print(f"{SEAT}({ROLE})는 '{sys.argv[1]}'을(를) 쓸 수 없음. 수정 요구는 Design-lead에게 환류 양식으로 보냄", file=sys.stderr)
+        msg = ("승인과 반려는 사람(승인자)이 게이트웨이 승인함에서 함" if sys.argv[1] in ("decide", "approve") else
+               "수정 요구는 Design-lead에게 환류 양식으로 보냄")
+        print(f"{SEAT}({ROLE})는 '{sys.argv[1]}'을(를) 쓸 수 없음. {msg}", file=sys.stderr)
         return 2
     a = ap.parse_args()
-    paths = {"status": "", "review": "/review-items", "report": "/report", "rtl": "/rtl", "pending": "/pending"}
-    if a.cmd == "runs":
-        out = call("GET", "/runs")
-    elif a.cmd in paths:
-        out = call("GET", f"/runs/{a.run_id}{paths[a.cmd]}")
-    elif a.cmd == "history":
-        out = call("GET", f"/runs/{a.run_id}/history" if a.run_id else "/feedback")
+    if a.cmd in ("runs", "specs", "me"):
+        out = call("GET", f"/api/{a.cmd}")
+    elif a.cmd == "pending":
+        out = call("GET", "/api/approvals/pending")
+    elif a.cmd == "status":
+        out = call("GET", f"/api/runs/{a.run_id}")
+    elif a.cmd in ("detail", "rtl"):
+        out = call("GET", f"/api/runs/{a.run_id}/{a.cmd}")
+    elif a.cmd == "review":
+        out = call("GET", f"/api/runs/{a.run_id}/detail")["review"]
+    elif a.cmd == "spec":
+        out = call("GET", f"/api/specs/{a.spec_id}")
     elif a.cmd == "submit":
-        out = call("POST", "/runs", {"spec": a.spec.read_text(encoding="utf-8"), "by": SEAT, "config": json.loads(a.config)})
-    elif a.cmd == "decide":
-        out = call("POST", f"/runs/{a.run_id}/decisions", {"ids": a.ids, "decision": a.decision, "by": SEAT, "note": a.note})
-    elif a.cmd == "feedback":
-        out = call("POST", "/feedback", {**json.loads(a.body.read_text(encoding="utf-8")), "by": SEAT})
+        out = call("POST", "/api/runs", {"spec_id": a.spec_id, "config": json.loads(a.config)})
     else:
-        out = call("POST", f"/feedback/{a.fid}/decision", {"decision": a.decision, "by": SEAT, "note": a.note})
+        out = call("POST", "/api/feedback", json.loads(a.body.read_text(encoding="utf-8")))
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0
 

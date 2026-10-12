@@ -1,0 +1,11 @@
+#!/bin/sh
+# 게이트웨이 (infra Pod의 terminal 노드). 사람(Web UI)과 Seat(deptctl, API 키)의 인증과 권한, 승인 기록.
+#   CHIPDEPT_GATEWAY_HOME   계정 DB, SPEC 작업 공간, 파이프라인 API 토큰 (기본 ~/.cache/chip-design-department/gateway)
+#   CHIPDEPT_GATEWAY_PORT   포트 (기본 8750)
+DEPT=$(cd "$(dirname "$0")/.." && pwd)
+REPO=$(dirname "$DEPT")
+[ -n "$CHIPDEPT_REAL_HOME" ] && export HOME="$CHIPDEPT_REAL_HOME"
+export CHIPDEPT_API="${CHIPDEPT_API:-http://127.0.0.1:${CHIPDEPT_API_PORT:-8740}}"
+export CHIPDEPT_STORE="${CHIPDEPT_STORE:-${CHIPDEPT_DEPT_HOME:-$HOME/.cache/chip-design-department/dept}/store}"
+cd "$REPO" || exit 1
+exec "$REPO/.venv/bin/python" -m gateway serve --port "${CHIPDEPT_GATEWAY_PORT:-8750}"

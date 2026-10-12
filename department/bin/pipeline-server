@@ -9,5 +9,8 @@ REPO=$(dirname "$DEPT")
 [ -n "$CHIPDEPT_REAL_HOME" ] && export HOME="$CHIPDEPT_REAL_HOME"   # agy 로그인 정보
 STORE=${CHIPDEPT_STORE:-${CHIPDEPT_DEPT_HOME:-$HOME/.cache/chip-design-department/dept}/store}
 cd "$REPO" || exit 1
+# 게이트웨이 토큰이 있으면 쓰기 요청은 게이트웨이를 거쳐야 받는다 (Seat가 직접 보내는 쓰기 요청은 거부)
+TOKEN_FILE=${CHIPDEPT_GATEWAY_HOME:-$HOME/.cache/chip-design-department/gateway}/api_token
+[ -f "$TOKEN_FILE" ] && CHIPDEPT_API_ARGS="$CHIPDEPT_API_ARGS --token-file $TOKEN_FILE"
 # shellcheck disable=SC2086
 exec "$REPO/.venv/bin/python" -m pipeline.api --store "$STORE" serve --port "${CHIPDEPT_API_PORT:-8740}" $CHIPDEPT_API_ARGS

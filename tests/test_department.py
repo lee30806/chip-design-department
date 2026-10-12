@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -41,10 +42,11 @@ def _rig_members() -> dict[str, tuple[str, str]]:
 def test_roster_matches_rig_spec():
     members = _rig_members()
     roster = {s["id"] for s in seatlib.ROSTER["seats"]}
-    assert len(roster) == 15 and set(members) == roster | {"infra.pipeline"}
+    assert len(roster) == 15 and set(members) == roster | {"infra.pipeline", "infra.gateway"}
     for m, (runtime, cmd) in members.items():
         assert runtime == "terminal"
-        assert cmd == ("exec ./bin/pipeline-server" if m == "infra.pipeline" else f"exec ./bin/seat {m}")
+        assert cmd == {"infra.pipeline": "exec ./bin/pipeline-server", "infra.gateway": "exec ./bin/gateway-server"}.get(
+            m, f"exec ./bin/seat {m}")
     import dept
     if dept.RIG_BIN.exists():
         r = dept.rig("spec", "validate", str(DEPT / "rig.yaml"))
@@ -60,6 +62,7 @@ def test_roster_matches_rig_spec():
 def _sandboxed(tmp_path, monkeypatch, seat_id, cmd):
     monkeypatch.setenv("CHIPDEPT_DEPT_HOME", str(tmp_path / "dh"))
     monkeypatch.setenv("CHIPDEPT_RUNS", str(tmp_path / "dh" / "runs"))
+    monkeypatch.setenv("CHIPDEPT_GATEWAY_HOME", str(tmp_path / "gw"))
     monkeypatch.delenv("CHIPDEPT_STORE", raising=False)
     prof = tmp_path / f"{seat_id}.sb"
     prof.write_text(seatlib.profile(seat_id))
@@ -88,6 +91,15 @@ def test_seat_sandbox_profiles(tmp_path, monkeypatch):
     assert sb("design.rtl", f"echo x > {ROOT / 'pipeline' / 'zz_should_not_exist.py'}") != 0
     assert not (ROOT / "pipeline" / "zz_should_not_exist.py").exists()
     assert sb("design.rtl", f"head -1 {ROOT / 'ARCHITECTURE.md'}") == 0
+    # 게이트웨이 저장소(파이프라인 API 토큰)와 다른 Seat의 API 키는 못 읽음. 자기 키만
+    (tmp_path / "gw").mkdir(exist_ok=True)
+    (tmp_path / "gw" / "api_token").write_text("secret")
+    (tmp_path / "dh" / "keys").mkdir(parents=True, exist_ok=True)
+    for k in ("design.rtl", "design.lead"):
+        (tmp_path / "dh" / "keys" / f"{k}.key").write_text(k)
+    assert sb("design.rtl", f"cat {tmp_path / 'dh' / 'keys' / 'design.rtl.key'}") == 0
+    assert sb("design.rtl", f"cat {tmp_path / 'dh' / 'keys' / 'design.lead.key'}") != 0
+    assert sb("design.lead", f"cat {tmp_path / 'gw' / 'api_token'}") != 0
 
 
 def test_deptctl_hides_write_commands_by_role():
@@ -97,6 +109,8 @@ def test_deptctl_hides_write_commands_by_role():
     r = run("rtl-engineer", "feedback", "body.json")
     assert r.returncode == 2 and "Design-lead" in r.stderr
     assert run("none", "submit", "spec.md").returncode == 2
+    r = run("design-lead", "decide", "x", "E1")   # 승인은 사람(승인자)만
+    assert r.returncode == 2 and "승인자" in r.stderr
     assert "feedback" in run("design-lead", "--help").stdout and "feedback" not in run("rtl-engineer", "--help").stdout
 
 
@@ -117,9 +131,10 @@ def rig_up(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("dept")
     prefix = f"test-seat-{uuid.uuid4().hex[:6]}/"
     env_keep = {k: os.environ.get(k) for k in ("CHIPDEPT_DEPT_HOME", "CHIPDEPT_RUNS", "CHIPDEPT_STORE", "CHIPDEPT_API_PORT",
-                                               "CHIPDEPT_SEAT_BRANCH_PREFIX")}
+                                               "CHIPDEPT_SEAT_BRANCH_PREFIX", "CHIPDEPT_GATEWAY_HOME", "CHIPDEPT_GATEWAY_PORT")}
     os.environ.update(CHIPDEPT_DEPT_HOME=str(tmp / "dh"), CHIPDEPT_RUNS=str(tmp / "dh" / "runs"),
-                      CHIPDEPT_STORE=str(tmp / "dh" / "store"), CHIPDEPT_API_PORT="8741", CHIPDEPT_SEAT_BRANCH_PREFIX=prefix)
+                      CHIPDEPT_STORE=str(tmp / "dh" / "store"), CHIPDEPT_API_PORT="8741", CHIPDEPT_SEAT_BRANCH_PREFIX=prefix,
+                      CHIPDEPT_GATEWAY_HOME=str(tmp / "gw"), CHIPDEPT_GATEWAY_PORT="8751")
     # 파이프라인 API 서버는 가짜 agent로 (에이전트 하나가 6초씩 걸려 실행이 30초 넘게 진행됨)
     files = _files(tmp)
     agents = {"agents": [{"name": "fake", "family": "Test", "runtime": "fake", "command": [sys.executable, FAKE], "model": "m",
@@ -135,9 +150,36 @@ def rig_up(tmp_path_factory):
         assert out["up"] == 0, out
         for s in ("design.rtl", "design.lead", "dv.tb", "lead.chip"):
             assert dept.wait_ready(s), (s, dept.capture(s)[-1500:])
+        (tmp / "spec_id").write_text(_frozen_spec(tmp))
         yield dept, tmp
     finally:
         _cleanup(dept, tmp, prefix, env_keep)
+
+
+def _frozen_spec(tmp) -> str:
+    """사람 계정(설계, 승인자)으로 SPEC 작업 공간을 만들고 고정한다. Seat는 고정된 SPEC으로만 실행을 제출한다."""
+    from gateway.clients import OpenRig, Pipeline
+    from gateway.service import Gateway
+
+    deadline = time.time() + 60
+    while time.time() < deadline:   # 파이프라인 API와 게이트웨이가 뜰 때까지
+        try:
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open("http://127.0.0.1:8741/runs", timeout=2)
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open("http://127.0.0.1:8751/", timeout=2)
+            break
+        except OSError:
+            time.sleep(1)
+    gw = Gateway(tmp / "gw", Pipeline("http://127.0.0.1:8741", (tmp / "gw" / "api_token").read_text().strip()),
+                 OpenRig("http://127.0.0.1:9"), tmp / "dh" / "store")
+    des = gw.accounts.add_user("des", "설계", ["design"], ["design_lead"], password="x")
+    apr = gw.accounts.add_user("apr", "승인자", ["approver"], password="x")
+    s = gw.specs.create("axis_adapter", "block_spec.md", (ROOT / "tests" / "golden" / "axis_adapter" / "block_spec.md").read_bytes(),
+                        des["username"])
+    for q in s["checks"]["questions"]:
+        gw.specs.answer(s["id"], q["key"], "확인함", des["username"])
+    gw.specs.request_freeze(s["id"], des["username"])
+    gw.decide(apr, "spec_freeze", s["id"], "approved")
+    return s["id"]
 
 
 def _cleanup(dept, tmp, prefix, env_keep):
@@ -158,9 +200,19 @@ def _cleanup(dept, tmp, prefix, env_keep):
 @rig_only
 def test_rig_permission_violations_fail(rig_up):
     dept, tmp = rig_up
-    rc, out = dept.run("design.rtl", "deptctl submit tests/golden/axis_adapter/block_spec.md")
+    spec_id = (tmp / "spec_id").read_text()
+    rc, out = dept.run("design.rtl", f"deptctl submit {spec_id}")
     assert rc == 0, out
     rid = json.loads(out[out.index("{"):])["run_id"]
+    # Seat가 게이트웨이를 건너 파이프라인 API에 직접 쓰기 요청을 보내면 역할을 밝혀도 거부 (게이트웨이 토큰 없음)
+    rc, out = dept.run("design.rtl", "curl -s -o /dev/null -w 'HTTP%{http_code}' -X POST -H 'X-Role: design-lead' "
+                                     "-d '{\"form\":\"generator_bug\",\"by\":\"x\",\"description\":\"x\"}' http://127.0.0.1:8741/feedback")
+    assert "HTTP401" in out, out
+    # 게이트웨이 토큰과 다른 Seat의 API 키는 못 읽음
+    rc, out = dept.run("design.rtl", f"cat {tmp / 'gw' / 'api_token'}")
+    assert rc != 0 and "operation not permitted" in out.lower(), out
+    rc, out = dept.run("design.rtl", f"cat {tmp / 'dh' / 'keys' / 'design.lead.key'}")
+    assert rc != 0 and "operation not permitted" in out.lower(), out
     # 격리 실행이면 RUNS/<실행>/, 시험(가짜 agent, 격리 없음)이면 STORE/runs/<실행>/work/ 아래에 생긴다. DV는 둘 다 못 읽음
     def find():
         return sorted([*(tmp / "dh" / "runs" / rid).glob("verifier__v*/out/test_*.py"),
@@ -187,18 +239,19 @@ def test_rig_permission_violations_fail(rig_up):
     # 환류 제출은 Design-lead에게만 보임
     rc, out = dept.run("design.rtl", "deptctl feedback x.json")
     assert rc == 2 and "Design-lead" in out, out
-    rc, out = dept.run("dv.tb", "deptctl rtl " + rid)   # 승인된 RTL은 API로 (통과 전이면 409)
-    assert "통과한 실행만" in out or rc == 0, out
+    rc, out = dept.run("dv.tb", "deptctl status " + rid)   # DV도 게이트웨이로 실행을 봄
+    assert rc == 0 and rid in out, out
+    rc, out = dept.run("design.lead", "deptctl decide x E1")   # Seat는 승인하지 못함
+    assert rc == 2, out
     rig_up[1].joinpath("rid").write_text(rid)
 
 
 @rig_only
 def test_rig_seat_reset_does_not_affect_running_pipeline(rig_up):
     dept, tmp = rig_up
-    rid = (tmp / "rid").read_text() if (tmp / "rid").exists() else None
-    if rid is None:
-        rc, out = dept.run("design.rtl", "deptctl submit tests/golden/axis_adapter/block_spec.md")
-        rid = json.loads(out[out.index("{"):])["run_id"]
+    rc, out = dept.run("design.rtl", f"deptctl submit {(tmp / 'spec_id').read_text()}")   # 새 실행 (앞 시험의 실행은 끝났을 수 있음)
+    assert rc == 0, out
+    rid = json.loads(out[out.index("{"):])["run_id"]
     rc, out = dept.run("design.rtl", f"deptctl status {rid}")
     st = json.loads(out[out.index("{"):])
     assert st["process"] == "running", st   # 진행 중인 실행
@@ -210,8 +263,9 @@ def test_rig_seat_reset_does_not_affect_running_pipeline(rig_up):
         r = dept.reset(s)
         assert r["rc"] == 0, r
         assert dept.wait_ready(s) and pane(s) != old[s]   # 새 세션
-    r = dept.rig("seat", "launch", "infra-pipeline@" + dept.RIG, "--stop", "--fresh", "--reason", "reset test")
-    assert r.returncode == 0, r.stdout + r.stderr
+    for node in ("infra-pipeline", "infra-gateway"):
+        r = dept.rig("seat", "launch", f"{node}@{dept.RIG}", "--stop", "--fresh", "--reason", "reset test")
+        assert r.returncode == 0, r.stdout + r.stderr
     assert dept.wait_ready("design.rtl")
     # 초기화된 Seat에서 같은 실행을 다시 보고, 실행은 끝까지 감
     deadline = time.time() + 600
