@@ -1,7 +1,9 @@
 """파이프라인 스케줄러. 제어 흐름은 결정론적이고, 에이전트는 작업 단위로 headless 실행한다.
 
     SPEC 검사 → Block Top L1 → Architect(모듈 트리, 동결) → Verifier 후보(참조 모델, 테스트)와 차분 검사
-    → 모듈마다 Author 후보 → 같은 번호 후보끼리 묶어 [Validator → 방출 → E1 → E2(모든 Verifier의 테스트)]
+    → 모듈마다 Author 후보(후보마다 조각 언어 sv/py) → 같은 번호 후보끼리 묶어
+       [Validator → 방출 → E1 → (py 모듈) 번역기 검사 → E2(모든 Verifier의 테스트)]
+       번역기 검사 실패: 생성기 버그이므로 Repair 없이 후보를 멈추고 검토 항목에 남김
        실패: 분류 → 원인 후보 모듈(불일치 출력을 구동하는 인스턴스)의 Repair(patch) → Validator부터 다시
              (상한, IR 해시 진동 감지. Repair가 형제 모듈을 지목하면 그 모듈의 Repair로 넘김)
              일부 Verifier에서만 실패 → Arbiter (rtl_wrong이면 Repair, test_wrong이면 사람 승인 대기, 모호하면 검토 항목)
@@ -38,6 +40,7 @@ from pipeline.tb.diffsim import compare, describe, episodes, make_plan, truncate
 from pipeline.tb.report import mismatch_report
 from pipeline.validator.checks import errors, validate
 from pipeline.validator.structure import frozen_scope, v11_frozen
+from pipeline.verify import pyequiv
 from pipeline.verify.run import lint, sim
 
 STUB_CELLS = [ROOT / "pipeline" / "emitter" / "stubs" / "sync_2ff.sv"]
@@ -340,8 +343,9 @@ class Run:
                         "verifier")
 
     # -- 검증 --
-    def verify(self, lib: dict[str, dict], top: str, tbs: list[str], tag: str) -> dict:
-        """방출 → E1 → E2(Verifier 테스트마다). 결과와 실패 리포트를 돌려준다."""
+    def verify(self, lib: dict[str, dict], top: str, tbs: list[str], tag: str, py_check: bool = True) -> dict:
+        """방출 → E1 → (py 모듈) 번역기 검사 → E2(Verifier 테스트마다). 결과와 실패 리포트를 돌려준다.
+        py_check=False면 번역기 검사를 건너뛴다 (같은 IR을 이미 검사한 보강 테스트 실행)."""
         out = self.dir / "verify" / tag
         rtl = out / "rtl"
         rtl.mkdir(parents=True, exist_ok=True)
@@ -354,6 +358,9 @@ class Run:
             maps[n] = e.sourcemap
         roles = {n: m.role for n, m in mods.items()}
         e1 = lint(files, top)
+        # 번역기 검사: Python 조각 모듈의 설계 모델과 방출한 RTL이 같은 무작위 자극에서 같은 출력을 내는지 (SPEC 해석은 보지 않음)
+        py_equiv = [{"module": n, **pyequiv.check(n, mods, files, out / f"pyequiv_{n}")}
+                    for n, m in mods.items() if m.lang == "py" and py_check]
         e1c = classify_findings(e1.findings, maps, roles)
         top_m = mods[top]
         hdir, tdir = out / "harness", out / "verify_only"
@@ -369,7 +376,8 @@ class Run:
             e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
                                                                for f in r.findings], "out": str(res_dir)})
         return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200]} for c in e1c],
-                "e2": e2, "ok": all(x["ok"] for x in e2) and not any(c.type == "lint_fragment" for c in e1c)}
+                "e2": e2, "py_equiv": py_equiv,
+                "ok": all(x["ok"] for x in e2 + py_equiv) and not any(c.type == "lint_fragment" for c in e1c)}
 
     @staticmethod
     def result_name(out: Path, tests: list[str]) -> str | None:
@@ -404,7 +412,10 @@ class Run:
         if "ir" in st or st["status"] != "author":
             return st
         l1 = tree["children"][mod]
-        res = self.agent("author", author.make_task(f"author/{mod}/c{c}", l1, self.spec_path), author.check(l1))
+        lang = self.roles.lang_of(c)
+        st["lang"] = lang
+        res = self.agent("author", author.make_task(f"author/{mod}/c{c}", l1, self.spec_path, lang=lang),
+                         author.check(l1, lang=lang))
         if not res.ok:
             st.update(status="failed", reason=f"Author 실패: {res.errors[:3]}")
         else:
@@ -457,6 +468,14 @@ class Run:
             last = {"ok": vres["ok"], "e1": len(vres["e1"]), "e2": [{k: x[k] for k in ("verifier", "ok")} for x in vres["e2"]]}
             for st in sts.values():
                 st["last_verify"] = last
+            if bad := [x for x in vres.get("py_equiv", []) if not x["ok"]]:
+                # 설계 모델과 RTL이 다름: 번역기나 실행기의 버그다. Repair로 고칠 일이 아니므로 사람에게 넘긴다
+                for x in bad:
+                    self.review("PY_EQUIV", f'{x["module"]} 후보 {c}: 번역기 검사 실패 (생성기 버그): '
+                                f'{json.dumps(x.get("mismatch") or x.get("error"), ensure_ascii=False)[:300]}',
+                                str(self.dir / "verify" / f"{gname}_c{c}_r{total}" / f'pyequiv_{x["module"]}'))
+                save_all(status="failed", reason=f'번역기 검사 실패: {[x["module"] for x in bad]}')
+                break
             if vres["ok"]:
                 save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]])
                 break
@@ -660,7 +679,8 @@ class Run:
                 return False
             cand = res.outputs[verifier.out_rel(l1["module"])]
             # 보강된 테스트는 후보를 갈라야 한다. 모두 실패하면 테스트 결함일 가능성이 크고, 모두 통과하면 상황을 재현하지 못한 것
-            runs = {c: self.verify(self.group_lib(tree, mods, c), top["module"], [cand], f"augment_r{rnd}a{a}_c{c}")["e2"][0]
+            runs = {c: self.verify(self.group_lib(tree, mods, c), top["module"], [cand], f"augment_r{rnd}a{a}_c{c}",
+                                    py_check=False)["e2"][0]
                     for c in passed}
             ok = [c for c in passed if runs[c]["ok"]]
             self.event("augment_check", f"보강 테스트 시도 {a}: 통과 묶음 {ok} / {passed}")
@@ -711,7 +731,8 @@ class Run:
         for cell in self.cells:   # 표준 셀(동기화 셀 등)도 RTL과 함께 둔다
             if Path(cell).suffix == ".sv" and Path(cell).exists():
                 (rtl / Path(cell).name).write_text(Path(cell).read_text(encoding="utf-8"), encoding="utf-8")
-        self.finish_step("integration", {"ok": final["ok"], "e1": final["e1"], "e2": [{k: x[k] for k in ("verifier", "ok")} for x in final["e2"]]})
+        self.finish_step("integration", {"ok": final["ok"], "e1": final["e1"], "e2": [{k: x[k] for k in ("verifier", "ok")} for x in final["e2"]],
+                                         "py_equiv": final["py_equiv"]})
         return final
 
     def execute(self) -> dict:

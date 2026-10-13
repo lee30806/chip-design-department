@@ -1,6 +1,8 @@
 """IR 모듈을 읽고 이름을 해석한다.
 
-IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 SV 조각이다.
+IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 슬롯 안의 조각이다.
+조각 언어는 모듈의 `lang`으로 정한다: `sv`(기본, SystemVerilog) 또는 `py`(Python, `pyfrag`).
+`py` 모듈은 읽을 때 SV 조각으로 낮춘다. 검사, 방출, 하니스는 낮춘 IR(`raw`)을 보고, 원문은 `source_raw`에 남는다.
 이 모듈은 검사와 방출이 공통으로 쓰는 이름 해석만 맡는다.
 - 번들 포트를 개별 포트로 펼친다.
 - 클럭과 리셋 포트는 `domains`에서 유도한다. IR의 `ports`에는 적지 않는다.
@@ -38,7 +40,14 @@ class Signal:
 
 class Module:
     def __init__(self, raw: dict, path: Path | None = None):
-        self.raw, self.path = raw, path
+        self.source_raw, self.path = raw, path
+        self.lang: str = raw.get("lang", "sv") if isinstance(raw, dict) else "sv"
+        self.lower_errors: list[tuple[str, str]] = []           # (노드, 오류): Validator가 V4로 보고
+        self.py_lines: dict[str, list[tuple[int, int, int]]] = {}  # 조각 노드 → (SV 시작, 끝, Python 줄), 조각 안 줄 번호
+        if self.lang == "py":
+            from pipeline.ir.pyfrag import lower_module
+            raw, self.lower_errors, self.py_lines = lower_module(raw)
+        self.raw = raw
         # 형식이 틀린 IR도 V1이 보고할 수 있도록, 해석에 실패한 부분은 비워 둔다.
         self.name: str = raw.get("module", "") if isinstance(raw, dict) else ""
         self.role: str = raw.get("role", "") if isinstance(raw, dict) else ""

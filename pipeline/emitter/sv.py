@@ -7,6 +7,7 @@
   셀의 리셋은 active-low이므로, 도착 도메인의 리셋이 active-high면 반전해 연결한다.
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
 - 노드마다 `// @ir <노드>` 주석을 달고, 소스맵(노드 → 줄 범위)을 함께 낸다.
+  `lang: py` 모듈의 조각은 문장마다 `py_line`(조각 안의 Python 줄)을 단 세부 항목을 더 낸다.
   IR 값이 그대로 놓인 줄(조각 본문, 전이 조건, 신호 타입, 리셋값, 파라미터와 포트 선언, 연결로 정해진 핀)은
   `fragment: true`인 세부 항목으로 따로 적는다. Classifier는 이 항목으로 lint 에러가 조각 안인지 골격인지 가른다.
 
@@ -37,7 +38,7 @@ class EmitError(Exception):
 class Emitted:
     module: str
     text: str
-    sourcemap: list[dict] = field(default_factory=list)  # {"node", "start", "end"[, "fragment"]} (1부터 센 줄 번호)
+    sourcemap: list[dict] = field(default_factory=list)  # {"node", "start", "end"[, "fragment", "py_line"]} (1부터 센 줄 번호)
 
 
 class _Writer:
@@ -45,12 +46,15 @@ class _Writer:
         self.lines: list[str] = []
         self.map: list[dict] = []
 
-    def line(self, s: str = "", frag: str | None = None) -> None:
-        """frag를 주면 이 줄(들)을 LLM이 쓴 노드 `frag`의 내용으로 소스맵에 적는다."""
+    def line(self, s: str = "", frag: str | None = None, py: list[tuple[int, int, int]] | None = None) -> None:
+        """frag를 주면 이 줄(들)을 LLM이 쓴 노드 `frag`의 내용으로 소스맵에 적는다.
+        py는 Python 조각의 문장별 줄 대응 (s 안의 줄 번호)."""
         start = len(self.lines) + 1
         self.lines.extend(s.split("\n"))
         if frag:
             self.map.append({"node": frag, "start": start, "end": len(self.lines), "fragment": True})
+            for a, b, pl in py or []:
+                self.map.append({"node": frag, "start": start + a - 1, "end": start + b - 1, "fragment": True, "py_line": pl})
 
     def node(self, node: str):
         w = self
@@ -99,10 +103,10 @@ def _seq(w: _Writer, m: Module, dom: dict, resets: list[tuple[str, str, str]], b
         for name, val, src in resets:
             w.line(f"      {name.ljust(width)} <= {val};", frag=src)
         w.line("    end else begin")
-        w.line(_indent(body, 6), frag=body_node)
+        w.line(_indent(body, 6), frag=body_node, py=m.py_lines.get(body_node))
         w.line("    end")
     else:
-        w.line(_indent(body, 4), frag=body_node)
+        w.line(_indent(body, 4), frag=body_node, py=m.py_lines.get(body_node))
     w.line("  end")
 
 
@@ -210,7 +214,7 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
         with w.node(node):
             if b["kind"] == "comb":
                 w.line("  always_comb begin")
-                w.line(_indent(b["body"], 4), frag=f"{node}/body")
+                w.line(_indent(b["body"], 4), frag=f"{node}/body", py=m.py_lines.get(f"{node}/body"))
                 w.line("  end")
             elif b["kind"] == "seq":
                 resets = [(n, storage[n].reset, f'{"ports" if storage[n].origin == "port" else "signals"}/{n}')

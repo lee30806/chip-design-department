@@ -2,7 +2,8 @@
 
 볼 수 있는 것: SPEC, 동결된 L1, (자식 모듈이 있으면) 자식의 L1, IR 안내서와 일반 예시. 다른 후보의 산출물은 보지 못한다.
 쓸 수 있는 것: `out/<module>.ir.json` 하나.
-종료 게이트: Validator V1~V10 통과와 동결 L1 일치. 실패하면 오류를 붙여 재시도한다.
+종료 게이트: Validator V1~V10 통과와 동결 L1 일치, 정해진 조각 언어(`lang`). 실패하면 오류를 붙여 재시도한다.
+조각 언어는 스케줄러가 후보마다 정한다 (`sv` 또는 `py`, config/roles.json의 author.langs).
 """
 from __future__ import annotations
 
@@ -15,6 +16,12 @@ from pipeline.validator.checks import errors, validate
 
 GUIDE = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
 EXAMPLES = [ROOT / "tests" / "fixtures" / "pkt_parser.ir.json", ROOT / "tests" / "fixtures" / "pkt_rx_top.ir.json"]
+PY_EXAMPLES = [ROOT / "tests" / "fixtures" / "py" / "pkt_parser.ir.json", ROOT / "tests" / "fixtures" / "py" / "py_ops.ir.json"]
+LANG_NOTE = {
+    "sv": "- 조각 언어: SystemVerilog. `lang`은 쓰지 않거나 `\"sv\"`로 둔다\n",
+    "py": ("- 조각 언어: Python. IR 최상위에 `\"lang\": \"py\"`를 쓰고, body와 cond는 `guide.md`의 \"Python 조각\" 절을 따른다. "
+           "`reads`와 `writes`는 툴이 계산하므로 쓰지 않아도 된다. 예시는 `examples/py/`\n"),
+}
 
 TASK = """\
 # 과제: {module} 모듈의 IR 작성
@@ -33,7 +40,7 @@ TASK = """\
 3. `python3 tools/pl.py validate {out} --l1 l1.json{lib_arg}`가 `"ok": true`가 될 때까지 고친다.
 
 ## 규칙
-- `{out}` 외의 파일은 만들거나 고치지 않는다.
+{lang_note}- `{out}` 외의 파일은 만들거나 고치지 않는다.
 - SPEC에 없는 동작을 지어내지 않는다. SPEC이 정하지 않은 세부는 단순한 쪽을 고른다.
 """
 
@@ -42,21 +49,23 @@ def out_rel(module: str) -> str:
     return f"out/{module}.ir.json"
 
 
-def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] | None = None) -> Task:
+def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] | None = None, lang: str = "sv") -> Task:
     module = l1["module"]
     inputs: dict = {"l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "spec.md": Path(spec),
                     "guide.md": GUIDE}
     for e in EXAMPLES:
         inputs[f"examples/{e.name}"] = e
+    for e in PY_EXAMPLES if lang == "py" else []:
+        inputs[f"examples/py/{e.name}"] = e
     for cname, cl1 in (children or {}).items():
         inputs[f"lib/{cname}.ir.json"] = json.dumps(cl1, ensure_ascii=False, indent=1)
     text = TASK.format(module=module, out=out_rel(module),
                        children="\n- `lib/`: 인스턴스로 쓰는 자식 모듈의 L1" if children else "",
-                       lib_arg=" --lib lib" if children else "")
+                       lib_arg=" --lib lib" if children else "", lang_note=LANG_NOTE[lang])
     return Task("author", name, text, inputs=inputs, outputs=[out_rel(module)], write_scope=["out/"])
 
 
-def check(l1: dict, children: dict[str, dict] | None = None):
+def check(l1: dict, children: dict[str, dict] | None = None, lang: str = "sv"):
     """종료 게이트: 저장소의 Validator(작업 디렉터리의 사본이 아님)와 원본 L1로 판정한다."""
     def _check(work: Path) -> list[str]:
         try:
@@ -67,5 +76,7 @@ def check(l1: dict, children: dict[str, dict] | None = None):
         errs = [str(i) for i in errors(validate(Module(raw), lib))]
         mine, frozen = frozen_l1(raw), frozen_l1(l1)
         errs += [f"[동결] {k}: 동결된 L1과 다름" for k in frozen if mine.get(k) != frozen.get(k)]
+        if raw.get("lang", "sv") != lang:
+            errs.append(f'[lang] 이 후보의 조각 언어는 "{lang}"임 (IR의 lang: "{raw.get("lang", "sv")}")')
         return errs
     return _check

@@ -116,6 +116,8 @@ class Store:
         for cfg in (self.config(), config):
             if "author_count" in cfg:
                 base["roles"]["author"]["count"] = cfg["author_count"]
+            if "author_langs" in cfg:   # Author 후보마다 조각 언어 (sv, py)
+                base["roles"]["author"]["langs"] = cfg["author_langs"]
             if "verifier_count" in cfg:
                 base["roles"]["verifier"]["count"] = cfg["verifier_count"]
             for k in ("budget_agent_runs", "repair_per_candidate"):

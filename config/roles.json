@@ -1,9 +1,9 @@
 {
-  "_note": "역할별 coding agent와 후보 수. agents는 에이전트 설정 파일(런타임 명령, 모델, 계열). 2026-10-11 사용자 지정: agy, Author는 gemini-3.8-flash-high, 나머지는 gemini-3.1-pro-high",
+  "_note": "역할별 coding agent와 후보 수. agents는 에이전트 설정 파일(런타임 명령, 모델, 계열). 2026-10-11 사용자 지정: agy, Author는 gemini-3.8-flash-high, 나머지는 gemini-3.1-pro-high. author.langs는 후보마다 조각 언어(sv, py)이고 후보 c는 langs[c % 길이]",
   "agents": "experiments/p0/local/agents.agy.json",
   "roles": {
     "architect": {"agent": "agy-verifier", "count": 1},
-    "author":    {"agent": "agy-author",   "count": 2},
+    "author":    {"agent": "agy-author",   "count": 2, "langs": ["sv"]},
     "verifier":  {"agent": "agy-verifier", "count": 2},
     "repair":    {"agent": "agy-author",   "count": 1},
     "arbiter":   {"agent": "agy-verifier", "count": 1}

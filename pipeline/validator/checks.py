@@ -379,6 +379,8 @@ def validate(m: Module, library: dict[str, Module] | None = None, upto: int = 10
     from pipeline.validator import structure as st
 
     library = {**(library or {}), m.name: m}
+    if m.lower_errors:   # lang: py 조각을 SV로 옮기지 못함 (조각 오류이므로 V4). 옮긴 뒤에야 reads/writes가 채워지므로 V1보다 먼저
+        return [Issue("V4", node, msg) for node, msg in m.lower_errors]
     out = v1_schema(m)
     if out or upto < 2:
         return out

@@ -8,6 +8,7 @@
     python3 tools/pl.py spec <spec.md> <요구사항 ID...>                          # SPEC 구절 조회
     python3 tools/pl.py harness <l1.json> -o <dir>                               # L1에서 cocotb 하니스 생성
     python3 tools/pl.py model <model.py> <l1.json> [--n 200]                     # 참조 모델 단독 실행 (무작위 입력)
+    python3 tools/pl.py pysim <ir.json> [--lib <dir>] [--stim stim.json] [--cycles 20]  # lang: py 설계 모델 실행 (RTL 없이)
 
 결과는 JSON으로 낸다. 호출 기록은 `.tools.log`에 남는다 (도구 사용 측정용. PL_NO_LOG=1이면 남기지 않음).
 """
@@ -146,6 +147,37 @@ def cmd_model(a) -> dict:
     return {"ok": True, "inputs": a.n - skipped, "skipped": skipped, "expected_outputs": out_counts}
 
 
+def cmd_pysim(a) -> dict:
+    """lang: py IR의 설계 모델을 사이클마다 실행한다. stim은 사이클마다 입력 값 dict의 목록이고, 빠진 입력은 0,
+    리셋 포트를 주지 않으면 첫 2사이클만 리셋을 건다. 사이클마다 입력과 출력(에지 직전 값)을 낸다."""
+    import random
+
+    from pipeline.ir.model import Module
+    from pipeline.ir.pysim import PySim, SimError
+
+    m = Module(_load_ir(a.ir))
+    if m.lower_errors:
+        return {"ok": False, "errors": [f"{n}: {e}" for n, e in m.lower_errors]}
+    try:
+        sim = PySim(m, _lib(a.lib))
+    except SimError as e:
+        return {"ok": False, "errors": [str(e)]}
+    dom = next(iter(m.domains.values()))
+    rport, act = dom["reset"]["port"], 0 if dom["reset"]["active"] == "low" else 1
+    stim = json.loads(Path(a.stim).read_text(encoding="utf-8")) if a.stim else None
+    rng = random.Random(a.seed)
+    rows = []
+    for c in range(len(stim) if stim else a.cycles):
+        vals = {n: (stim[c].get(n, 0) if stim else rng.getrandbits(w)) for n, w in sim.inputs().items()}
+        if not stim or rport not in stim[c]:
+            vals[rport] = act if c < 2 else 1 - act
+        sim.set(vals)
+        sim.settle()
+        rows.append({"cycle": c, "in": vals, "out": sim.outputs()})
+        sim.step()
+    return {"ok": True, "cycles": rows}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="에이전트 도구")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -159,6 +191,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("harness"); p.add_argument("l1"); p.add_argument("-o", "--out", required=True)
     p = sub.add_parser("model"); p.add_argument("model"); p.add_argument("l1")
     p.add_argument("--n", type=int, default=200); p.add_argument("--seed", type=int, default=1)
+    p = sub.add_parser("pysim"); p.add_argument("ir"); p.add_argument("--lib"); p.add_argument("--stim")
+    p.add_argument("--cycles", type=int, default=20); p.add_argument("--seed", type=int, default=1)
     a = ap.parse_args(argv)
     res = globals()[f"cmd_{a.cmd}"](a)
     import os

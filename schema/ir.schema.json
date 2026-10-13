@@ -24,6 +24,13 @@
         "external"
       ]
     },
+    "lang": {
+      "description": "동작 조각(body, cond)의 언어. sv(기본): SystemVerilog, py: Python 조각 (pipeline/ir/pyfrag.py). py 모듈은 읽을 때 SV 조각으로 낮추고 reads/writes를 계산해 채운다",
+      "enum": [
+        "sv",
+        "py"
+      ]
+    },
     "params": {
       "type": "array",
       "items": {

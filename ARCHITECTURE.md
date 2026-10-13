@@ -17,7 +17,7 @@ Chip Design Department의 아키텍처 개요입니다. 시스템은 SPEC에서 
 | --- | --- |
 | 두 계층 | 부서 계층(영속적 Seat)은 계획, 운영, 사람과의 대화, 독립 검증을 맡습니다. 실행 계층(파이프라인)은 결정론적 스케줄러와 단기 에이전트로 RTL을 생성하고 검증합니다. |
 | IR이 유일한 소스 | RTL은 항상 IR에서 방출합니다. RTL을 IR로 되돌리는 역파싱은 없습니다. 손으로 고친 RTL은 다음 방출에서 사라지므로, 모든 수정은 파이프라인 입력으로 들어갑니다. |
-| 구조는 툴, 동작은 LLM | 계층, 인터페이스, 상태 선언은 JSON입니다. 동작은 타입이 붙은 슬롯 안의 SV 조각입니다. 툴은 구조(포트, 리셋, 드라이버, 도메인)를 보장하고, 오류는 조각 하나로 국소화됩니다. |
+| 구조는 툴, 동작은 LLM | 계층, 인터페이스, 상태 선언은 JSON입니다. 동작은 타입이 붙은 슬롯 안의 조각이고, 조각 언어는 모듈마다 SV 또는 Python(사이클 단위)입니다. Python 조각도 IR 슬롯 안에 두므로 소스맵은 SV 줄 → (IR 노드, 조각 줄) 한 번으로 끝납니다. 툴은 구조(포트, 리셋, 드라이버, 도메인)를 보장하고, 오류는 조각 하나로 국소화됩니다. |
 | 결정론적 제어 흐름 | 순서, 분기, 반복 상한, 게이트는 스케줄러가 정합니다. 에이전트끼리는 메시지를 주고받지 않고 산출물로만 통신합니다. |
 | 생성과 검증의 격리 | Author와 Verifier는 서로의 산출물을 보거나 고칠 수 없고, 서로 다른 계열의 모델을 권장합니다. 같은 계열이면 허용하되 스케줄러가 경고하고 검토 항목에 남깁니다. DV Pod는 파이프라인 테스트를 보지 않고 따로 검증합니다. |
 | coding agent 기반 | LLM은 모두 coding agent 세션으로 씁니다. Seat는 OpenRig가 관리하는 장기 세션이고, 파이프라인 에이전트는 스케줄러가 작업마다 띄우는 headless 단기 세션입니다. 모델 API를 직접 호출하는 코드는 두지 않습니다. 기본 런타임은 Claude Code입니다. |
@@ -108,11 +108,13 @@ flowchart LR
   CONV --> CHK{SPEC 검사<br/>툴 + LLM}
   CHK -- 질문 --> SRC
   CHK -- 사람 고정 --> ARCH[[Architect]]
-  ARCH -- L0/L1 동결 --> AUTH[[Author ×2]]
+  ARCH -- L0/L1 동결 --> AUTH[[Author ×2<br/>SV 또는 Python 조각]]
   ARCH --> VER[[Verifier ×2]]
+  AUTH -- py 조각 --> LOW[조각 번역기<br/>Python → SV]
+  LOW --> VAL
   AUTH --> VAL[Validator V1~V11]
   VAL --> EMIT[Emitter<br/>SV · 소스맵 · SDC 골격]
-  EMIT --> VFY[Verify E1~E3]
+  EMIT --> VFY[Verify E1~E3<br/>py: 번역기 검사]
   VER -- 참조 모델 · 테스트 --> VFY
   VFY -- 실패 --> CLS[Classifier]
   CLS --> REP[[Repair]]
@@ -132,11 +134,13 @@ flowchart LR
 | SPEC 변환 | 툴, 비전 coding agent | Word/PDF, 다이어그램 원본, 엑셀 | 10개 섹션 Markdown, WaveJSON, 경계 신호 목록 |
 | SPEC 검사 | 툴, LLM | Markdown 초안 | 고정된 SPEC, 또는 작성자에게 돌려줄 질문 목록 |
 | Architect | LLM | 고정된 SPEC, Block Top L1 | 모듈 트리, 하위 L1, `top`/`block_top` 연결, 가정 목록 |
-| Author | LLM | SPEC 해당 부분, 동결된 L1 | 자기 모듈의 L2, L3 |
+| Author | LLM | SPEC 해당 부분, 동결된 L1, 후보의 조각 언어 | 자기 모듈의 L2, L3 (SV 또는 Python 조각) |
+| 조각 번역기 | 툴 | `lang: py` IR | SV 조각 IR, 계산한 reads/writes, 문장별 줄 대응. 폭 확장과 절단은 파라미터 식 캐스트로 명시 |
 | Validator | 툴 | IR | 통과, 또는 노드가 지정된 오류 |
 | Emitter | 툴 | 검증된 IR | SV 파일, 소스맵, SDC 골격 |
 | Verifier | LLM | 고정된 SPEC, 동결된 L1 | Python 참조 모델, 시나리오, 속성 체커 |
-| Verify | 툴 | SV, 테스트 | E1 Verilator lint, E2 Verilator sim, E3 VC SpyGlass |
+| 설계 모델 실행기 | 툴 | `lang: py` IR | 사이클 단위 실행 (RTL 없이 돌려 보기, 번역기 검사의 기준) |
+| Verify | 툴 | SV, 테스트 | E1 Verilator lint, 번역기 검사(`py` 모듈: 설계 모델 대 RTL), E2 Verilator sim, E3 VC SpyGlass |
 | Classifier | 툴 | 실패 결과, 소스맵 | 실패 유형(11종), 대상 노드 |
 | Repair | LLM | SPEC, IR, 실패 리포트, patch 이력 | `{op, target, field, value}` patch 목록 |
 | Arbiter | LLM | SPEC, 불일치 트레이스, 양쪽 기댓값 | 테스트 수정안. 사람 승인 필요 |
@@ -176,6 +180,7 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 - **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
 - **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결, 동기화 셀, 신호, 타입입니다.
 - **Validator.** V1 스키마부터 V11 동결까지 11단계로 검사합니다. 사용하는 수단은 JSON Schema, 심볼 테이블, pyslang AST, reads/writes 그래프입니다.
+- **조각 언어.** 모듈의 `lang`이 `sv`(기본)면 조각은 SystemVerilog, `py`면 Python 문법의 사이클 단위 기술입니다. `py` 모듈은 읽을 때 SV 조각으로 낮추므로 Validator, Emitter, 하니스는 같은 경로를 탑니다. 설계 모델(`py` 조각)과 참조 모델(Verifier)은 서로 다른 에이전트가 따로 씁니다. 같은 모델을 RTL의 원천과 기댓값에 함께 쓰지 않습니다 (검증이 순환하므로). 설계 모델 대 RTL 비교는 번역기 검사로만 쓰고, 판정은 늘 RTL 시뮬레이션으로 합니다.
 - **v1 제외.** generate, function/task, inout/tristate, 의도적 래치, 다중 비트 CDC, SVA는 아직 표현하지 못합니다.
 
 ## 6. 계층 간 인터페이스와 환류
@@ -249,7 +254,7 @@ Web UI는 승인 세 지점에 쓰이는 화면부터 만듭니다.
 ## 10. 추적성
 
 - 모든 기능 요구사항에는 ID가 붙습니다. Verifier는 ID마다 검사를 하나 이상 대응시키고, 불일치 리포트와 Arbiter 판정은 이 ID를 인용합니다.
-- 방출된 SV에는 `// @ir <id>` 주석과 소스맵이 붙습니다. 외부 툴의 파일과 줄 번호는 이것으로 IR 노드에 대응됩니다.
+- 방출된 SV에는 `// @ir <id>` 주석과 소스맵이 붙습니다. 외부 툴의 파일과 줄 번호는 이것으로 IR 노드에 대응되고, Python 조각이면 조각 안의 줄(`py_line`)까지 대응됩니다.
 - 모든 환류와 승인은 실행 ID, 요구사항 ID, SPEC 버전과 함께 기록됩니다.
 
 ## 11. 미결 사항

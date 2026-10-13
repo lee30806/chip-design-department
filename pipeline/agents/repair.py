@@ -29,7 +29,8 @@ TASK = """\
   그 전후의 FSM 상태, 불일치 출력의 팬인 노드와 신호 값, 관련 SPEC 구절이다
 - `history.json`: 이전에 적용한 patch (같은 patch를 반복하지 않는다)
 - `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다
-- `guide.md`: IR 작성 안내
+- `guide.md`: IR 작성 안내. IR의 `lang`이 `py`면 body와 cond는 Python 조각이다 (안내의 "Python 조각" 절).
+  실패 메시지에 "Python 조각 N번째 줄"이 있으면 그 조각의 N번째 줄이 방출된 RTL의 오류 위치다
 
 ## 할 일
 1. `failure.json`의 실패를 SPEC과 비교해 원인 노드를 찾는다. 팬인 노드 가운데에서 찾는다.

@@ -74,6 +74,12 @@ def locate(sourcemap: list[dict], line: int) -> tuple[str | None, bool]:
     return best["node"], bool(frags)
 
 
+def py_line(sourcemap: list[dict], line: int) -> int | None:
+    """방출된 줄 → Python 조각 안의 줄 (`lang: py` 모듈의 조각일 때)."""
+    hits = [e for e in sourcemap if "py_line" in e and e["start"] <= line <= e["end"]]
+    return min(hits, key=lambda e: e["end"] - e["start"])["py_line"] if hits else None
+
+
 def classify_findings(findings, sourcemaps: dict[str, list[dict]], roles: dict[str, str]) -> list[Classified]:
     """Verify 결과와 외부 리포트. `sourcemaps`와 `roles`는 모듈 이름이 키다 (방출 파일은 `<module>.sv`)."""
     out = []
@@ -93,6 +99,8 @@ def classify_findings(findings, sourcemaps: dict[str, list[dict]], roles: dict[s
             continue
         node, frag = locate(sourcemaps[module], f.line)
         msg = f"[{f.tool} {f.rule}] {f.message}"
+        if frag and (pl := py_line(sourcemaps[module], f.line)) is not None:
+            msg += f" (Python 조각 {pl}번째 줄)"
         if not frag:
             t = "lint_skeleton"
         elif writable(roles.get(module, ""), node):

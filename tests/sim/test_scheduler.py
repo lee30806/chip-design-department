@@ -290,3 +290,24 @@ def test_augmented_test_that_cannot_split_candidates_is_not_adopted(tmp_path):
     assert any(r["code"] == "CANDIDATE_DIFF" and "가르지 못함" in r["message"] for r in rep["review"])
     st = json.loads((tmp_path / "run" / "state.json").read_text())
     assert "tb_history" not in st   # 채택하지 않음
+
+
+def test_python_fragment_candidate_with_translator_check(tmp_path):
+    """후보 1은 Python 조각(같은 동작을 Python으로 쓴 IR). 번역기 검사를 거쳐 SV 후보와 함께 통과하고, 후보 간 차분도 없다."""
+    f = _files(tmp_path)
+    py = json.loads((ROOT / "tests" / "fixtures" / "py" / "axis_adapter.ir.json").read_text())
+    py["module"] = "axis_adapter_core"
+    files = {"Architect": f["Architect"],
+             "Author|author__axis_adapter_core__c1": {"out/axis_adapter_core.ir.json": json.dumps(py)},
+             "Author": f["Author"], "Verifier": f["Verifier"]}
+    roles = _roles(tmp_path, files)
+    roles.author_langs = ("sv", "py")
+    rep = Run(tmp_path / "run", SPEC, roles, isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert all(c["status"] == "pass" for c in rep["candidates"].values())
+    c1 = json.loads((tmp_path / "run" / "modules" / "axis_adapter_core__c1.json").read_text())
+    assert c1["lang"] == "py" and c1["ir"]["lang"] == "py"
+    eq = list((tmp_path / "run" / "verify").glob("*_c1_*/pyequiv_axis_adapter_core/pyequiv_result.json"))
+    assert eq and json.loads(eq[0].read_text())["ok"]
+    assert not list((tmp_path / "run" / "verify").glob("*_c0_*/pyequiv_*"))   # SV 후보는 번역기 검사가 없음
+    assert not any(r["code"] in ("CANDIDATE_DIFF", "PY_EQUIV") for r in rep["review"])

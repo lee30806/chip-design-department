@@ -1,6 +1,6 @@
 # IR 작성 안내 (에이전트용)
 
-모듈 하나는 JSON 파일 하나다. 구조는 JSON이고, 동작은 SystemVerilog 조각(body, cond)이다. 형식은 `tools/schema/ir.schema.json`, 예시는 `examples/`에 있다.
+모듈 하나는 JSON 파일 하나다. 구조는 JSON이고, 동작은 슬롯(body, cond) 안의 조각이다. 조각 언어는 IR 최상위의 `lang`으로 정한다: `sv`(기본, SystemVerilog) 또는 `py`(Python, 아래 "Python 조각" 절). 과제가 정한 언어를 쓴다. 형식은 `tools/schema/ir.schema.json`, 예시는 `examples/`에 있다.
 
 ## 계층
 
@@ -45,6 +45,21 @@
 - `seq` 블록 안에 임시 변수를 쓰지 않는다. `comb` 블록의 wire로 뺀다.
 - 함수와 `generate`는 쓸 수 없다. `comb` 블록에서 `for` 루프로 풀어 쓴다.
 - 비동기 입력(포트 `domain`이 null)은 `cdc_sync`의 `src`로만 읽는다.
+
+## Python 조각 (`"lang": "py"`)
+
+body와 cond를 Python 문법으로 쓴다. 실행되는 Python이 아니라 사이클 단위 기술이고, 툴이 SV로 옮긴다. 구조(signals, blocks의 종류, 도메인, 리셋값)는 SV 조각과 같다.
+
+- `comb` body의 대입은 blocking, `seq` body의 대입은 non-blocking으로 옮겨진다. `seq` 안에서 대입한 값은 다음 클럭부터 보인다.
+- `reads`와 `writes`는 툴이 계산해 채운다. 쓰지 않아도 된다.
+- 문장: `x = e`, `x[i] = e`, `x[hi:lo] = e`, `x += e`(+ - & | ^ << >>), `if/elif/else`, `for i in range(N)`, `pass`.
+- 식: `+ - * & | ^ ~ << >>`, 비교 하나(`a == b`, 사슬 비교 금지), `and or not`, `a if c else b`, `x[i]`, `x[hi:lo]`(SV처럼 양 끝 포함).
+- 도움 함수: `cat(a, b)`(연결), `rep(n, x)`(반복), `u(w, v)`(폭 w 상수), `any_bits(x)`, `all_bits(x)`, `parity(x)`.
+- 폭: 툴이 SV 규칙대로 계산하고 확장과 절단을 캐스트로 적는다. 대입 대상보다 넓은 결과는 잘린다. 정수 리터럴은 식의 다른 피연산자 폭을 따른다 (`cnt == 0`, `cnt + 1`). 연결 안의 상수는 `u(4, 9)`처럼 폭을 쓴다.
+- 쓸 수 없는 것: 함수 정의, 리스트, 문자열, `while`, 나눗셈, 사슬 비교, 부호 있는 값, struct 타입.
+- 예: `if state_q == HEADER and s_valid:` / `    byte_cnt = s_data` / `elif state_q == PAYLOAD and s_valid:` / `    byte_cnt = byte_cnt - 1`
+- 설계 모델을 RTL 없이 돌려 볼 수 있다: `python3 tools/pl.py pysim <ir.json> --cycles 20` (또는 `--stim stim.json`).
+- 검사 오류의 "Python 조각 N번째 줄"은 그 조각의 N번째 줄이다.
 
 ## 검사
 

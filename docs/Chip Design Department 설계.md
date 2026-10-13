@@ -188,7 +188,7 @@ Block Top 하나는 아래 여섯 단계를 거치고, 사람은 그중 세 곳�
 | 항목 | 내용 |
 | --- | --- |
 | 입력 | Word 또는 PDF SPEC과 엑셀 레지스터 맵을 변환하고 사람이 고정한 Markdown |
-| IR | 구조는 JSON, 동작은 SV 조각. IR이 RTL의 유일한 소스 |
+| IR | 구조는 JSON, 동작은 SV 조각 또는 Python 조각(모듈의 `lang`). IR이 RTL의 유일한 소스 |
 | 에이전트 | Architect, Author, Verifier, Repair, Arbiter. Author와 Verifier는 기본 2개씩이고 서로 다른 계열의 모델을 권장(같으면 허용하되 경고) |
 | 제어 | 결정론적 스케줄러. 에이전트 간 통신은 산출물로만 |
 | 검증 | Verilator의 lint와 시뮬레이션, VC SpyGlass lint. Block Top에는 참조 모델이 필수 |

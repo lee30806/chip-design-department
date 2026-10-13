@@ -15,6 +15,7 @@
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
 | P8 첫 Block Top End-to-End | **완료 (2026-10-13)** | 신규 블록 `axis_crc_append` RTL Freeze (실행 674c). agy Seat, 오픈소스 대체 EDA. 커밋 `34b2205` |
+| P8a Python 동작 조각 | **구현 완료, 실제 비교 대기 (2026-10-13)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 남은 일: 실제 블록에서 SV 후보와 비교 (작업 9) |
 | P9 운영 안정화 | **보류 (사용자 결정 2026-10-13)** | P8 회고에서 넘긴 항목은 아래 대기 항목 |
 
 ## 제외 항목 (사용자 결정)
@@ -48,8 +49,36 @@
 | 대체 LEC 무한 증명 (사내 Formality/Conformal 또는 FSM 재인코딩 끄기) | P8 | 사내 LEC 또는 PI 결정 |
 | `axis_crc_append` CRC-E03 정의, Q-01 결정, DV 공백(SVA, 16비트 롤오버) | P8 | 다음 SPEC 개정 |
 | golden 블록 Verifier 체커의 리셋 표본 가정 재확인 | P8 | P9 재개 |
+| Python 조각 실제 비교 (SV 후보 대 Python 후보, `axis_crc_append`와 golden 블록) | P8a | 사용자 지시 (agy 실행 비용) |
+| 설계 모델 실행기 확장 (`memory`, `cdc_sync`, 다중 클럭, struct, signed) | P8a | 필요한 블록이 나올 때 |
+| 하니스에서 설계 모델로 Verifier 테스트 실행 (RTL 전 빠른 실행) | P8a | 실제 비교에서 Repair 반복 비용이 크게 나올 때 |
 
 ## 진행 기록
+
+### 2026-10-13 P8a Python 동작 조각 (사용자 결정)
+
+사용자 결정: IR 구조는 JSON 그대로 두고 동작을 Python(사이클 단위)으로도 쓴다. 논의에서 정한 것은 셋이다. (1) Python 조각은 IR 슬롯 안에 두어 소스맵을 SV 줄 → (IR 노드, Python 줄) 한 번으로 줄인다. (2) 설계 모델(Author)과 참조 모델(Verifier)은 따로 쓴다. 같은 모델을 RTL 원천과 기댓값에 쓰면 검증이 순환한다. (3) 설계 모델 대 RTL 비교는 번역기 검사로만 쓰고 판정은 RTL 시뮬레이션이다.
+
+- **스키마:** 모듈 `lang`(`sv` 기본, `py`). 설정 변경 환류에 `author_langs`.
+- **조각 번역기** `pipeline/ir/pyfrag.py`:
+  - Python 부분집합(대입과 비트/범위 대입, `op=`, if/elif/else, `for range`, 산술·비트·비교·논리, 조건식, `cat/rep/u/any_bits/all_bits/parity`)을 SV로 옮긴다.
+  - reads/writes는 AST에서 계산한다. 문장 하나는 SV 문장 하나로만 옮긴다.
+  - 폭은 IEEE 1800 규칙에 정수 리터럴만 문맥 폭을 따르게 정했다. 모든 확장과 절단은 캐스트로 적고, 폭이 파라미터에 달리면 파라미터 선형식 캐스트(`(S_KEEP_WIDTH)'(0)`)로 적는다. 처음에는 기본 파라미터 값으로 폭을 박아 넣어, 다른 파라미터로 인스턴스하면 틀리는 문제가 있어 고쳤다.
+  - Verilator가 암묵적 폭 변환을 오류로 막아(프로젝트 규칙과 같음) 명시적 캐스트 방식으로 정했다. 방출 RTL은 lint 경고 0.
+- **연결:** `Module`이 `py` IR을 읽을 때 SV 조각으로 낮춘다 (`raw`는 낮춘 IR, `source_raw`는 원문). Validator, Emitter, 하니스는 그대로 쓴다. 번역 오류는 V4(조각 줄 번호 포함).
+- **소스맵:** Emitter가 문장별 `py_line` 항목을 내고, Classifier 메시지에 "Python 조각 N번째 줄"을 붙인다.
+- **설계 모델 실행기** `pipeline/ir/pysim.py`: 번역기와 같은 폭 함수로 사이클 실행. 인스턴스와 파라미터 대입, 동기/비동기 리셋, FSM 지원. 도메인 하나만, `memory`/`cdc_sync`/struct/signed는 아직 없다.
+- **번역기 검사** `pipeline/verify/pyequiv.py`: 같은 무작위 자극(가끔 리셋)을 설계 모델과 RTL에 넣어 사이클마다 출력 비교. 스케줄러가 `py` 모듈마다 E1 뒤에 돌리고, 불일치면 Repair 없이 후보를 멈추고 `PY_EQUIV` 검토 항목을 남긴다.
+- **에이전트:** Author 후보 c의 언어는 `roles.author.langs[c % 길이]` (기본 `["sv"]`라 지금 동작은 그대로). Author 종료 게이트가 `lang`을 확인한다. 안내서에 Python 조각 절, `pl.py pysim` 명령. Repair 과제에 Python 조각 안내.
+- **픽스처** `tests/fixtures/py/`: `pkt_parser`, 폭 규칙용 `py_ops`, golden `axis_adapter`의 Python 판.
+- **확인:**
+  - 번역기 검사 통과: `pkt_parser`, `py_ops`, `axis_adapter`. `axis_adapter`는 기본값이 아닌 파라미터(S_KEEP_WIDTH=8 등)로 감싼 Block Top에서도 통과.
+  - Python 설계 모델이 손으로 쓴 SV 판(기존 `pkt_parser` 픽스처, golden `axis_adapter`)의 RTL과 같은 출력을 낸다.
+  - 일부러 틀린 RTL은 번역기 검사가 잡는다.
+  - 가짜 에이전트 스케줄러 시험: 후보 0은 SV, 후보 1은 Python. 둘 다 통과하고 후보 간 차분도 없다.
+  - 전체 테스트 251 통과, 3 건너뜀 (24개 추가). 파이프라인 API 서버를 다시 띄웠다.
+- **문서:** ARCHITECTURE(원칙, 데이터 흐름, 구성요소, IR, 추적성), 파이프라인 설계 문서(개요, 결정, IR 공통 원칙, 조각 언어 절, V4, 실패 분류, 검증), 부서 설계 문서, IMPLEMENTATION(P8a 단계, 저장소 구조, 위험).
+- **남은 일:** 실제 블록에서 SV 후보와 Python 후보 비교 (agy 실행, 사용자 지시 대기). 실행기 확장과 Verifier 테스트의 설계 모델 실행은 대기 항목으로 둔다.
 
 ### 2026-10-13 P8 마감과 P9 보류
 
