@@ -50,6 +50,9 @@ elif mode == "task_retry":
 elif mode == "task_tools":
     r = subprocess.run([sys.executable, "tools/pl.py", "validate", "in/ir.json"], capture_output=True, text=True)
     (cwd / "out" / "result.txt").write_text(r.stdout)
+elif mode == "quota_cc":   # Claude Code CLI: 종료 코드 1, 표준 출력에 안내
+    print("You've hit your session limit · resets 1:20am (Asia/Seoul)")
+    sys.exit(1)
 elif mode == "quota":
     print("error: Individual quota reached. RESOURCE_EXHAUSTED (code 429)", file=sys.stderr)
     sys.exit(3)

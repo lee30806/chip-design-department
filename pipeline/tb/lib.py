@@ -132,10 +132,13 @@ class OutputMonitor:
 
 
 class ValidReadyChecker:
-    """T2. DUT가 source인 번들: valid가 올라간 뒤 ready를 볼 때까지 valid와 data를 유지해야 한다."""
+    """T2. DUT가 source인 번들: valid가 올라간 뒤 ready를 볼 때까지 valid와 data를 유지해야 한다.
+    리셋은 예외다: 리셋이 걸린 표본과 그 다음 표본(동기 리셋이 반영되는 사이클)에서는 보지 않고 기다리던 전송을 버린다."""
 
-    def __init__(self, dut, b: dict):
+    def __init__(self, dut, b: dict, reset: tuple[str, int] | None = None):
         self.name, self.domain = b["name"], b["domain"]
+        self.rst, self.rst_active = (getattr(dut, reset[0]), reset[1]) if reset else (None, 1)
+        self.prev_rst = False
         self.valid, self.ready = getattr(dut, b["valid"]), getattr(dut, b["ready"])
         self.data = {n: getattr(dut, n) for n in b["data"]}
         self.pending = None
@@ -145,7 +148,8 @@ class ValidReadyChecker:
     def sample(self, cycle: int) -> None:
         v, r = _int(self.valid), _int(self.ready)
         d = {n: _int(h) for n, h in self.data.items()}
-        if self.pending is not None:
+        rst = self.rst is not None and _int(self.rst) == self.rst_active
+        if self.pending is not None and not (rst or self.prev_rst):
             if v != 1:
                 self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
                                         "rule": "valid가 ready 전에 내려감"})
@@ -153,7 +157,8 @@ class ValidReadyChecker:
                 self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
                                         "rule": "ready 전에 data가 바뀜",
                                         "before": self.pending, "after": d})
-        self.pending = d if v == 1 and r != 1 else None
+        self.pending = d if v == 1 and r != 1 and not rst else None
+        self.prev_rst = rst
         self.handshakes += int(v == 1 and r == 1)
 
 
@@ -257,7 +262,7 @@ class Harness:
         for b in outs:
             self.drivers[b["name"]] = ReadyDriver(dut, b)
         for b in outs:
-            c = ValidReadyChecker(dut, b)
+            c = ValidReadyChecker(dut, b, cfg["resets"].get(b["domain"]))
             self.checkers.append(c)
             self.samplers[b["domain"]].append(c)
 

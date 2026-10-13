@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,6 +133,15 @@ def _fsm(w: _Writer, m: Module, b: dict) -> None:
     w.line("  end")
 
 
+def _parent_type(t: str, child: Module, inst: dict) -> str:
+    """자식 포트 타입을 부모 쪽 이름으로: 자식 파라미터를 인스턴스가 준 값(없으면 자식 기본값)으로 바꾼다.
+    부모 모듈에는 자식 파라미터 이름이 없으므로 그대로 쓰면 wire 선언이 깨진다."""
+    vals = {p["name"]: str(inst.get("params", {}).get(p["name"], p["default"])) for p in child.params}
+    if not vals:
+        return t
+    return re.sub(r"\b(" + "|".join(map(re.escape, vals)) + r")\b", lambda x: f"({vals[x.group(1)]})", t)
+
+
 def _instance_nets(m: Module, library: dict[str, Module]) -> tuple[dict[tuple[str, str], tuple[str, str]], list[tuple[str, str, str]]]:
     """(인스턴스, 자식 포트) → (부모 쪽 넷 이름, 연결 id). 인스턴스끼리 잇는 넷은 새 wire로 선언한다."""
     from pipeline.validator.checks import _endpoint_ports  # 같은 끝점 해석을 쓴다
@@ -152,8 +162,9 @@ def _instance_nets(m: Module, library: dict[str, Module]) -> tuple[dict[tuple[st
                 # 출력 쪽 인스턴스 포트 이름으로 wire를 만든다.
                 src_i, src_p = (owners[0], na) if da == "output" else (owners[1], nb)
                 net = f"{src_i}_{src_p}"
-                child = library[next(i["module"] for i in m.instances if i["name"] == src_i)]
-                wires.append((child.port(src_p).type, net, c["id"]))
+                inst = next(i for i in m.instances if i["name"] == src_i)
+                child = library[inst["module"]]
+                wires.append((_parent_type(child.port(src_p).type, child, inst), net, c["id"]))
                 nets[(owners[0], na)] = (net, c["id"])
                 nets[(owners[1], nb)] = (net, c["id"])
     return nets, wires

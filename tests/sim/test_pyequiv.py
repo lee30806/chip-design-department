@@ -80,3 +80,25 @@ def test_wrong_memory_rtl_is_caught(tmp_path):
     res = check("py_ram", {"py_ram": m}, [_emit(tmp_path, m, text.replace("mem[waddr] <= word;", "mem[waddr] <= wdata;"))],
                 tmp_path / "b", cycles=1500)
     assert not res["ok"] and res["mismatch"]["output"] in ("rdata", "rhi")
+
+
+def test_wire_between_instances_uses_parent_names(tmp_path):
+    """인스턴스끼리 잇는 wire의 타입에 자식 파라미터(DW)를 그대로 쓰면 부모에서 정의되지 않는다 (P8a async_fifo).
+    인스턴스가 준 값으로 바꿔 선언하고, 설계 모델과 RTL이 같다."""
+    ram = load(PY / "py_ram.ir.json")
+    sys_ = ram.raw["domains"]
+    ports = [{"name": n, "dir": "input", "type": t, "domain": "sys"} for n, t in
+             (("we", "logic"), ("waddr", "logic [2:0]"), ("wdata", "logic [W-1:0]"), ("re", "logic"), ("raddr", "logic [2:0]"))]
+    ports.append({"name": "out", "dir": "output", "type": "logic [W-1:0]", "domain": "sys"})
+    inst = lambda n: {"name": n, "module": "py_ram", "params": {"DW": "W", "AW": "3"}, "domain_map": {"sys": "sys"}}  # noqa: E731
+    conns = [{"id": f"c_{p}_{i}", "from": f"self.{p}", "to": f"{i}.{p}"} for i in ("u_a", "u_b")
+             for p in ("we", "waddr", "re", "raddr")]
+    conns += [{"id": "c_in", "from": "self.wdata", "to": "u_a.wdata"}, {"id": "c_mid", "from": "u_a.rdata", "to": "u_b.wdata"},
+              {"id": "c_out", "from": "u_b.rdata", "to": "self.out"}]
+    top = Module({"module": "ram2", "role": "block_top", "params": [{"name": "W", "type": "int", "default": "8"}],
+                  "domains": sys_, "ports": ports, "instances": [inst("u_a"), inst("u_b")], "connections": conns})
+    lib = {"ram2": top, "py_ram": ram}
+    files = [_emit(tmp_path, top, lib=lib), _emit(tmp_path, ram)]
+    text = files[0].read_text()
+    assert "logic [(W)-1:0] u_a_rdata;" in text and "[DW" not in text
+    assert check("ram2", lib, files, tmp_path / "b", cycles=1000)["ok"]

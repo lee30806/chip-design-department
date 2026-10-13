@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from pipeline.agents.runner import AgentConfig
-from pipeline.agents.task import Task, prepare, run_task
+from pipeline.agents.task import QuotaExceeded, Task, prepare, run_task
 from test_pipeline import LIB, ROOT
 
 FAKE = str(ROOT / "tests" / "fake_agent.py")
@@ -153,3 +153,9 @@ def test_verifier_and_candidate_diff(tmp_path):
         (tmp_path / name / "t1.result.json").write_text(json.dumps({"outputs": outs}))
     assert candidate_diff([[str(tmp_path / "c0")], [str(tmp_path / "c1")]]) is None
     assert candidate_diff([[str(tmp_path / "c0")], [str(tmp_path / "c2")]]) == "t1"
+
+
+def test_claude_code_session_limit_is_quota(tmp_path):
+    """Claude Code의 세션 한도 안내는 Repair 실패가 아니라 사용량 한도로 멈춰야 한다 (P8a async_fifo)."""
+    with pytest.raises(QuotaExceeded):
+        run_task(_cfg("quota_cc"), _task(), tmp_path / "w", retries=1)

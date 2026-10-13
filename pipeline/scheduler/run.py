@@ -3,12 +3,13 @@
     SPEC 검사 → Block Top L1 → Architect(모듈 트리, 동결) → Verifier 후보(참조 모델, 테스트)와 차분 검사
     → 모듈마다 Author 후보(후보마다 조각 언어 sv/py) → 같은 번호 후보끼리 묶어
        [Validator → 방출 → E1 → (py 모듈) 번역기 검사 → E2(모든 Verifier의 테스트)]
-       번역기 검사 실패: 생성기 버그이므로 Repair 없이 후보를 멈추고 검토 항목에 남김
+       번역기 검사 실패나 골격(조각 밖) lint 에러: 생성기 버그이므로 Repair 없이 후보를 멈추고 검토 항목에 남김
        실패: 분류 → 원인 후보 모듈(불일치 출력을 구동하는 인스턴스)의 Repair(patch) → Validator부터 다시
              (상한, IR 해시 진동 감지. Repair가 형제 모듈을 지목하면 그 모듈의 Repair로 넘김)
              Repair들이 원인을 서로 넘기면(충돌) Design-lead 결정 대기: 고칠 모듈 지정(그 모듈의 Repair만, 형제 지목 금지)
              또는 Architect 재구성(충돌 경위로 모듈 트리를 다시 정하고 Author부터 다시. Block Top L1과 Verifier 테스트는 그대로)
              일부 Verifier에서만 실패 → Arbiter (rtl_wrong이면 Repair, test_wrong이면 사람 승인 대기, 모호하면 검토 항목)
+             같은 테스트가 Repair 두 번 뒤에도 같은 이유로 실패하면 상한 전에 실패한 Verifier마다 Arbiter가 판정
              Repair가 L1 변경을 요청하면 실패한 Verifier마다 Arbiter가 먼저 판정 (test_wrong이면 기댓값 수정 승인 대기,
              모호하면 검토 항목, rtl_wrong이면 L1 변경 요청을 검토 항목으로 남기고 후보를 멈춤)
     → 묶음 선택(모든 모듈 통과, Repair 적음, lint 적음)과 Author 후보 간 차분 검사 → 통합(E1, E2) → 최종 보고서
@@ -477,7 +478,8 @@ class Run:
             res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
             e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
                                                                for f in r.findings], "out": str(res_dir)})
-        return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200]} for c in e1c],
+        return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200],
+                        "severity": c.source.get("severity")} for c in e1c],
                 "e2": e2, "py_equiv": py_equiv,
                 "ok": all(x["ok"] for x in e2 + py_equiv) and not any(c.type == "lint_fragment" for c in e1c)}
 
@@ -538,15 +540,17 @@ class Run:
         return mods[0]
 
     def arbitrate(self, lib: dict, top: str, tbs: list[str], gname: str, mods: list[str], c: int, sts: dict,
-                  v: dict, tag: str, claim: dict | None = None) -> str:
+                  v: dict, tag: str, claim: dict | None = None, repeated: dict | None = None) -> str:
         """Verifier v의 실패를 Arbiter가 판정한다. test_wrong이면 기댓값 수정 승인 대기, spec_ambiguous면 검토 항목과 대기.
-        claim은 Repair의 L1 변경 요청 (RTL로는 기댓값을 맞출 수 없다는 주장)."""
+        claim은 Repair의 L1 변경 요청 (RTL로는 기댓값을 맞출 수 없다는 주장), repeated는 Repair를 거듭해도 같은 테스트가 실패한 경위."""
         rep = self.failure_report(lib, top, v)
         mismatch = rep["report"] or rep
         if claim:
             mismatch = {**mismatch, "repair_claim": claim}
+        if repeated:
+            mismatch = {**mismatch, "repeated_failure": repeated}
         rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
-        name = f"arbiter/{gname}/c{c}/{tag}" + (f"/v{v['verifier']}" if claim else "") + (f"/t{rev}" if rev else "") + self.arch_tag()
+        name = f"arbiter/{gname}/c{c}/{tag}" + (f"/v{v['verifier']}" if claim or repeated else "") + (f"/t{rev}" if rev else "") + self.arch_tag()
         ares = self.agent("arbiter", arbiter.make_task(name, self.spec_path, mismatch, Path(tbs[v["verifier"]])),
                           arbiter.check(self.spec_path))
         vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
@@ -563,9 +567,11 @@ class Run:
             pid = self.add_pending({"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
                                     "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
                                     "first_failure": (rep["report"] or {}).get("first_failure"),
-                                    "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {})})
+                                    "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {}),
+                                    **({"repeated_failure": repeated} if repeated else {})})
             self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 {pid} (사람 승인 대기)"
-                        + (" (Repair의 L1 변경 요청을 Arbiter가 테스트 쪽 문제로 판정)" if claim else ""),
+                        + (" (Repair의 L1 변경 요청을 Arbiter가 테스트 쪽 문제로 판정)" if claim else "")
+                        + (f" (Repair {repeated['repairs']}번 뒤에도 같은 테스트가 실패해 Arbiter가 판정)" if repeated else ""),
                         str(ares.workdir), "arbiter")
             # L1 변경 요청은 실패한 Verifier마다 판정하므로 한 후보가 항목 여럿을 기다릴 수 있다
             ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
@@ -618,15 +624,36 @@ class Run:
                                 str(self.dir / "verify" / vtag / f'pyequiv_{x["module"]}'))
                 save_all(status="failed", reason=f'번역기 검사 실패: {[x["module"] for x in bad]}')
                 break
+            if skel := [x for x in vres["e1"] if x["type"] == "lint_skeleton" and x.get("severity") == "error"]:
+                # 방출기가 만든 골격의 lint 에러: 생성기 버그다. Repair나 Verifier로 고칠 일이 아니므로 사람에게 넘긴다
+                self.review("GENERATOR_BUG", f"{gname} 후보 {c}: 골격 lint 에러 (생성기 버그): "
+                            f'{"; ".join(x["message"] for x in skel[:3])[:400]}', str(self.dir / "verify" / vtag / "rtl"))
+                save_all(status="failed", reason=f'생성기 버그 (골격 lint 에러 {len(skel)}건)')
+                break
             if vres["ok"]:
                 save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]])
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
-            if failed and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip:
+            single = bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
+            if single:
                 # 한 Verifier에서만 실패: 그 Verifier의 오류일 수 있으므로 Arbiter가 판정한다
                 verdict = self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, failed[0], f"r{total}")
                 if verdict in ("test_wrong", "spec_ambiguous"):
+                    break
+            # 같은 테스트가 Repair를 거듭해도 같은 이유로 실패: 테스트 쪽 문제일 수 있으므로 상한 전에 Arbiter가 판정한다 (P8 회고)
+            sig = json.dumps(sorted([x["verifier"], sorted({f["test"] for f in x["findings"] if f["test"]})] for x in failed))
+            first = sts[mods[0]]
+            n = first.get("fail_sig_n", 0) + 1 if failed and first.get("fail_sig") == sig else 1
+            save_all(fail_sig=sig, fail_sig_n=n)
+            after = self.roles.limits.get("arbiter_after_repeats", 2)
+            if failed and not single and n > after and sig not in first.get("repeat_arbitrated", []):
+                save_all(repeat_arbitrated=first.get("repeat_arbitrated", []) + [sig])
+                repeated = {"repairs": n - 1, "modules": mods,
+                            "note": f"Repair {n - 1}번 뒤에도 같은 테스트가 같은 이유로 실패함"}
+                verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/repeat", repeated=repeated)
+                            for v in failed if v["verifier"] not in skip]
+                if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
                     break
             fail_v = failed[0] if failed else {"findings": [], "out": ""}
             failure = self.failure_report(lib, top_ir["module"], fail_v) if failed else {"classified": vres["e1"], "report": None}

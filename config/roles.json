@@ -8,5 +8,5 @@
     "repair":    {"agent": "cc-author",    "count": 1},
     "arbiter":   {"agent": "cc-verifier", "count": 1}
   },
-  "limits": {"repair_per_candidate": 5, "agent_retries": 1, "budget_agent_runs": 200}
+  "limits": {"repair_per_candidate": 5, "arbiter_after_repeats": 2, "agent_retries": 1, "budget_agent_runs": 200}
 }

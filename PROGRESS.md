@@ -94,7 +94,27 @@
   - **Repair의 L1 변경 요청은 Arbiter가 먼저 판정** (P8 회고 조정안 1): 지금까지 cobs, async_fifo, CRC(b60e)가 모두 테스트가 SPEC을 엄격하게 읽은 탓(리셋이 걸린 그 사이클)인데도 Arbiter 없이 실패로 끝났다. 이제 Repair가 `request_interface_change`를 내면 실패한 Verifier마다 Arbiter가 `repair_claim`(Repair의 주장)과 함께 판정한다. test_wrong이면 기댓값 수정 승인 대기, spec_ambiguous면 검토 항목, rtl_wrong일 때만 INTERFACE_CHANGE로 멈춘다. 한 후보가 여러 승인 항목을 기다릴 수 있어(`pending_ids`) 모두 결정돼야 다시 돈다. 시험 2개 추가.
   - **Python 조각의 메모리 읽기·쓰기:** `mem[addr]`로 한 워드씩 읽고 쓴다 (쓰기는 `seq`만, 워드 일부 선택이나 범위 선택은 오류). 설계 모델 실행기도 `memory`(inferred)를 실행한다 (워드는 쓴 적 없으면 0, 깊이 밖 쓰기는 무시). 깊이 식의 `**`를 상수로 계산. 실패했던 async_fifo Python 후보의 mem IR이 이제 검사와 방출을 통과한다. 안내서(`ir_guide.md`)에 규칙 추가, 픽스처 `py_ram`과 시험(번역, 실행, 오용 오류, 틀린 RTL 검출) 추가.
   - **비교 드라이버:** IR이 없는 모듈이 있는 후보는 원본 테스트벤치 판정을 건너뛰고 `skipped`로 남긴다 (golden IR로 채운 결과가 그 후보의 통과로 보이던 문제).
-  - 이미 끝난 pilot 실행(cobs, async_fifo, CRC)은 새 경로로 다시 돌려야 결과가 바뀐다. 아직 다시 돌리지 않았다.
+  - 커밋 711684c 뒤 사용자 지시로 cobs, async_fifo, CRC를 처음부터 다시 실행 (모든 역할 Claude Code Sonnet low). 이전 결과는 `build/pilot/pilot-<블록>.r1`과 작업 디렉터리 `runs/pilot-<블록>.r1`에 보관.
+- **20:28 재실행 결과 (모든 역할 Claude Code Sonnet low).**
+  - `axis_cobs_decode`: **통과** (에이전트 10회, 6분). SV 후보 Repair 1, Python 후보 Repair 2 (Arbiter rtl_wrong 1), lint 0, 번역기 검사 통과. 원본 테스트벤치 두 후보 모두 16/16. SV 후보를 고름. 이전 실행(Gemini)의 COBS-E01 L1 변경 요청은 이번에는 나오지 않음.
+  - `axis_crc_append`: 승인 대기 (에이전트 10회, 4분). 두 후보 모두 Verifier 0의 `crc_no_accept` 속성에서 실패, Arbiter가 test_wrong으로 판정 (cycle 37 출력은 다음 프레임 데이터 바이트인데 속성이 출력 바이트를 잘못 셈). 이전 실행의 Repair 충돌은 이번 모듈 트리(axis_crc_core, crc16_step)에서는 나오지 않음. **사용자가 E1, E2를 승인했고 sjlee로 기록**, 이어서 실행.
+  - `axis_async_fifo`: 실패. 모든 후보가 "TB 실행 오류"였으나 원인은 **방출기 버그**: 인스턴스끼리 잇는 wire의 타입에 자식 파라미터 이름(`WORD_WIDTH`)을 그대로 써서 Block Top이 컴파일되지 않음. E1이 골격 lint 에러로 잡았지만 스케줄러가 무시하고 E2 빌드 실패를 TB 오류로 분류함.
+    - 고침: wire 타입의 자식 파라미터를 인스턴스가 준 값(없으면 자식 기본값)으로 바꿈 (`pipeline/emitter/sv.py` `_parent_type`). 번역기 검사로 두 인스턴스 계층을 확인하는 시험 추가.
+    - 고침: 골격(조각 밖) lint 에러는 생성기 버그로 보고 후보를 멈추고 GENERATOR_BUG 검토 항목을 남김 (Repair나 TB 오류로 가지 않음). 시험 추가. 전체 265 통과.
+    - 이전 결과를 `.r2`로 보관하고 처음부터 다시 실행.
+- **21시경 crc 두 번째 승인 대기 (E3, E4).** Verifier 수정 뒤 reset_mid 테스트에서 하니스의 T2 검사(valid가 ready 전에 내려감)가 프레임 도중 리셋 뒤 valid 하강을 위반으로 봄. Arbiter는 RTL이 맞다(CRC-E01)고 판정했지만 원인은 Verifier 테스트가 아니라 **하니스(`pipeline/tb/lib.py`)의 T2 검사가 리셋을 모름** (P8 리셋 표본 결함과 같은 계열).
+  - 사용자 결정: 하니스를 고치고 E3, E4는 거절 (sjlee 기록). T2는 리셋이 걸린 표본과 그 다음 표본에서 보지 않고 기다리던 전송을 버린다. 시험 추가 (고치기 전에는 리셋 사이클도 위반으로 잡음을 확인).
+  - 이어서 실행.
+- **21:20 결과.** `axis_crc_append` **통과** (하니스 T2 수정 뒤, 에이전트 누적 13회). SV, Python 후보 모두 통과, Python 번역기 검사 통과, SV 후보를 고름. `axis_async_fifo`는 실패 (에이전트 24회, 15분): 모듈 트리 afifo_wr/afifo_rd/afifo_mem에서 Repair를 여러 번 거친 뒤 Repair가 `out/patches.json`을 쓰지 않고 끝나 게이트에서 실패 (c0은 afifo_wr, c1은 afifo_mem). 원본 테스트벤치는 두 후보 모두 20/20.
+  - **원인 (10월 14일 확인):** Repair 실패가 아니라 Claude Code 세션 한도("You've hit your session limit · resets 1:20am")로 에이전트가 끊긴 것. 한도 문구 목록에 이 문장이 없어 스케줄러가 멈추지 않고 Repair 실패로 처리함. `session limit`을 한도 문구에 더하고 시험 추가.
+  - 복구: 끊긴 Repair 2건(afifo_wr c0 r2, afifo_mem c1 r0)의 작업 기록을 지우고 Repair 횟수를 하나씩 되돌린 뒤 후보 상태를 running으로 바꿔 이어서 실행 (손대기 전 상태는 `build/pilot/pilot-axis_async_fifo.bak-quota`).
+- **10월 14일 06:52 async_fifo 재개 결과: 실패.** 두 후보 모두 `afifo_rd`의 Repair 상한 5회에 걸림 (에이전트 누적 32회). 두 Verifier가 함께 실패하므로 Arbiter를 거치지 않았다. 마지막 검증에서 실패한 테스트:
+  - pause (AFIFO-07): v0 `m_pause_ack`가 1이 되지 않음, v1 `s_pause_ack`가 풀리지 않음. RTL 문제일 가능성이 높음.
+  - AFIFO-08: v1이 `s_status_depth > DEPTH`를 위반으로 봄. SPEC은 깊이를 "비트 수"로 적어 단위가 모호함 (SPEC 문장 문제 후보).
+  - AFIFO-E02: v1이 m 리셋 중 `s_axis_tready=0`을 그 사이클에 요구함 (동기화 지연을 고려하지 않은 해석 후보).
+  - 그런데도 두 후보 모두 원본 테스트벤치 20/20 통과 (원본 TB는 pause와 상태 출력을 깊게 보지 않음).
+  - 다음 후보 작업: P8 회고 반복 상한 1(같은 테스트가 Repair 두 번 연속 실패하면 상한 전에 Arbiter를 부름)을 구현하면 이런 경우가 Arbiter와 사람에게 간다. SV와 Python 후보는 같은 이유로 실패해 언어 차이는 아님.
+- **사용자 지시(10월 14일 아침): 커밋/푸시 후 제안안 진행.** 같은 실패(실패한 Verifier와 테스트 이름이 같음)가 Repair 두 번 뒤에도 이어지면 상한 전에 실패한 Verifier마다 Arbiter가 `repeated_failure`와 함께 판정한다. test_wrong이면 기댓값 수정 승인 대기, 모호하면 검토 항목, rtl_wrong이면 Repair를 이어 가고 같은 실패는 다시 판정하지 않는다. 한 Verifier만 실패한 경우는 이미 매번 Arbiter를 거치므로 제외. 시험 2개 추가.
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 
@@ -226,7 +246,7 @@
   5. SPEC 변경 요청에도 SPEC 툴 검사를 돌려 승인 항목에 붙입니다. F0001이 새로 만든 REQ_MULTI(CRC-E01 문장 둘)는 승인 뒤 실행에서야 드러났습니다.
   6. 9절에 레지스터 출력 같은 구조 제약이 있으면 입력→출력 조합 경로 검사를 E1 단계에 넣어 위반을 검토 항목으로 냅니다. PI의 `eda`에도 같은 검사를 더합니다 (이번 fail은 pi.lead가 RTL을 읽어 찾았음).
 - **반복 상한**
-  1. `repair_per_candidate` 5 → 3. 이번 Repair 4회(c0 3, c1 1)는 모두 테스트 쪽 결함 때문이었습니다. 같은 테스트가 Repair 두 번 연속 실패하면 상한 전에 Arbiter를 부릅니다.
+  1. `repair_per_candidate` 5 → 3. 이번 Repair 4회(c0 3, c1 1)는 모두 테스트 쪽 결함 때문이었습니다. 같은 테스트가 Repair 두 번 연속 실패하면 상한 전에 Arbiter를 부릅니다. **일부 완료 (2026-10-14):** 같은 테스트가 Repair 두 번 뒤에도 같은 이유로 실패하면 실패한 Verifier마다 Arbiter가 판정 (`limits.arbiter_after_repeats` 2). 상한 5 → 3은 하지 않음.
   2. 환류 재실행 상한 `RERUN_LIMIT` 3은 그대로 둡니다 (2회 사용). 다만 툴 결함으로 버린 실행은 사유와 함께 따로 기록하고, 상한 계산에서 빼는 것을 사람이 정할 수 있게 합니다.
 - **예산**
   1. `budget_agent_runs` 200은 실측의 10배입니다 (한 실행 최대 20회). 실행당 60(실측 최대의 3배)으로 낮추고, 같은 Block Top 계보 합계를 따로 보여 줍니다.

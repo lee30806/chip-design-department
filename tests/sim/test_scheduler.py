@@ -439,3 +439,64 @@ def test_interface_change_stands_when_arbiter_says_rtl_wrong(tmp_path):
     assert all(c["status"] == "interface_change" for c in rep["candidates"].values())
     assert "INTERFACE_CHANGE" in {r["code"] for r in rep["review"]} and not rep["pending"]
     assert _calls(tmp_path).count("Arbiter|__ic__") == 4   # 후보 둘 × 실패한 Verifier 둘
+
+
+def test_skeleton_lint_error_stops_as_generator_bug(tmp_path, monkeypatch):
+    """방출한 골격(조각 밖)의 lint 에러는 생성기 버그: Repair나 TB 오류로 가지 않고 후보를 멈춘다."""
+    from pipeline.scheduler import run as run_mod
+
+    real = run_mod.emit
+
+    def broken(m, lib=None):
+        e = real(m, lib)
+        if m.role == "block_top":
+            e.text = e.text.replace("endmodule", "  logic [NOPE-1:0] bad_wire;\nendmodule")
+        return e
+    monkeypatch.setattr(run_mod, "emit", broken)
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, _files(tmp_path)), isolate=False).execute()
+    assert rep["status"] == "failed"
+    assert all("생성기 버그" in (c["reason"] or "") for c in rep["candidates"].values())
+    codes = {r["code"] for r in rep["review"]}
+    assert "GENERATOR_BUG" in codes and "TB_ERROR" not in codes
+    assert "Repair" not in _calls(tmp_path)
+
+
+def _files_repeat(tmp_path, verdict):
+    """두 Verifier 모두 같은 틀린 속성으로 실패하고, Repair는 매번 다른 (효과 없는) patch를 냄. 두 번 뒤 Arbiter가 판정."""
+    f = _files_wrong_v1(tmp_path)
+    good = f["Verifier"]
+    bad = f.pop("Verifier|verifier__v1")
+    body = json.loads(f["Author"]["out/axis_adapter_core.ir.json"])
+    k = next(b for b in body["blocks"] if b["id"] == "k_ports")["body"]
+    v = {"verdict": verdict, "reqs": ["ADP-01"], "reason": "SPEC에 없는 검사", "proposal": "bogus 속성을 지운다"}
+    files = {"Architect": f["Architect"], "Author": f["Author"], "Verifier|기댓값 수정": good, "Verifier": bad,
+             "Arbiter|__repeat__": {"out/verdict.json": json.dumps(v)}}
+    for n in range(5):   # Repair r0, r1, ...: 주석만 다른 body (IR 해시가 매번 다름)
+        files[f"Repair|__r{n}"] = {"out/patches.json": json.dumps(
+            [{"op": "set", "target": "blocks/k_ports", "field": "body", "value": f"// repair {n}\n{k}"}])}
+    return files
+
+
+def test_repeated_failure_goes_to_arbiter_before_limit(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_repeat(tmp_path, "test_wrong")
+    run = tmp_path / "run"
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval", json.dumps(rep, ensure_ascii=False)[:3000]
+    calls = _calls(tmp_path)
+    assert calls.count("Arbiter|__repeat__") == 4   # 후보 둘 × 실패한 Verifier 둘, 한 번씩
+    assert all(c["repairs"] == 2 for c in rep["candidates"].values())   # Repair 두 번 뒤, 상한(2) 전에
+    items = approve.pending(run)
+    assert all(p["repeated_failure"]["repairs"] == 2 for p in items)
+    approve.decide(run, [p["id"] for p in items], "approved", by="design-lead")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+
+
+def test_repeated_failure_rtl_wrong_keeps_repairing(tmp_path):
+    files = _files_repeat(tmp_path, "rtl_wrong")
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "failed"
+    assert all("Repair 상한" in (c["reason"] or "") for c in rep["candidates"].values())
+    assert _calls(tmp_path).count("Arbiter|__repeat__") == 4   # 같은 실패는 한 번만 판정

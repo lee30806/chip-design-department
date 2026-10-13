@@ -95,3 +95,27 @@ def test_earliest_failure_wins():
 def test_fsm_coverage():
     cov = fsm_coverage(LIB["pkt_parser"], [_trace([0, 1, 2, 2]), _trace([0, 0])])
     assert cov == {"blocks/k_fsm": {"covered": ["tr1", "tr2"], "uncovered": ["tr3"], "unobservable": []}}
+
+
+def test_valid_ready_checker_ignores_reset():
+    """T2: 리셋이 걸린 표본과 그 다음 표본에서 valid가 내려가는 것은 위반이 아니다 (P8a crc reset_mid). 리셋 밖에서는 잡는다."""
+    pytest.importorskip("cocotb")
+    from types import SimpleNamespace as N
+
+    from pipeline.tb.lib import ValidReadyChecker
+
+    dut = N(m_valid=N(value=0), m_ready=N(value=0), m_data=N(value=0), rst=N(value=0))
+    b = {"name": "m", "domain": "sys", "valid": "m_valid", "ready": "m_ready", "data": ["m_data"]}
+    c = ValidReadyChecker(dut, b, ("rst", 1))
+
+    def step(v, r, d, rst=0):
+        dut.m_valid.value, dut.m_ready.value, dut.m_data.value, dut.rst.value = v, r, d, rst
+        c.sample(step.n)
+        step.n += 1
+    step.n = 0
+    step(1, 0, 5)
+    step(1, 0, 5, rst=1)   # 리셋이 걸림
+    step(0, 0, 0)          # 동기 리셋이 반영되어 valid가 내려감
+    step(1, 0, 7)
+    step(0, 0, 0)          # 리셋 밖: 위반
+    assert [x["cycle"] for x in c.violations] == [4]

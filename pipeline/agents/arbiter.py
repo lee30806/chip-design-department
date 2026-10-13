@@ -31,6 +31,8 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 - `mismatch.json`에 `repair_claim`이 있으면: Repair가 이 기댓값은 모듈 인터페이스(L1)를 바꾸지 않고는 맞출 수 없다고 주장했다
   (`reason`). SPEC이 정말 그 기댓값을 요구하는지 판정한다. SPEC 문장보다 테스트가 더 엄격하게 읽었으면
   (예: "리셋 동안"을 리셋이 걸린 바로 그 사이클로 읽음) test_wrong, SPEC이 분명히 요구하면 rtl_wrong이다
+- `mismatch.json`에 `repeated_failure`가 있으면: Repair가 RTL을 여러 번 고쳤는데도 같은 테스트가 같은 이유로 실패했다.
+  테스트가 SPEC에 없는 것을 요구하거나 SPEC보다 엄격하게 읽었는지 특히 살핀다. SPEC이 그 기댓값을 요구하면 rtl_wrong이다
 
 ## 할 일
 SPEC 구절을 근거로 판정하고 `{out}`에 아래 JSON을 쓴다.
