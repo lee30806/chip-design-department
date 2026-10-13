@@ -13,7 +13,8 @@ export default function Approvals() {
     <main className="page">
       <div className="page-head">
         <h1>승인함</h1>
-        <span className="sub">{can.approve(user) ? "승인자로 결정합니다. 모든 결정은 기록에 남습니다." : "승인과 반려는 승인자 역할만 합니다. 이 화면에서는 볼 수만 있습니다."}</span>
+        <span className="sub">{can.approve(user) ? "승인자로 결정합니다. 모든 결정은 기록에 남습니다." : "승인과 반려는 승인자 역할만 합니다."}
+          {" "}Repair 충돌은 Design-lead가 결정합니다.</span>
         <button onClick={reload}>새로 읽기</button>
       </div>
       <div className="tabs">
@@ -23,7 +24,8 @@ export default function Approvals() {
       <Err msg={pending.error || records.error} />
       {tab === "pending" && (
         <div className="stack">
-          {(pending.data ?? []).map((p) => <PendingCard key={`${p.kind}:${p.target}`} item={p} canDecide={can.approve(user)} done={reload} />)}
+          {(pending.data ?? []).map((p) => <PendingCard key={`${p.kind}:${p.target}`} item={p}
+            canDecide={p.kind === "repair_conflict" ? can.feedback(user) : can.approve(user)} done={reload} />)}
           {pending.data?.length === 0 && <p className="muted">기다리는 항목이 없습니다.</p>}
         </div>
       )}
@@ -53,8 +55,11 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
   const [note, setNote] = useState("");
   const act = useAction();
   const d = item.detail ?? {};
+  const mods = (d.mods as string[] | undefined) ?? [];
+  const [module, setModule] = useState("");
   const decide = async (decision: string) => {
-    if (await act.run(() => api.post("/api/approvals", { kind: item.kind, target: item.target, decision, note }))) done();
+    const body = { kind: item.kind, target: item.target, decision, note, ...(decision === "repair" ? { module } : {}) };
+    if (await act.run(() => api.post("/api/approvals", body))) done();
   };
   const blocked = item.kind === "rtl_freeze" && !d.ready;
   return (
@@ -74,6 +79,15 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
           <div><b>수정안</b> {String(d.proposal ?? "")}</div>
         </div>
       )}
+      {item.kind === "repair_conflict" && (
+        <div className="small stack">
+          <div>후보 묶음 c{String(d.c)} · 서로 넘긴 순서 {((d.chain as string[]) ?? []).join(" → ")}</div>
+          <div><b>첫 실패</b> {String((d.first_failure as Record<string, unknown>)?.reason ?? "")}</div>
+          {((d.claims as { module: string; suspects: string; reason: string }[]) ?? []).map((c, i) => (
+            <div key={i}><b>{c.module} → {c.suspects}</b> {c.reason}</div>
+          ))}
+        </div>
+      )}
       {item.kind === "spec_change" && (
         <div className="small stack">
           <div><b>이유</b> {String(d.reason ?? "")} <span className="muted">({String(d.by ?? "")}, {String(d.source ?? "")})</span></div>
@@ -84,7 +98,18 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
         <div className="small">판정: DV {String((d.signoffs as Record<string, { decision: string }>)?.dv?.decision ?? "없음")} · PI {String((d.signoffs as Record<string, { decision: string }>)?.pi?.decision ?? "없음")}
           {blocked && <span className="err"> · 두 판정이 모두 pass여야 승인할 수 있음</span>}</div>
       )}
-      {canDecide && (
+      {canDecide && item.kind === "repair_conflict" && (
+        <div className="row">
+          <input id={`note-${item.kind}-${item.target}`} style={{ flex: 1, minWidth: 200 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="메모 (Repair나 Architect에 전할 판단 근거)" />
+          <select value={module} onChange={(e) => setModule(e.target.value)}>
+            <option value="">고칠 모듈 선택</option>
+            {mods.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <button className="primary" disabled={act.busy || !module} onClick={() => decide("repair")}>이 모듈에서 Repair</button>
+          <button disabled={act.busy} onClick={() => decide("architect")}>Architect에 근본 원인 수정 요청</button>
+        </div>
+      )}
+      {canDecide && item.kind !== "repair_conflict" && (
         <div className="row">
           <input id={`note-${item.kind}-${item.target}`} style={{ flex: 1, minWidth: 200 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="메모 (반려 사유 등)" />
           <button className="primary" disabled={act.busy || blocked} onClick={() => decide("approved")}>승인</button>

@@ -94,7 +94,7 @@ label > input, label > select, label > textarea { color: var(--fg); }
 .card { border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 4px; padding: 10px 12px; background: var(--surface); }
 .card.k-spec_freeze { border-left-color: var(--info); }
 .card.k-final_approval, .card.k-rtl_freeze { border-left-color: var(--ok); }
-.card.k-expectation_change, .card.k-spec_change { border-left-color: var(--warn); }
+.card.k-expectation_change, .card.k-spec_change, .card.k-repair_conflict { border-left-color: var(--warn); }
 
 .imgbox { background: var(--sunken); border-radius: 4px; padding: 8px; min-height: 80px; display: grid; place-items: center; }
 .imgbox img { max-width: 100%; background: #fff; }

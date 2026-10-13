@@ -151,6 +151,7 @@ export const KIND_LABEL: Record<string, string> = {
   rtl_freeze: "RTL Freeze",
   expectation_change: "기댓값 변경",
   spec_change: "SPEC 변경 요청",
+  repair_conflict: "Repair 충돌",
 };
 
 export const ROLE_LABEL: Record<string, string> = {

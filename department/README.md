@@ -23,7 +23,7 @@
 | Pod | Seat (`pod.member`) | 파이프라인 API 역할 |
 | --- | --- | --- |
 | 총괄 | `lead.chip` Chip-lead | 설계 역할: 실행 제출, 승인 자료 취합 |
-| Design | `design.lead` Design-lead | 설계 역할 + design_lead: 환류 제출(단일 창구) |
+| Design | `design.lead` Design-lead | 설계 역할 + design_lead: 환류 제출(단일 창구), Repair 충돌 결정(고칠 모듈 지정 또는 Architect 재구성) |
 | | `design.arch` Architecture Engineer, `design.sanity` Sanity Engineer | 설계 역할 (SPEC 작업대) |
 | | `design.rtl` RTL Engineer | 설계 역할: 고정된 SPEC으로 실행 제출과 감시 |
 | DV | `dv.lead`, `dv.vplan`, `dv.tb`, `dv.checker` | 조회만. 파이프라인 Verifier 산출물 읽기 금지 |

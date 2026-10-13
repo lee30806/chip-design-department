@@ -10,12 +10,12 @@
 | P1 블록 이식 시험 | 완료 (2026-10-11) | 공개 블록 4개. 원본 테스트벤치 49개 통과 |
 | P2 결정론적 툴 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 남은 항목은 아래 대기 항목 (조건 충족 시 진행) |
 | P3 SPEC 변환과 검사 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 입력: I3C 예시 SPEC. 남은 항목은 대기 항목 (조건 충족 시 진행) |
-| P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`) |
+| P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`. 2026-10-13부터 `gemini-3.8-flash-high`) |
 | P5 파이프라인 API와 환류 입력 | **완료 (가능한 범위)** | 사내 툴 리포트 양식은 샘플을 받으면 양식 파일만 추가 |
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
 | P8 첫 Block Top End-to-End | **완료 (2026-10-13)** | 신규 블록 `axis_crc_append` RTL Freeze (실행 674c). agy Seat, 오픈소스 대체 EDA. 커밋 `34b2205` |
-| P8a Python 동작 조각 | **구현 완료, 실제 비교 대기 (2026-10-13)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 남은 일: 실제 블록에서 SV 후보와 비교 (작업 9) |
+| P8a Python 동작 조각 | **구현 완료, 실제 비교 진행 중 (2026-10-13)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 남은 일: 실제 블록에서 SV 후보와 비교 (작업 9) |
 | P9 운영 안정화 | **보류 (사용자 결정 2026-10-13)** | P8 회고에서 넘긴 항목은 아래 대기 항목 |
 
 ## 제외 항목 (사용자 결정)
@@ -49,11 +49,36 @@
 | 대체 LEC 무한 증명 (사내 Formality/Conformal 또는 FSM 재인코딩 끄기) | P8 | 사내 LEC 또는 PI 결정 |
 | `axis_crc_append` CRC-E03 정의, Q-01 결정, DV 공백(SVA, 16비트 롤오버) | P8 | 다음 SPEC 개정 |
 | golden 블록 Verifier 체커의 리셋 표본 가정 재확인 | P8 | P9 재개 |
-| Python 조각 실제 비교 (SV 후보 대 Python 후보, `axis_crc_append`와 golden 블록) | P8a | 사용자 지시 (agy 실행 비용) |
 | 설계 모델 실행기 확장 (`memory`, `cdc_sync`, 다중 클럭, struct, signed) | P8a | 필요한 블록이 나올 때 |
 | 하니스에서 설계 모델로 Verifier 테스트 실행 (RTL 전 빠른 실행) | P8a | 실제 비교에서 Repair 반복 비용이 크게 나올 때 |
 
 ## 진행 기록
+
+### 2026-10-13 Repair 충돌을 Design-lead가 결정 (사용자 지시)
+
+사용자 지시: Repair가 서로 다른 모듈을 지목해 충돌하면 lead가 Repair 위치를 지정하거나 Architect에 근본 원인 수정을 요청한다. 계기는 P8a 비교 실험의 `axis_crc_append`다. SV 후보와 Python 후보 모두 CRC-12("CRC 두 바이트를 내는 동안 s_axis_tready=0")에서 `crc_append_core` → `axis_out_stage` → `crc_append_core`로 원인을 넘기다 `CHILD_SUSPECT_LOOP`로 실패했다.
+
+- **스케줄러** (`pipeline/scheduler/run.py`): 충돌하면 실패로 끝내지 않고 결정 항목 `repair_conflict`를 등록하고 후보 묶음을 멈춘다 (검토 항목 `REPAIR_CONFLICT`). 항목에는 실패한 요구사항, 첫 불일치, SPEC 구절, Repair들이 서로 넘긴 순서와 이유가 있다.
+  - 고칠 모듈 지정(`repair`): 그 묶음을 다시 검증하고 Repair는 지정한 모듈에서만 한다. Repair 과제에 `lead.json`(메모, 경위)이 들어가고 형제 모듈 지목은 게이트가 거부한다.
+  - Architect 재구성(`architect`): Architect가 지금 트리(`current/`)와 충돌 경위(`conflict.json`)를 받아 모듈 경계나 하위 인터페이스를 다시 정한다. Block Top L1은 그대로(게이트)라 Verifier 테스트를 그대로 쓴다. 이전 후보 상태는 `modules_a<판>/`, L1은 `ir_a<판>/`에 보관하고 모든 후보를 Author부터 다시 돌린다. 재구성 뒤 에이전트 작업 이름에는 `/a<판>`이 붙는다. 결정하지 않은 다른 충돌 항목은 대체됨으로 닫는다. 재구성이 실패하면 검토 항목을 남기고 그 후보는 실패로 끝낸다.
+- **결정 경로:** `approve resolve <id> (--repair <모듈> | --architect)`, 파이프라인 API `POST /runs/{id}/decisions`(design-lead 역할만), 게이트웨이 승인함(design_lead 능력만, 승인자는 불가, Design-lead Seat 가능), Web UI 카드(모듈 선택, 두 버튼), `deptctl lead-decide`. 결정은 승인 기록에 같이 남는다.
+- **문서:** ARCHITECTURE.md(실행 규칙, 흐름도, Design-lead 역할), 파이프라인 설계 문서(실패 분류 표, Repair 규칙), 부서 설계 문서, IMPLEMENTATION.md, gateway/README.md, department/README.md, Design-lead 지침.
+- **시험:** 가짜 agent로 두 결정 모두 끝까지 통과(`test_repair_conflict_lead_pins_module`, `test_repair_conflict_lead_requests_architect_revision`). 게이트웨이에서 승인자와 다른 역할은 403, Design-lead 사람과 Seat는 결정 가능(`test_repair_conflict_decided_by_design_lead`). 전체 254 통과, 3 건너뜀.
+- 파이프라인 API와 게이트웨이를 다시 띄웠다. 비교 실험의 두 번째 줄(`axis_cobs_decode` → `axis_async_fifo`)은 새 코드로 다시 시작했다. 첫 줄은 남은 `axis_adapter`가 하위 모듈 하나라 충돌이 생길 수 없어 그대로 둔다. `axis_crc_append`는 이전 흐름으로 이미 실패로 끝났다.
+
+### 2026-10-13 P8a 작업 9 실제 비교 시작 (사용자 지시)
+
+- 드라이버: `experiments/p8a/pilot.py`. 블록마다 스케줄러를 한 번 돌리고 Author 후보 c0는 SV 조각, c1은 Python 조각으로 씁니다. 두 후보는 같은 Verifier 테스트를 공유합니다.
+- 대상: `axis_crc_append`(F0001 승인 개정판 SPEC, `experiments/p8a/axis_crc_append.spec.md`), golden `axis_adapter`, `axis_cobs_decode`, `axis_async_fifo`.
+- 두 줄로 나눠 병렬 실행합니다 (crc_append → adapter, cobs_decode → async_fifo). 상태는 `build/pilot/pilot-<블록>/`, 결과는 같은 곳의 `pilot.json`입니다.
+- 지표: 후보별 통과 여부, Repair 수, lint, 번역기 검사, 에이전트 실행 수, golden 블록은 후보별 IR의 원본 테스트벤치 결과.
+- 첫 시작은 Architect에서 바로 실패했습니다. agy 제공 목록에서 `gemini-3.1-pro-high`가 빠졌습니다 (`agy models`에 없음, 바이너리 1.3.3은 그대로). 사용자 결정으로 Verifier, Architect, Arbiter를 `claude-opus-5-5-high`로 바꾸고(`experiments/p0/local/agents.agy.json`) 다시 시작했습니다. 같은 계열 경고(MODEL_FAMILY)는 더 나오지 않습니다. 이전 실행(P4, P8)과 모델 조건이 다릅니다.
+- 다시 시작한 뒤 Architect 2회(`axis_crc_append`, `axis_cobs_decode`)는 통과했습니다. 그다음 Verifier 4개를 동시에 시작하자 agy의 Claude Opus 사용량 한도에 걸려 두 실행이 `paused_quota`로 멈췄습니다 (09:15경, "Resets in 4h54m"이라 14:10경 풀림). 같은 명령으로 이어서 실행할 수 있습니다.
+- Sonnet도 같은 Claude 한도를 써서 바로 막혔고 GPT-OSS도 막혔습니다. 사용자 결정으로 Verifier, Architect, Arbiter를 `gemini-3.8-flash-high`로 바꿔 이어서 실행합니다. Author와 같은 모델이라 Verifier 독립성이 약하고 MODEL_FAMILY 경고가 나옵니다. SV와 Python 후보는 같은 Verifier 테스트를 쓰므로 두 후보 비교는 유효합니다. 이미 끝난 Architect 2회(Opus 결과)는 그대로 이어 씁니다.
+- 10:54 Gemini 한도도 차서 두 실행이 다시 `paused_quota`로 멈췄습니다 (14:55경 풀림, 실행마다 에이전트 11회). 그때까지 결과: Verifier 4개 통과, Author 8개(SV 4, Python 4) 모두 첫 시도 통과, 에이전트가 쓴 Python 모듈 4개 번역기 검사 통과(2000사이클), Repair는 SV와 Python 후보에서 비슷한 횟수였습니다. 한도가 풀린 뒤 같은 명령으로 자동 재개하도록 걸어 두었습니다.
+- `axis_adapter`(SV, Python 후보 모두 Repair 0회): Verifier 0의 ADP-T01 체커에서만 실패했고 Arbiter가 test_wrong으로 판정했다 (체커가 m_axis_tlast=0을 같은 비트의 남은 바이트로 오해석). 사용자가 E1, E2를 승인해 sjlee로 기록하고 이어서 실행한다.
+- `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
+- `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 
 ### 2026-10-13 P8a Python 동작 조각 (사용자 결정)
 

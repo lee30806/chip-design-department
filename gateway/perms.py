@@ -9,7 +9,8 @@
 | approver (승인자) | 승인과 반려: SPEC 고정, 최종 승인, RTL Freeze, 기댓값 변경, SPEC 변경 요청 |
 
 모든 역할이 조회(실행, SPEC, 승인 기록, Seat 상태)를 할 수 있다.
-역할과 별도로 `design_lead` 능력이 있어야 환류를 제출한다 (수정 요구의 단일 창구). 승인은 사람만 한다 (Seat 계정은 승인자가 될 수 없음).
+역할과 별도로 `design_lead` 능력이 있어야 환류를 제출하고 Repair 충돌을 결정한다 (수정 요구의 단일 창구, Design-lead Seat도 가능).
+승인은 사람만 한다 (Seat 계정은 승인자가 될 수 없음).
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ PERMS = {
 }
 
 APPROVAL_KINDS = ("spec_freeze", "final_approval", "rtl_freeze", "expectation_change", "spec_change")
+LEAD_KINDS = ("repair_conflict",)   # Design-lead가 결정 (승인함에 함께 보이고 같은 기록에 남음)
 
 
 class Forbidden(Exception):

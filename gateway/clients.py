@@ -33,7 +33,8 @@ class Pipeline:
     """파이프라인 API. 쓰기 요청에는 게이트웨이 토큰과, 게이트웨이가 정한 파이프라인 역할을 붙인다."""
 
     # 게이트웨이 권한 → 파이프라인 API가 받는 역할
-    ROLE_FOR = {"submit": "rtl-engineer", "feedback": "design-lead", "decide": "chip-lead", "spec_decide": "chip-lead"}
+    ROLE_FOR = {"submit": "rtl-engineer", "feedback": "design-lead", "decide": "chip-lead", "spec_decide": "chip-lead",
+                "lead_decide": "design-lead"}
 
     def __init__(self, base: str, token: str | None):
         self.base, self.token = base.rstrip("/"), token

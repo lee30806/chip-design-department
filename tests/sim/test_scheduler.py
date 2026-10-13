@@ -311,3 +311,86 @@ def test_python_fragment_candidate_with_translator_check(tmp_path):
     assert eq and json.loads(eq[0].read_text())["ok"]
     assert not list((tmp_path / "run" / "verify").glob("*_c0_*/pyequiv_*"))   # SV 후보는 번역기 검사가 없음
     assert not any(r["code"] in ("CANDIDATE_DIFF", "PY_EQUIV") for r in rep["review"])
+
+
+def _files_conflict(tmp_path):
+    """하위 모듈 둘(core → out)에서 core에 버그. out의 Repair는 core를, core의 Repair는 out을 지목해 충돌한다.
+    lead가 core를 지정하면 그 Repair가 고치고, Architect 재구성을 요청하면 하위 모듈 하나(core)짜리 트리로 다시 정한다."""
+    sys.path.insert(0, str(ROOT / "tests" / "golden"))
+    from bugs import BUGS
+
+    good = json.loads(_files(tmp_path)["Author"]["out/axis_adapter_core.ir.json"])
+    core = copy.deepcopy(good)
+    BUGS["adapter_shift"][1](core)
+    f = _files2(tmp_path, core)
+    fix = [{"op": "set", "target": "blocks/k_data", "field": "body",
+            "value": next(b for b in good["blocks"] if b["id"] == "k_data")["body"]}]
+    single = _files(tmp_path)
+    return {"Architect|재구성 요청": single["Architect"], "Architect": f["Architect"],
+            "Author|__a1": single["Author"], "Author": f["Author"], "Verifier": f["Verifier"],
+            "Repair|lead 지정": {"out/patches.json": json.dumps(fix)},
+            "Repair|repair__axis_adapter_out": {"out/patches.json": json.dumps(
+                [{"op": "suspect_module", "module": "axis_adapter_core", "reason": "데이터가 core에서 틀림"}])},
+            "Repair|repair__axis_adapter_core": {"out/patches.json": json.dumps(
+                [{"op": "suspect_module", "module": "axis_adapter_out", "reason": "core 출력은 맞고 out이 틀림"}])}}
+
+
+def _conflicts(tmp_path, files):
+    from pipeline.scheduler import approve
+
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval", json.dumps(rep, ensure_ascii=False)[:3000]
+    items = {p["c"]: p for p in approve.pending(tmp_path / "run")}
+    assert sorted(items) == [0, 1] and all(p["kind"] == "repair_conflict" for p in items.values())
+    p = items[0]
+    assert p["chain"] == ["axis_adapter_out", "axis_adapter_core", "axis_adapter_out"]
+    assert [(x["module"], x["suspects"]) for x in p["claims"]] == [("axis_adapter_out", "axis_adapter_core"),
+                                                                    ("axis_adapter_core", "axis_adapter_out")]
+    assert "REPAIR_CONFLICT" in {r["code"] for r in rep["review"]}
+    return items
+
+
+def test_repair_conflict_lead_pins_module(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_conflict(tmp_path)
+    items = _conflicts(tmp_path, files)
+    run = tmp_path / "run"
+    with pytest.raises(ValueError, match="approved"):
+        approve.decide(run, [items[0]["id"]], "approved", by="lead")   # 충돌은 승인/거절이 아님
+    with pytest.raises(ValueError, match="고칠 모듈"):
+        approve.decide(run, [items[0]["id"]], "repair", by="lead", module="nope")
+    for p in items.values():
+        approve.decide(run, [p["id"]], "repair", by="lead", note="shift 양이 core에서 틀림", module="axis_adapter_core")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    calls = _calls(tmp_path)
+    assert calls.count("Repair|lead_지정") == 2 and calls.count("Architect") == 1   # 지정한 모듈의 Repair만, 재구성 없음
+    lead = json.loads((run / "work" / "repair__axis_adapter_core__c0__r1" / "lead.json").read_text())
+    assert lead["note"] == "shift 양이 core에서 틀림" and lead["module"] == "axis_adapter_core"
+    assert sorted(p["decision"]["module"] for p in rep["pending"]) == ["axis_adapter_core"] * 2
+
+
+def test_repair_conflict_lead_requests_architect_revision(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_conflict(tmp_path)
+    items = _conflicts(tmp_path, files)
+    run = tmp_path / "run"
+    approve.decide(run, [items[0]["id"]], "architect", by="lead", note="출력 시점과 ready를 한 모듈이 정해야 함")
+    # 후보 1의 충돌은 결정하지 않았지만 트리가 바뀌므로 대체됨으로 닫힌다
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert rep["chosen"] == {"axis_adapter_core": 0}
+    calls = _calls(tmp_path)
+    assert calls.count("Architect|재구성_요청") == 1 and calls.count("Author|__a1") == 2
+    conflict = json.loads((run / "work" / "architect__rev1" / "conflict.json").read_text())
+    assert conflict[0]["lead_note"] == "출력 시점과 ready를 한 모듈이 정해야 함" and conflict[0]["chain"][0] == "axis_adapter_out"
+    assert (run / "work" / "architect__rev1" / "current" / "axis_adapter_out.ir.json").exists()
+    st = json.loads((run / "state.json").read_text())
+    assert st["arch_rev"] == 1 and sorted(st["steps"]["architect"]["children"]) == ["axis_adapter_core"]
+    assert sorted(p.name for p in (run / "modules_a0").glob("*.json"))[0] == "axis_adapter_core__c0.json"   # 이전 후보 보관
+    assert sorted(p.name for p in (run / "modules").glob("*.json")) == ["axis_adapter_core__c0.json", "axis_adapter_core__c1.json"]
+    res = {p["c"]: p["decision"].get("result", p["decision"]["decision"]) for p in rep["pending"]}
+    assert res == {0: "architect", 1: "superseded"} and approve.pending(run) == []
+    assert "ARCHITECTURE_REVISED" in {r["code"] for r in rep["review"]}

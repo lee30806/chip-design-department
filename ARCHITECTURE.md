@@ -86,7 +86,7 @@ flowchart TB
 | Pod | Seat | 핵심 책임 |
 | --- | --- | --- |
 | 총괄 | Chip-lead | 마일스톤 계획, Block Top별 실행 순서, 최종 승인 자료 취합 |
-| Design | Design-lead | 수정 요구의 단일 창구. 환류 분류 |
+| Design | Design-lead | 수정 요구의 단일 창구. 환류 분류. Repair 충돌 결정 (고칠 모듈 지정 또는 Architect 재구성) |
 | | Architecture Engineer | SPEC 변환 결과 정리, 검사 질문의 답 초안. 정본은 사람이 확정 |
 | | RTL Engineer | 파이프라인 실행 제출과 감시, 멈춘 모듈의 1차 분류. IR과 RTL을 직접 고치지 않음 |
 | | Sanity Engineer | Lint(E3 결과를 넘겨받음), Superlint, Xprop, DFT, DCLint, IP-XACT, EPC |
@@ -119,6 +119,9 @@ flowchart LR
   VFY -- 실패 --> CLS[Classifier]
   CLS --> REP[[Repair]]
   REP -- patch --> VAL
+  REP -. 형제끼리 원인을 넘김 .-> DLD{Design-lead}
+  DLD -. 고칠 모듈 지정 .-> REP
+  DLD -. 근본 원인 수정 .-> ARCH
   CLS -. 기댓값 의심 .-> ARB[[Arbiter]]
   ARB -. 사람 승인 .-> VER
   VFY -- 모든 모듈 PASS --> INT[통합 E1~E3<br/>Block Top · Top]
@@ -153,6 +156,7 @@ flowchart LR
 - **루프 제어.** 반복 상한과 예산 상한을 둡니다. IR 해시로 진동을 감지합니다. patch 뒤에는 항상 Validator부터 다시 실행합니다.
 - **동결 해제.** 인터페이스 오류는 Architect로 올리고 영향 모듈만 다시 실행합니다. 같은 설계에서 두 번째 동결 해제가 필요해지면 실행을 중단합니다.
 - **실행 중 멈춤.** 기댓값 변경이 생기거나 실패를 사람에게 넘겨야 하면 해당 모듈만 멈춥니다. 사람에게 넘기는 실패는 생성기 버그, 자식 모듈 원인 의심, 진동, 모든 후보 탈락입니다. 나머지 모듈은 계속 진행합니다.
+- **Repair 충돌.** 형제 모듈의 Repair들이 같은 실패의 원인을 서로 넘기면 그 후보 묶음을 멈추고 Design-lead가 결정합니다. 고칠 모듈을 지정하면 그 모듈의 Repair만 돕니다. Architect에 근본 원인 수정을 요청하면 모듈 트리를 다시 정하고(Block Top L1과 Verifier 테스트는 그대로) 모든 후보를 Author부터 다시 돌립니다.
 
 ### 4.4 에이전트 경계
 

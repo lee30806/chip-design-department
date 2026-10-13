@@ -41,6 +41,7 @@ STALL_HOURS = 24.0         # 이 시간 동안 진행(상태 파일 갱신)이 �
 ROLES_SUBMIT = {"rtl-engineer", "chip-lead"}
 ROLES_FEEDBACK = {"design-lead"}
 ROLES_DECIDE = {"rtl-engineer", "chip-lead", "design-lead"}
+ROLES_LEAD_DECIDE = {"design-lead"}          # Repair 충돌: 고칠 모듈 지정 또는 Architect 재구성
 ROLES_SPEC_APPROVE = {"chip-lead", "rtl-engineer"}
 
 
@@ -247,15 +248,19 @@ class Store:
         d = self.run_dir(run_id) / "rtl"
         return {p.name: p.read_text(encoding="utf-8") for p in sorted(d.glob("*.sv"))}
 
-    # -- 사람 결정 (기댓값 수정안) --
+    # -- 사람 결정 (기댓값 수정안, Repair 충돌) --
     def pending(self, run_id: str) -> list[dict]:
         return approve.pending(self.run_dir(run_id))
 
     def decide(self, run_id: str, ids: list[str], decision: str, by: str, role: str | None, note: str = "",
-               resume: bool = True) -> list[dict]:
-        _require(role, ROLES_DECIDE, "기댓값 수정 결정")
+               resume: bool = True, module: str | None = None) -> list[dict]:
+        kinds = {p["kind"] for p in self.pending(run_id) if p["id"] in ids}
+        if "repair_conflict" in kinds:
+            _require(role, ROLES_LEAD_DECIDE, "Repair 충돌 결정")
+        if not kinds or kinds - {"repair_conflict"}:
+            _require(role, ROLES_DECIDE, "기댓값 수정 결정")
         try:
-            out = approve.decide(self.run_dir(run_id), ids, decision, by, note)
+            out = approve.decide(self.run_dir(run_id), ids, decision, by, note, module=module)
         except ValueError as e:
             raise ApiError(400, str(e))
         if resume and not self.pending(run_id) and not self._alive(self.meta(run_id)):

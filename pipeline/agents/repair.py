@@ -2,6 +2,7 @@
 
 볼 수 있는 것: SPEC, 자기 후보의 IR, 실패 리포트(분류 결과, 불일치 리포트), 이전 patch 이력.
 하위 모듈이 여럿이면 Block Top의 인스턴스와 연결, 형제 모듈의 L1도 본다 (`block.json`).
+Repair끼리 원인을 서로 넘겨 lead가 이 모듈을 고칠 곳으로 지정했으면(`lead.json`) 형제 모듈을 지목할 수 없다.
 쓸 수 있는 것: `out/patches.json`. IR을 직접 고치지 않는다. 테스트와 모델은 볼 수 없고 고칠 수도 없다.
 종료 게이트: patch 툴이 거부하지 않고(쓰기 범위, 동결 범위, waiver), 적용 결과가 Validator를 통과한다.
 """
@@ -55,9 +56,18 @@ BLOCK = """
 `[{{"op": "suspect_module", "module": "<형제 모듈 이름>", "reason": "..."}}]`를 쓴다.
 """
 
+LEAD = """
+## lead 지정
+형제 모듈의 Repair들이 이 실패의 원인을 서로 넘겨서 Design-lead가 결정했다: 원인은 이 모듈(`{module}`)에서 고친다.
+`lead.json`에 그 결정(메모, 서로 넘긴 경위)이 있다. `suspect_module`은 쓸 수 없다. 형제 모듈의 동작은 바뀌지 않는다고 보고,
+이 모듈의 동작을 바꿔 Block Top 출력이 SPEC을 만족하게 한다. 이 모듈의 L1로는 불가능하면 `request_interface_change`를 쓴다.
+"""
 
-def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: list[dict], block: dict | None = None) -> Task:
-    """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}}."""
+
+def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: list[dict], block: dict | None = None,
+              lead: dict | None = None) -> Task:
+    """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}}.
+    lead: lead가 이 모듈을 고칠 곳으로 지정한 결정 {"id", "note", "chain", "claims"}."""
     inputs = {"ir.json": json.dumps(ir, ensure_ascii=False, indent=1), "spec.md": Path(spec), "guide.md": GUIDE,
               "failure.json": json.dumps(failure, ensure_ascii=False, indent=1),
               "history.json": json.dumps(history, ensure_ascii=False, indent=1)}
@@ -65,6 +75,9 @@ def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: lis
     if block:
         inputs["block.json"] = json.dumps(block, ensure_ascii=False, indent=1)
         extra = BLOCK.format(top=block["top"], siblings=", ".join(f"`{n}`" for n in block["siblings"]), out=OUT)
+    if lead:
+        inputs["lead.json"] = json.dumps(lead, ensure_ascii=False, indent=1)
+        extra += LEAD.format(module=ir["module"])
     return Task("repair", name, TASK.format(module=ir["module"], out=OUT, block=extra), inputs=inputs, outputs=[OUT])
 
 
@@ -86,7 +99,8 @@ def suspect(patches: object) -> tuple[str, str] | None:
     return None
 
 
-def check(ir: dict, library: dict[str, Module] | None = None, siblings: set[str] | None = None):
+def check(ir: dict, library: dict[str, Module] | None = None, siblings: set[str] | None = None, pinned: bool = False):
+    """pinned: lead가 이 모듈을 고칠 곳으로 지정함. 형제 모듈 지목을 받지 않는다."""
     def _check(work: Path) -> list[str]:
         try:
             patches = json.loads((work / OUT).read_text(encoding="utf-8"))
@@ -95,6 +109,8 @@ def check(ir: dict, library: dict[str, Module] | None = None, siblings: set[str]
         if interface_change(patches) is not None:
             return []
         if (sus := suspect(patches)) is not None:
+            if pinned:
+                return [f"lead가 이 모듈을 고칠 곳으로 지정함: suspect_module({sus[0]})을 쓸 수 없음 (patch 또는 request_interface_change)"]
             return [] if siblings and sus[0] in siblings else [f"형제 모듈이 아님: {sus[0]} (형제: {sorted(siblings or [])})"]
         res = apply(ir, patches)
         if not res.ok:

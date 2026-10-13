@@ -170,7 +170,7 @@ def make_handler(gw: Gateway, ui_dist: Path = UI_DIST, secure_cookie: bool = Fal
                 return 200, gw.specs.request_freeze(r[1], u["username"])
             if seg == ["approvals"]:
                 return 200, gw.decide(u, str(b.get("kind", "")), str(b.get("target", "")), str(b.get("decision", "")),
-                                      str(b.get("note", "")))
+                                      str(b.get("note", "")), module=b.get("module"))
             if seg == ["feedback"]:
                 return 200, gw.feedback(u, b)
             if seg == ["users"]:

@@ -44,7 +44,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("decide")
     s.add_argument("run_id")
     s.add_argument("ids", nargs="+")
-    s.add_argument("--decision", required=True, choices=["approved", "rejected"])
+    s.add_argument("--decision", required=True, choices=["approved", "rejected", "repair", "architect"])
+    s.add_argument("--module", help="repair 결정에서 고칠 모듈")
     s.add_argument("--by", required=True)
     s.add_argument("--role", default="rtl-engineer")
     s.add_argument("--note", default="")
@@ -76,7 +77,7 @@ def main(argv=None) -> int:
             "report": lambda: store.report(a.run_id), "pending": lambda: store.pending(a.run_id),
             "modules": lambda: store.modules(a.run_id), "resume": lambda: store.start(a.run_id),
             "history": lambda: store.history(a.run_id),
-            "decide": lambda: store.decide(a.run_id, a.ids, a.decision, a.by, a.role, a.note),
+            "decide": lambda: store.decide(a.run_id, a.ids, a.decision, a.by, a.role, a.note, module=a.module),
             "feedback": lambda: store.feedback(json.loads(a.body.read_text(encoding="utf-8")), a.role),
             "spec-decide": lambda: store.decide_spec_change(a.fid, a.decision, a.by, a.role, a.note),
             "watchdog": lambda: store.watchdog(a.hours),

@@ -247,10 +247,11 @@ P1과 독립적으로 진행할 수 있습니다. 다만 템플릿 섹션의 대
   - 작업 디렉터리는 저장소 밖(`~/.cache/chip-design-department/runs`)에 두고, macOS `sandbox-exec`로 저장소와 다른 작업을 막습니다.
   - 사용량 한도(429)를 만나면 `paused_quota`로 멈추고 이어서 실행합니다.
 - **도구:** `pipeline/agents/pl.py` (validate, patch, emit, fanin, trace, spec, harness, model).
-- **에이전트:** Author, Repair, Verifier(작성, 승인된 수정, 차분 보강), Architect, Arbiter. 모두 agy로 돌립니다 (Author `gemini-3.8-flash-high`, 나머지 `gemini-3.1-pro-high`. 같은 계열 경고).
+- **에이전트:** Author, Repair, Verifier(작성, 승인된 수정, 차분 보강), Architect, Arbiter. 모두 agy로 돌립니다 (Author `gemini-3.8-flash-high`, 나머지도 `gemini-3.8-flash-high`. 2026-10-13 agy에서 `gemini-3.1-pro-high`가 빠지고 Claude 모델은 한도가 차서 사용자 결정으로 교체했습니다. 같은 계열 경고).
 - **스케줄러:** `pipeline/scheduler/run.py`.
   - 하위 모듈이 여럿이면 같은 번호 후보끼리 묶어 검증합니다.
   - Repair는 원인 후보 모듈로 보내고, 형제 모듈을 지목하면 그 모듈로 넘깁니다. 트레이스와 팬인은 인스턴스 경계를 넘습니다.
+  - Repair들이 원인을 서로 넘기면(충돌) Design-lead 결정을 기다립니다 (`repair_conflict`). 고칠 모듈을 지정하거나, Architect 재구성을 요청해 모듈 트리를 다시 정하고 Author부터 다시 돌립니다 (2026-10-13, P8a 비교 실험에서 드러남).
   - Arbiter 판정, 반복 상한, 진동 감지, sim 시간 초과, 상태 저장과 재개를 갖췄습니다.
 - **사람 승인 (P5 일부 앞당김):** `pipeline/scheduler/approve.py`. 기댓값 수정안을 승인하거나 거절하고, `decisions.json`에 기록합니다.
 - **후보 간 차분 시뮬레이션:** `pipeline/tb/diffsim.py`.

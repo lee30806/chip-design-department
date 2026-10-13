@@ -6,6 +6,8 @@
        번역기 검사 실패: 생성기 버그이므로 Repair 없이 후보를 멈추고 검토 항목에 남김
        실패: 분류 → 원인 후보 모듈(불일치 출력을 구동하는 인스턴스)의 Repair(patch) → Validator부터 다시
              (상한, IR 해시 진동 감지. Repair가 형제 모듈을 지목하면 그 모듈의 Repair로 넘김)
+             Repair들이 원인을 서로 넘기면(충돌) Design-lead 결정 대기: 고칠 모듈 지정(그 모듈의 Repair만, 형제 지목 금지)
+             또는 Architect 재구성(충돌 경위로 모듈 트리를 다시 정하고 Author부터 다시. Block Top L1과 Verifier 테스트는 그대로)
              일부 Verifier에서만 실패 → Arbiter (rtl_wrong이면 Repair, test_wrong이면 사람 승인 대기, 모호하면 검토 항목)
     → 묶음 선택(모든 모듈 통과, Repair 적음, lint 적음)과 Author 후보 간 차분 검사 → 통합(E1, E2) → 최종 보고서
 
@@ -104,6 +106,11 @@ class Run:
         return {p.stem.replace("__", "/"): json.loads(p.read_text(encoding="utf-8"))
                 for p in sorted((self.dir / "modules").glob("*.json"))}
 
+    def arch_tag(self, sep: str = "/") -> str:
+        """Architect 재구성 뒤의 에이전트 작업과 검증 디렉터리 이름 표지 (이전 트리의 끝난 작업과 섞이지 않게)."""
+        rev = self.state.get("arch_rev", 0)
+        return f"{sep}a{rev}" if rev else ""
+
     def done(self, step: str):
         return self.state["steps"].get(step)
 
@@ -145,7 +152,8 @@ class Run:
         """사람 결정을 반영한다. 승인: Verifier가 수정안대로 테스트를 고치고, 그 Verifier를 기다리던 후보를 모두 다시 돌린다.
         거절: 그 후보를 다시 돌리되 그 Verifier의 실패는 Arbiter 없이 Repair로 보낸다."""
         decisions = {d["id"]: d for d in load_decisions(self.dir)}
-        todo = [p for p in self.state.get("pending", []) if p["id"] in decisions and not p.get("applied")]
+        todo = [p for p in self.state.get("pending", []) if p["id"] in decisions and not p.get("applied")
+                and p["kind"] == "expectation_change"]
         if not todo:
             return tbs
         for p in todo:
@@ -177,7 +185,7 @@ class Run:
             self.state["steps"]["verifiers"] = tbs
             # 같은 Verifier를 기다리던 다른 항목은 테스트가 바뀌었으므로 다시 돌려 본다
             for p in self.state.get("pending", []):
-                if p["verifier"] == k and not p.get("applied") and p not in todo:
+                if p.get("verifier") == k and not p.get("applied") and p not in todo:
                     p["decision"] = {"decision": "superseded", "by": f"Verifier {k} 수정 {[x['id'] for x in items]}"}
                     todo.append(p)
         if approved:
@@ -197,6 +205,94 @@ class Run:
             self.event("decision", f"{p['id']} {p['decision']['decision']} ({p['decision'].get('by')})")
         self.save()
         return tbs
+
+    def apply_lead_decisions(self, tree: dict) -> dict:
+        """Repair 충돌(repair_conflict)에 대한 Design-lead 결정을 반영하고 (바뀌었을 수 있는) 모듈 트리를 돌려준다.
+        repair: 그 후보 묶음을 다시 돌리되 Repair는 지정한 모듈에서만 한다 (형제 지목 금지).
+        architect: Architect가 충돌 경위를 보고 모듈 트리를 다시 정한다. 성공하면 모든 후보를 Author부터 다시 돌리고
+        (이전 후보 상태는 modules_a<판>/에 보관), 아직 결정하지 않은 다른 충돌 항목은 대체됨으로 닫는다."""
+        decisions = {d["id"]: d for d in load_decisions(self.dir)}
+        todo = [p for p in self.state.get("pending", []) if p["kind"] == "repair_conflict" and p["id"] in decisions
+                and not p.get("applied")]
+        if not todo:
+            return tree
+        for p in todo:
+            p["decision"] = decisions[p["id"]]
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        arch = [p for p in todo if p["decision"]["decision"] == "architect"]
+        new = self.revise_architecture(tree, arch) if arch else None
+        if new is not None:
+            for p in self.state.get("pending", []):   # 트리가 바뀌어 남은 충돌 항목(결정했든 안 했든)은 의미가 없음
+                if p["kind"] == "repair_conflict" and not p.get("applied") and p not in arch:
+                    p["decision"] = {**(p.get("decision") or {"decision": "superseded"}), "result": "superseded",
+                                     "superseded_by": f"Architect 재구성 {[x['id'] for x in arch]}"}
+                    p["applied"] = now
+            tree = new
+        else:
+            for p in arch:
+                p["decision"] = {**p["decision"], "result": "revise_failed"}
+                for m in p["mods"]:
+                    st = self.mod_state(f"{m}/c{p['c']}")
+                    if st["status"] == "waiting_approval" and st.get("pending") == p["id"]:
+                        st.update(status="failed", reason="Architect 재구성 실패")
+                        self.save_mod(f"{m}/c{p['c']}", st)
+            for p in todo:
+                d = p["decision"]
+                if d["decision"] != "repair":
+                    continue
+                for m in p["mods"]:
+                    key = f"{m}/c{p['c']}"
+                    st = self.mod_state(key)
+                    if st["status"] == "waiting_approval" and st.get("pending") == p["id"]:
+                        st["status"] = "running"
+                        st["lead_repair"] = {"id": p["id"], "module": d["module"], "note": d.get("note"), "by": d.get("by"),
+                                             "chain": p["chain"], "claims": [{k: x[k] for k in ("module", "suspects", "reason")}
+                                                                             for x in p["claims"]]}
+                        self.save_mod(key, st)
+        for p in todo:
+            p["applied"] = now
+            d = p["decision"]
+            self.event("decision", f"{p['id']} {d['decision']}{' ' + d['module'] if d.get('module') else ''} ({d.get('by')})")
+        self.save()
+        return tree
+
+    def revise_architecture(self, tree: dict, items: list[dict]) -> dict | None:
+        """lead의 근본 원인 수정 요청으로 Architect가 모듈 트리를 다시 정한다. Block Top L1은 그대로(게이트)라 Verifier 테스트를 그대로 쓴다."""
+        rev = self.state.get("arch_rev", 0) + 1
+        top_l1, _ = block_top_l1(load_spec(self.spec_path))
+        conflicts = [{k: p.get(k) for k in ("id", "group", "c", "reqs", "first_failure", "spec", "chain")}
+                     | {"claims": [{k: x[k] for k in ("module", "suspects", "reason")} for x in p["claims"]],
+                        "lead_note": p["decision"].get("note"), "by": p["decision"].get("by")} for p in items]
+        res = self.agent("architect", architect.make_revise_task(f"architect/rev{rev}", top_l1, self.spec_path, tree, conflicts),
+                         architect.check(top_l1))
+        if not res.ok:
+            self.review("ARCHITECT_REVISE_FAILED", f"Architect가 모듈 트리를 다시 정하지 못함 ({[p['id'] for p in items]}): "
+                                                   f"{res.errors[:3]}", str(res.workdir), "architect")
+            return None
+        top_ir, children, assumptions = architect.read_tree(Path(res.workdir), top_l1["module"])
+        for a in assumptions:
+            self.review("ASSUMPTION", f"[재구성 {rev}] {a}", "architect", "architect")
+        lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
+        new = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions}
+        # 이전 트리의 후보 상태와 L1은 보관하고 새 트리로 Author부터 다시 돌린다
+        (self.dir / "modules").rename(self.dir / f"modules_a{rev - 1}")
+        (self.dir / "modules").mkdir()
+        old_l1 = self.dir / f"ir_a{rev - 1}"
+        old_l1.mkdir(exist_ok=True)
+        for f in (self.dir / "ir").glob("*.l1.json"):
+            f.rename(old_l1 / f.name)
+        for n, ir in [(top_ir["module"], top_ir), *children.items()]:
+            (self.dir / "ir" / f"{n}.l1.json").write_text(json.dumps(ir, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.state.setdefault("arch_history", []).append({"rev": rev, "items": [p["id"] for p in items], "previous": tree,
+                                                           "modules": sorted(children)})
+        self.state["arch_rev"] = rev
+        self.state["steps"]["architect"] = new
+        self.state.pop("chosen", None)
+        self.review("ARCHITECTURE_REVISED", f"Design-lead 요청({[p['id'] for p in items]})으로 모듈 트리를 다시 정함 (재구성 {rev}): "
+                                            f"{sorted(tree['children'])} → {sorted(children)}. 모든 후보를 Author부터 다시 돌림",
+                    str(res.workdir), "architect")
+        self.save()
+        return new
 
     # -- 단계 --
     def step_spec(self) -> bool:
@@ -414,7 +510,7 @@ class Run:
         l1 = tree["children"][mod]
         lang = self.roles.lang_of(c)
         st["lang"] = lang
-        res = self.agent("author", author.make_task(f"author/{mod}/c{c}", l1, self.spec_path, lang=lang),
+        res = self.agent("author", author.make_task(f"author/{mod}/c{c}{self.arch_tag()}", l1, self.spec_path, lang=lang),
                          author.check(l1, lang=lang))
         if not res.ok:
             st.update(status="failed", reason=f"Author 실패: {res.errors[:3]}")
@@ -464,7 +560,8 @@ class Run:
             if v11:
                 save_all(status="failed", reason=f"동결 위반: {[str(i) for i in v11]}")
                 break
-            vres = self.verify(lib, top_ir["module"], tbs, f"{gname}_c{c}_r{total}")
+            vtag = f"{gname}_c{c}_r{total}{self.arch_tag('_')}"
+            vres = self.verify(lib, top_ir["module"], tbs, vtag)
             last = {"ok": vres["ok"], "e1": len(vres["e1"]), "e2": [{k: x[k] for k in ("verifier", "ok")} for x in vres["e2"]]}
             for st in sts.values():
                 st["last_verify"] = last
@@ -473,7 +570,7 @@ class Run:
                 for x in bad:
                     self.review("PY_EQUIV", f'{x["module"]} 후보 {c}: 번역기 검사 실패 (생성기 버그): '
                                 f'{json.dumps(x.get("mismatch") or x.get("error"), ensure_ascii=False)[:300]}',
-                                str(self.dir / "verify" / f"{gname}_c{c}_r{total}" / f'pyequiv_{x["module"]}'))
+                                str(self.dir / "verify" / vtag / f'pyequiv_{x["module"]}'))
                 save_all(status="failed", reason=f'번역기 검사 실패: {[x["module"] for x in bad]}')
                 break
             if vres["ok"]:
@@ -486,7 +583,7 @@ class Run:
                 v = failed[0]
                 rep = self.failure_report(lib, top_ir["module"], v)
                 rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
-                ares = self.agent("arbiter", arbiter.make_task(f"arbiter/{gname}/c{c}/r{total}" + (f"/t{rev}" if rev else ""),
+                ares = self.agent("arbiter", arbiter.make_task(f"arbiter/{gname}/c{c}/r{total}" + (f"/t{rev}" if rev else "") + self.arch_tag(),
                                                                self.spec_path, rep["report"] or rep, Path(tbs[v["verifier"]])),
                                   arbiter.check(self.spec_path))
                 vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
@@ -513,7 +610,8 @@ class Run:
                 self.review("TB_ERROR", f"{gname} 후보 {c}: 테스트 실행 오류 (Verifier가 고쳐야 함)", fail_v.get("out", ""))
                 save_all(status="failed", reason="TB 실행 오류")
                 break
-            mod, tried, stop = self.culprit(tree, mods, failure, vres["e1"]), [], None
+            pin = sts[mods[0]].get("lead_repair")   # lead가 고칠 모듈을 지정함: 그 모듈의 Repair만, 형제 지목 금지
+            mod, tried, claims, stop = pin["module"] if pin else self.culprit(tree, mods, failure, vres["e1"]), [], [], None
             while stop is None:
                 st = sts[mod]
                 tried.append(mod)
@@ -523,9 +621,9 @@ class Run:
                 block = None if len(mods) == 1 else {
                     "top": top_ir["module"], "instances": top_ir.get("instances", []), "connections": top_ir.get("connections", []),
                     "siblings": {n: children[n] for n in mods if n != mod}}
-                rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{st['repairs']}", st["ir"], self.spec_path,
-                                                             failure, st["history"], block),
-                                  repair.check(st["ir"], siblings=set(block["siblings"]) if block else None))
+                rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{st['repairs']}{self.arch_tag()}", st["ir"],
+                                                             self.spec_path, failure, st["history"], block, lead=pin),
+                                  repair.check(st["ir"], siblings=set(block["siblings"]) if block else None, pinned=bool(pin)))
                 st["repairs"] += 1
                 self.save_mod(keys[mod], st)
                 if not rres.ok:
@@ -537,12 +635,18 @@ class Run:
                     stop = dict(status="interface_change")
                     break
                 if (sus := repair.suspect(patches)) is not None:
-                    # 자식 모듈 원인 의심: 지목된 형제 모듈의 Repair로 넘긴다. 이번 실패에서 이미 거친 모듈이면 사람에게 넘긴다
+                    # 자식 모듈 원인 의심: 지목된 형제 모듈의 Repair로 넘긴다. 이번 실패에서 이미 거친 모듈이면 충돌이므로 lead가 정한다
                     self.event("suspect", f"{mod} → {sus[0]}: {sus[1][:200]}")
+                    claims.append({"module": mod, "suspects": sus[0], "reason": sus[1], "workdir": str(rres.workdir)})
                     if sus[0] in tried:
-                        self.review("CHILD_SUSPECT_LOOP", f"{gname} 후보 {c}: Repair들이 서로 원인을 넘김 ({tried + [sus[0]]})",
-                                    rres.workdir, "repair")
-                        stop = dict(status="failed", reason="원인 모듈을 정하지 못함")
+                        rp = failure.get("report") or {}
+                        pid = self.add_pending({"kind": "repair_conflict", "group": gname, "mods": mods, "c": c,
+                                                "chain": tried + [sus[0]], "claims": claims,
+                                                "reqs": [r] if (r := (rp.get("first_failure") or {}).get("req")) else [],
+                                                "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag})
+                        self.review("REPAIR_CONFLICT", f"{gname} 후보 {c}: Repair들이 서로 원인을 넘김 ({' → '.join(tried + [sus[0]])}). "
+                                    f"Design-lead 결정 {pid} 대기 (고칠 모듈 지정 또는 Architect 재구성)", rres.workdir, "repair")
+                        stop = dict(status="waiting_approval", pending=pid)
                         break
                     mod = sus[0]
                     continue
@@ -748,6 +852,7 @@ class Run:
             tbs = self.step_verifiers(tree["top"])
             if tbs:
                 tbs = self.apply_decisions(tree, tbs)
+                tree = self.apply_lead_decisions(tree)
             if not tbs:
                 self.state["status"] = "failed"
                 self.review("VERIFIER_FAILED", "쓸 수 있는 Verifier 테스트가 없음")

@@ -6,6 +6,7 @@
     deptctl signoff <실행> --kind dv|pi --decision pass|fail --note "..."   (DV Seat: dv, PI Seat: pi. 최종 승인된 실행)
     deptctl submit <SPEC 작업 공간 ID> [--config JSON]      (RTL Engineer, Chip-lead. 고정된 SPEC만)
     deptctl feedback <body.json>                          (Design-lead만)
+    deptctl lead-decide <실행:E번호> (--repair <모듈> | --architect) --note "..."   (Design-lead만. Repair 충돌 결정)
 
 승인과 반려는 사람(승인자 역할)이 게이트웨이 승인함에서 한다. Seat는 할 수 없다.
 권한은 게이트웨이가 Seat 계정의 역할로 다시 검사한다. 이 도구가 역할에 없는 명령을 숨기는 것은 안내일 뿐이다.
@@ -21,7 +22,7 @@ from pathlib import Path
 ROLE = os.environ.get("CHIPDEPT_SEAT_ROLE", "none")
 SEAT = os.environ.get("CHIPDEPT_SEAT", "?")
 GATEWAY = os.environ.get("CHIPDEPT_GATEWAY", "http://127.0.0.1:8750")
-WRITE_CMDS = {"submit": {"rtl-engineer", "chip-lead"}, "feedback": {"design-lead"}}
+WRITE_CMDS = {"submit": {"rtl-engineer", "chip-lead"}, "feedback": {"design-lead"}, "lead-decide": {"design-lead"}}
 POD = (os.environ.get("CHIPDEPT_SEAT") or "x.x").split(".")[0]
 
 
@@ -71,6 +72,13 @@ def main() -> int:
         s.add_argument("--config", default="{}")
     if "feedback" in allowed:
         sub.add_parser("feedback").add_argument("body", type=Path)
+    if "lead-decide" in allowed:
+        s = sub.add_parser("lead-decide", help="Repair 충돌: 고칠 모듈 지정 또는 Architect 재구성 요청")
+        s.add_argument("target", help="승인함 항목의 target (실행:E번호)")
+        g = s.add_mutually_exclusive_group(required=True)
+        g.add_argument("--repair", metavar="모듈")
+        g.add_argument("--architect", action="store_true")
+        s.add_argument("--note", required=True)
     hidden = sorted(set(WRITE_CMDS) - allowed) + ["decide", "approve"]
     if len(sys.argv) > 1 and sys.argv[1] in hidden:
         msg = ("승인과 반려는 사람(승인자)이 게이트웨이 승인함에서 함" if sys.argv[1] in ("decide", "approve") else
@@ -103,6 +111,9 @@ def main() -> int:
         out = call("POST", f"/api/runs/{a.run_id}/signoff", {"kind": a.kind, "decision": a.decision, "note": a.note})
     elif a.cmd == "submit":
         out = call("POST", "/api/runs", {"spec_id": a.spec_id, "config": json.loads(a.config)})
+    elif a.cmd == "lead-decide":
+        out = call("POST", "/api/approvals", {"kind": "repair_conflict", "target": a.target, "note": a.note,
+                                             "decision": "architect" if a.architect else "repair", "module": a.repair})
     else:
         out = call("POST", "/api/feedback", json.loads(a.body.read_text(encoding="utf-8")))
     print(json.dumps(out, ensure_ascii=False, indent=1))

@@ -38,6 +38,8 @@
 | 기댓값 변경 | 파이프라인이 Arbiter의 test_wrong을 승인 대기로 등록함 | 파이프라인에 결정을 넘기고 실행이 이어짐 |
 | SPEC 변경 요청 | Design-lead가 환류로 냄 | 파이프라인에 결정을 넘김. 승인이면 영향 모듈만(또는 처음부터) 다시 실행 |
 
+Repair 충돌은 승인이 아니라 Design-lead의 결정입니다 (design_lead 능력, Design-lead Seat도 `deptctl lead-decide`로 가능). 형제 모듈의 Repair들이 같은 실패의 원인을 서로 넘기면 파이프라인이 승인함에 올리고, lead가 고칠 모듈을 지정(`repair`, `module`)하거나 Architect 재구성(`architect`)을 요청합니다. 승인자는 이 항목을 결정할 수 없습니다.
+
 모든 결정은 `approvals`에 누가, 언제, 역할, SPEC 버전, 실행 ID, 요구사항 ID, 메모와 함께 남고, 감사 기록에도 남습니다.
 
 ## 화면 (1차)
@@ -80,7 +82,7 @@ python3 -m gateway serve --port 8750
 
 ## 시험
 
-`tests/sim/test_gateway.py`: 실제 HTTP(쿠키, API 키)로 인증과 요청 위조 방지, 승인 다섯 가지(승인자만, 모두 기록), SPEC 작업대(PDF와 WaveJSON 포함), 실행 상세, 환류 양식을 봅니다. 파이프라인은 가짜 agent로 돕니다.
+`tests/sim/test_gateway.py`: 실제 HTTP(쿠키, API 키)로 인증과 요청 위조 방지, 승인 다섯 가지(승인자만, 모두 기록), Repair 충돌(Design-lead만), SPEC 작업대(PDF와 WaveJSON 포함), 실행 상세, 환류 양식을 봅니다. 파이프라인은 가짜 agent로 돕니다.
 
 ## 아직 없는 것
 

@@ -19,7 +19,7 @@ from gateway.server import serve as gw_serve  # noqa: E402
 from gateway.service import Gateway  # noqa: E402
 from pipeline.api.server import serve as api_serve  # noqa: E402
 from test_api import _store  # noqa: E402
-from test_scheduler import SPEC, _files_wrong_v1  # noqa: E402
+from test_scheduler import SPEC, _files_conflict, _files_wrong_v1  # noqa: E402
 
 TOKEN = "gw-token"
 USERS = {"admin": (["admin"], []), "des": (["design"], ["design_lead"]), "dsg": (["design"], []),
@@ -178,9 +178,7 @@ def test_feedback_form_and_spec_change_approval(env):
     assert env["st"].wait(rec["extra"]["pipeline"]["new_run"], timeout=600)["status"] == "pass"
 
 
-def test_expectation_change_only_by_approver(env, tmp_path):
-    # Verifier 1의 테스트에 틀린 속성 → Arbiter test_wrong → 승인 대기 E1, E2
-    f = _files_wrong_v1(tmp_path)
+def _use_files(env, tmp_path, f):
     st = env["st"]
     st.base_roles = tmp_path / "roles2.json"
     roles = json.loads((tmp_path / "roles.json").read_text())
@@ -189,6 +187,12 @@ def test_expectation_change_only_by_approver(env, tmp_path):
     (tmp_path / "agents2.json").write_text(json.dumps(agents))
     roles["agents"] = str(tmp_path / "agents2.json")
     st.base_roles.write_text(json.dumps(roles))
+
+
+def test_expectation_change_only_by_approver(env, tmp_path):
+    # Verifier 1의 테스트에 틀린 속성 → Arbiter test_wrong → 승인 대기 E1, E2
+    _use_files(env, tmp_path, _files_wrong_v1(tmp_path))
+    st = env["st"]
     c = env["c"]
     s = _freeze(env, _md_spec(env, c["des"]))
     c["apr"].call("POST", "/api/approvals", {"kind": "spec_freeze", "target": s["id"], "decision": "approved"})
@@ -202,6 +206,32 @@ def test_expectation_change_only_by_approver(env, tmp_path):
                                                              "decision": "approved", "note": "SPEC에 없는 검사"})
         assert code == 200 and rec["run_id"] == rid and rec["reqs"] == ["ADP-01"], rec
     assert st.wait(rid, timeout=600)["status"] == "pass"   # 마지막 결정 뒤 실행이 이어짐
+
+
+def test_repair_conflict_decided_by_design_lead(env, tmp_path):
+    # 하위 모듈 둘의 Repair가 원인을 서로 넘김 → Repair 충돌 항목 둘. 승인자가 아니라 Design-lead(사람 또는 Seat)가 결정한다
+    _use_files(env, tmp_path, _files_conflict(tmp_path))
+    st, c = env["st"], env["c"]
+    s = _freeze(env, _md_spec(env, c["des"]))
+    c["apr"].call("POST", "/api/approvals", {"kind": "spec_freeze", "target": s["id"], "decision": "approved"})
+    rid = c["des"].call("POST", "/api/runs", {"spec_id": s["id"]})[1]["run_id"]
+    assert st.wait(rid, timeout=600)["status"] == "waiting_approval"
+    pend = sorted([p for p in c["apr"].call("GET", "/api/approvals/pending")[1] if p["kind"] == "repair_conflict"],
+                  key=lambda p: p["detail"]["c"])
+    assert len(pend) == 2 and pend[0]["detail"]["chain"] == ["axis_adapter_out", "axis_adapter_core", "axis_adapter_out"]
+    body = {"kind": "repair_conflict", "target": pend[0]["target"], "decision": "repair", "module": "axis_adapter_core"}
+    for n in ("apr", "dsg", "ver", "admin"):   # 승인자도 결정할 수 없음
+        assert c[n].call("POST", "/api/approvals", body)[0] == 403, n
+    assert c["des"].call("POST", "/api/approvals", {**body, "decision": "approved"})[0] == 400
+    assert c["des"].call("POST", "/api/approvals", {**body, "module": "nope"})[0] == 400
+    code, rec = c["des"].call("POST", "/api/approvals", {**body, "note": "core에서 고침"})
+    assert code == 200 and rec["decision"] == "repair" and rec["extra"]["module"] == "axis_adapter_core", rec
+    seat = Client(env["base"])
+    seat.key = env["gw"].accounts.new_api_key("seat-design-lead")   # Design-lead Seat도 결정할 수 있음 (deptctl lead-decide)
+    code, rec = seat.call("POST", "/api/approvals", {**body, "target": pend[1]["target"]}, csrf=False)
+    assert code == 200 and rec["by"] == "seat-design-lead", rec
+    assert st.wait(rid, timeout=600)["status"] == "pass"   # 마지막 결정 뒤 실행이 이어짐
+    assert [a["kind"] for a in c["apr"].call("GET", "/api/approvals")[1]][:2] == ["repair_conflict"] * 2
 
 
 def test_pdf_spec_figures_and_wavejson(env, tmp_path):

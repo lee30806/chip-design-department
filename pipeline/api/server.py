@@ -10,7 +10,7 @@
 | GET | /runs, /runs/{id} | 실행 목록, 상태 |
 | GET | /runs/{id}/modules, /review-items, /report, /pending, /rtl, /history | 모듈별 상태, 검토 항목, 최종 보고서, 승인 대기, 최종 RTL, 환류 이력 |
 | POST | /runs/{id}/resume | 멈춘 실행을 이어서 실행 |
-| POST | /runs/{id}/decisions | 기댓값 수정안 결정 `{"ids", "decision": approved/rejected, "by", "note"?}` |
+| POST | /runs/{id}/decisions | 결정. 기댓값 수정안 `{"ids", "decision": approved/rejected, "by", "note"?}`, Repair 충돌(design-lead) `{"ids", "decision": repair/architect, "module"?, "by", "note"?}` |
 | POST | /runs/{id}/feedback, /feedback | 환류 네 형태 (역할: design-lead). 스키마는 schema/feedback.schema.json |
 | POST | /feedback/{id}/decision | SPEC 변경 요청 승인 `{"decision", "by", "note"?}` (역할: chip-lead, rtl-engineer) |
 | GET | /feedback, /generator-bugs, /notifications, /config | 환류 이력, 생성기 버그, 알림, 현재 설정 |
@@ -93,7 +93,7 @@ def make_handler(store: Store, token: str | None = None):
                     return store.start(rid)
                 if sub == "decisions":
                     return store.decide(rid, body.get("ids") or [], body.get("decision", ""), body.get("by", ""), role,
-                                        body.get("note", ""))
+                                        body.get("note", ""), module=body.get("module"))
                 if sub == "feedback":
                     return store.feedback({**body, "run_id": rid} if body.get("form") in ("check_report", "spec_change") else body, role)
             raise ApiError(404, "없는 경로")

@@ -100,7 +100,7 @@ flowchart TB
 | Pod | Seat | 역할 | 파이프라인과의 관계 |
 | --- | --- | --- | --- |
 | 총괄 | Chip-lead | 마일스톤 계획, Block Top별 실행 순서, lead 간 조율 | 사람의 최종 승인 자료를 취합 |
-| Design | Design-lead | 설계 Pod 총괄, 다른 Pod에서 오는 수정 요구의 단일 창구 | 환류를 분류해 파이프라인 입력으로 변환 |
+| Design | Design-lead | 설계 Pod 총괄, 다른 Pod에서 오는 수정 요구의 단일 창구 | 환류를 분류해 파이프라인 입력으로 변환. 파이프라인의 Repair 충돌(형제 모듈 Repair들이 원인을 서로 넘김)에서 고칠 모듈을 지정하거나 Architect 재구성을 요청 |
 | Design | Architecture Engineer | SPEC 변환 결과 정리, SPEC 검사 질문의 답 초안, 변경 요청 초안 | 실행 전 단계. SPEC 고정까지 담당. 정본은 사람이 확정 |
 | Design | RTL Engineer | 파이프라인 실행 제출과 감시, 멈춘 모듈의 1차 분류, 검토 항목 설명 | 파이프라인 운영자. IR과 RTL을 직접 고치지 않음 |
 | Design | Sanity Engineer | Lint, Superlint, Xprop, DFT, DCLint, IP-XACT, EPC 등 구현 전 점검 | 파이프라인이 검증을 마친 RTL을 검사 |

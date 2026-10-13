@@ -2,6 +2,8 @@
 
 볼 수 있는 것: SPEC, SPEC 표에서 만든 Block Top의 L1, IR 안내서.
 쓸 수 있는 것: `out/ir/<모듈>.ir.json`(Block Top은 L1 + instances + connections, 하위 모듈은 L1만), `out/assumptions.json`.
+재구성(make_revise_task): 형제 모듈의 Repair들이 실패 원인을 서로 넘겨 Design-lead가 근본 원인 수정을 요청하면, 지금 모듈 트리와
+충돌 경위(`conflict.json`)를 받아 모듈 경계와 하위 모듈 L1을 다시 정한다. Block Top의 L1은 그대로라서 Verifier 테스트는 그대로 쓴다.
 종료 게이트: Block Top의 L1이 바뀌지 않음, Block Top이 V1~V10 통과(하위 모듈 L1을 라이브러리로), 하위 모듈 L1이 V1~V3 통과,
              가정 목록이 있음.
 """
@@ -45,6 +47,30 @@ TASK = """\
 - `out/` 밖의 파일은 만들거나 고치지 않는다.
 - 클럭과 리셋은 `domain_map`으로만 연결한다.
 """
+
+
+REVISE = """
+## 재구성 요청 (Design-lead)
+지금 모듈 트리로 Author와 Repair를 돌렸더니, 같은 실패를 두고 형제 모듈의 Repair들이 원인을 서로 넘겼다.
+요구사항 하나를 만족시키는 데 필요한 결정(예: 출력 시점과 그때의 ready)이 모듈 경계에 나뉘어 있어 어느 한 모듈만 고쳐서는
+풀 수 없다는 신호다. Design-lead가 근본 원인을 모듈 트리에서 고치라고 요청했다.
+- `current/`: 지금 모듈 트리 (Block Top IR과 하위 모듈 L1)
+- `conflict.json`: 충돌마다 실패한 요구사항과 첫 불일치, Repair들이 서로 넘긴 경위(모듈과 이유), lead의 메모
+위 할 일을 다시 하되, 충돌한 요구사항을 만족시키는 데 필요한 상태와 결정이 한 모듈 안에 있도록 모듈 경계나 하위 모듈 사이 인터페이스를
+바꾼다 (모듈을 합치거나, 경계를 옮기거나, 필요한 신호를 인터페이스에 더함). 충돌과 관계없는 부분은 그대로 둔다.
+무엇을 왜 바꿨는지 `out/assumptions.json`의 가정 목록 맨 앞에 적는다. Block Top의 L1은 이번에도 바꾸지 않는다.
+"""
+
+
+def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict, conflicts: list[dict]) -> Task:
+    """lead의 근본 원인 수정 요청: 지금 트리(tree: {"top", "children"})와 충돌 경위를 받아 모듈 트리를 다시 정한다."""
+    t = make_task(name, block_top_l1, spec)
+    t.inputs[f"current/{tree['top']['module']}.ir.json"] = json.dumps(tree["top"], ensure_ascii=False, indent=1)
+    for n, ir in tree["children"].items():
+        t.inputs[f"current/{n}.ir.json"] = json.dumps(ir, ensure_ascii=False, indent=1)
+    t.inputs["conflict.json"] = json.dumps(conflicts, ensure_ascii=False, indent=1)
+    t.text += REVISE
+    return t
 
 
 def make_task(name: str, block_top_l1: dict, spec: str | Path) -> Task:

@@ -9,6 +9,10 @@
 | RTL Freeze (rtl_freeze) | 실행 | 최종 승인됨 + DV 검증 완료 판정과 PI 구현 가능성 판정이 모두 pass | |
 | 기댓값 변경 (expectation_change) | 실행의 승인 대기 항목 (E1 등) | 파이프라인이 Arbiter의 test_wrong을 등록함 | 파이프라인에 결정을 넘기고 실행을 이어 감 |
 | SPEC 변경 요청 (spec_change) | 환류 (F0001 등) | Design-lead가 SPEC 변경 요청을 냄 | 파이프라인에 결정을 넘김. 승인이면 영향 모듈만(또는 처음부터) 다시 실행 |
+
+Repair 충돌(repair_conflict)은 승인이 아니라 Design-lead의 결정이다 (design_lead 능력, Seat도 가능). 형제 모듈의 Repair들이 실패 원인을
+서로 넘기면 파이프라인이 등록하고, lead가 고칠 모듈을 지정(decision `repair`, `module`)하거나 Architect 재구성(`architect`)을 요청한다.
+결정은 승인 기록에 같이 남는다.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from jsonschema.exceptions import best_match
 from gateway.auth import Accounts
 from gateway.clients import OpenRig, Pipeline, UpstreamError
 from gateway.db import DB, now
-from gateway.perms import APPROVAL_KINDS, Forbidden, require
+from gateway.perms import APPROVAL_KINDS, LEAD_KINDS, Forbidden, require
 from gateway.specws import SpecError, Specs
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,9 +189,12 @@ class Gateway:
                                                                                          for k in ("dv", "pi"))}})
             for p in r.get("pending") or []:
                 full = next((x for x in self.pipeline.get(f"/runs/{r['run_id']}/pending") if x["id"] == p), {})
-                items.append({"kind": "expectation_change", "target": f"{r['run_id']}:{p}", "title": f"{r['block']} {p}",
+                kind = full.get("kind", "expectation_change")
+                keys = ("group", "c", "mods", "chain", "claims", "first_failure", "spec") if kind == "repair_conflict" else \
+                    ("verifier", "group", "c", "reason", "proposal", "first_failure")
+                items.append({"kind": kind, "target": f"{r['run_id']}:{p}", "title": f"{r['block']} {p}",
                               "run_id": r["run_id"], "spec_sha": r.get("spec_sha256"), "reqs": full.get("reqs"),
-                              "detail": {k: full.get(k) for k in ("verifier", "group", "c", "reason", "proposal", "first_failure")}})
+                              "detail": {k: full.get(k) for k in keys}})
         try:
             fb = self.pipeline.get("/feedback")
         except UpstreamError:
@@ -200,13 +207,18 @@ class Gateway:
                               "detail": {k: r.get(k) for k in ("reason", "source", "by", "spec_diff")}})
         return items
 
-    def decide(self, user: dict, kind: str, target: str, decision: str, note: str = "") -> dict:
-        """승인과 반려. 승인자 역할의 사람만 한다. 모든 결정을 기록한다."""
-        require(user, "approve")
-        if kind not in APPROVAL_KINDS:
-            raise Conflict(400, f"모르는 승인 종류: {kind} ({APPROVAL_KINDS})")
-        if decision not in ("approved", "rejected"):
-            raise Conflict(400, "decision은 approved 또는 rejected")
+    def decide(self, user: dict, kind: str, target: str, decision: str, note: str = "", module: str | None = None) -> dict:
+        """승인과 반려는 승인자 역할의 사람만, Repair 충돌은 Design-lead(design_lead 능력)만 한다. 모든 결정을 기록한다."""
+        if kind in LEAD_KINDS:
+            require(user, "feedback")
+            if decision not in ("repair", "architect"):
+                raise Conflict(400, "Repair 충돌의 decision은 repair(고칠 모듈 지정, module 필요) 또는 architect(Architect 재구성)")
+        else:
+            require(user, "approve")
+            if kind not in APPROVAL_KINDS:
+                raise Conflict(400, f"모르는 승인 종류: {kind} ({APPROVAL_KINDS + LEAD_KINDS})")
+            if decision not in ("approved", "rejected"):
+                raise Conflict(400, "decision은 approved 또는 rejected")
         item = next((i for i in self.pending() if i["kind"] == kind and i["target"] == target), None)
         if item is None:
             raise Conflict(409, f"승인함에 없는 항목: {kind} {target} (이미 결정했거나 조건이 안 됨)")
@@ -225,6 +237,13 @@ class Gateway:
             run_id, eid = target.split(":", 1)
             extra["pipeline"] = self.pipeline.post(f"/runs/{run_id}/decisions",
                                                    {"ids": [eid], "decision": decision, "by": user["username"], "note": note}, "decide")
+        elif kind == "repair_conflict":
+            run_id, eid = target.split(":", 1)
+            extra["pipeline"] = self.pipeline.post(f"/runs/{run_id}/decisions",
+                                                   {"ids": [eid], "decision": decision, "module": module, "by": user["username"],
+                                                    "note": note}, "lead_decide")
+            if module:
+                extra["module"] = module
         elif kind == "spec_change":
             extra["pipeline"] = self.pipeline.post(f"/feedback/{target}/decision",
                                                    {"decision": decision, "by": user["username"], "note": note}, "spec_decide")
