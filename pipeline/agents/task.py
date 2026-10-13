@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNS = Path(os.environ.get("CHIPDEPT_RUNS", Path.home() / ".cache" / "chip-design-department" / "runs"))
 
 # 런타임이 사용량 한도를 알리는 문구. 이때는 재시도하지 않고 스케줄러가 멈췄다가 나중에 이어서 실행한다.
-QUOTA_PATTERNS = ("RESOURCE_EXHAUSTED", "quota reached", "rate limit", "Rate limit", "429")
+QUOTA_PATTERNS = ("RESOURCE_EXHAUSTED", "quota reached", "rate limit", "Rate limit", "429", "usage limit", "hit your limit")
 
 
 class QuotaExceeded(RuntimeError):

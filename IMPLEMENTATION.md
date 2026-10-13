@@ -247,7 +247,7 @@ P1과 독립적으로 진행할 수 있습니다. 다만 템플릿 섹션의 대
   - 작업 디렉터리는 저장소 밖(`~/.cache/chip-design-department/runs`)에 두고, macOS `sandbox-exec`로 저장소와 다른 작업을 막습니다.
   - 사용량 한도(429)를 만나면 `paused_quota`로 멈추고 이어서 실행합니다.
 - **도구:** `pipeline/agents/pl.py` (validate, patch, emit, fanin, trace, spec, harness, model).
-- **에이전트:** Author, Repair, Verifier(작성, 승인된 수정, 차분 보강), Architect, Arbiter. 모두 agy로 돌립니다 (Author `gemini-3.8-flash-high`, 나머지도 `gemini-3.8-flash-high`. 2026-10-13 agy에서 `gemini-3.1-pro-high`가 빠지고 Claude 모델은 한도가 차서 사용자 결정으로 교체했습니다. 같은 계열 경고).
+- **에이전트:** Author, Repair, Verifier(작성, 승인된 수정, 차분 보강), Architect, Arbiter. 모두 Claude Code CLI로 돌립니다 (2026-10-13 17시경부터 모든 역할 Sonnet, effort low, `experiments/p0/local/agents.claude.json`. 그전에는 agy로 모든 역할 `claude-sonnet-5-5-low`. 원래 Author `gemini-3.8-flash-high`, 나머지 `gemini-3.1-pro-high`였으나 3.1 Pro가 agy에서 빠지고 Gemini 한도가 차서 사용자 결정으로 교체했습니다. 같은 계열 경고).
 - **스케줄러:** `pipeline/scheduler/run.py`.
   - 하위 모듈이 여럿이면 같은 번호 후보끼리 묶어 검증합니다.
   - Repair는 원인 후보 모듈로 보내고, 형제 모듈을 지목하면 그 모듈로 넘깁니다. 트레이스와 팬인은 인스턴스 경계를 넘습니다.

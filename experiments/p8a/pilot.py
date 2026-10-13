@@ -61,6 +61,11 @@ def pilot(block: str) -> dict:
             irs = candidate_irs(out, k)
             if not irs:
                 continue
+            # IR이 없는 모듈은 run_golden이 golden IR로 채우므로 그 후보의 결과가 아니다
+            if missing := sorted(p.name.removesuffix(f"__c{k}.json") for p in (out / "modules").glob(f"*__c{k}.json")
+                                 if not json.loads(p.read_text()).get("ir")):
+                rec["upstream_tb"][f"c{k}"] = {"ok": None, "skipped": f"IR 없는 모듈: {missing}"}
+                continue
             try:
                 g = run_golden.run_block(block, out / "upstream_tb" / f"c{k}", ir_override=irs)
                 rec["upstream_tb"][f"c{k}"] = {"ok": g["ok"], "tbs": [

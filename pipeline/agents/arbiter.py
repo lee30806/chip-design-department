@@ -4,6 +4,7 @@
 RTL과 IR은 보지 않는다 (판정 기준은 SPEC).
 쓸 수 있는 것: `out/verdict.json`.
 판정: rtl_wrong(RTL을 Repair로), test_wrong(기댓값 수정안, 사람 승인 필요), spec_ambiguous(검토 항목, 작성자에게 질문).
+Repair가 L1 변경을 요청한 실패도 판정한다 (`repair_claim`). 이때 rtl_wrong이면 L1 변경 요청이 그대로 사람에게 간다.
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 - `mismatch.json`: 불일치 리포트. `first_failure`의 expected는 참조 모델의 기댓값, got은 RTL의 실제값이다.
   `fsm_trace`, `fanin.values`는 그 시점 전후의 내부 값, `spec.clauses`는 관련 요구사항이다
 - `test.py`: 참조 모델과 테스트 시나리오 (기댓값이 어떻게 만들어졌는지)
+- `mismatch.json`에 `repair_claim`이 있으면: Repair가 이 기댓값은 모듈 인터페이스(L1)를 바꾸지 않고는 맞출 수 없다고 주장했다
+  (`reason`). SPEC이 정말 그 기댓값을 요구하는지 판정한다. SPEC 문장보다 테스트가 더 엄격하게 읽었으면
+  (예: "리셋 동안"을 리셋이 걸린 바로 그 사이클로 읽음) test_wrong, SPEC이 분명히 요구하면 rtl_wrong이다
 
 ## 할 일
 SPEC 구절을 근거로 판정하고 `{out}`에 아래 JSON을 쓴다.

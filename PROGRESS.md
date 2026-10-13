@@ -10,7 +10,7 @@
 | P1 블록 이식 시험 | 완료 (2026-10-11) | 공개 블록 4개. 원본 테스트벤치 49개 통과 |
 | P2 결정론적 툴 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 남은 항목은 아래 대기 항목 (조건 충족 시 진행) |
 | P3 SPEC 변환과 검사 | **지금 할 수 있는 항목 완료 (2026-10-11)** | 입력: I3C 예시 SPEC. 남은 항목은 대기 항목 (조건 충족 시 진행) |
-| P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`. 2026-10-13부터 `gemini-3.8-flash-high`) |
+| P4 에이전트와 스케줄러 | **완료** (E2E 3/3, 블록마다 기댓값 승인 1회 포함. 사용자 마감 2026-10-12) | 에이전트: agy (Author `gemini-3.8-flash-high`, Verifier 등 `gemini-3.1-pro-high`. 2026-10-13 오후부터 모든 역할 `claude-sonnet-5-5-low`, 17시경부터 Claude Code CLI Sonnet effort low) |
 | P5 파이프라인 API와 환류 입력 | **완료 (가능한 범위)** | 사내 툴 리포트 양식은 샘플을 받으면 양식 파일만 추가 |
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
@@ -77,6 +77,24 @@
 - Sonnet도 같은 Claude 한도를 써서 바로 막혔고 GPT-OSS도 막혔습니다. 사용자 결정으로 Verifier, Architect, Arbiter를 `gemini-3.8-flash-high`로 바꿔 이어서 실행합니다. Author와 같은 모델이라 Verifier 독립성이 약하고 MODEL_FAMILY 경고가 나옵니다. SV와 Python 후보는 같은 Verifier 테스트를 쓰므로 두 후보 비교는 유효합니다. 이미 끝난 Architect 2회(Opus 결과)는 그대로 이어 씁니다.
 - 10:54 Gemini 한도도 차서 두 실행이 다시 `paused_quota`로 멈췄습니다 (14:55경 풀림, 실행마다 에이전트 11회). 그때까지 결과: Verifier 4개 통과, Author 8개(SV 4, Python 4) 모두 첫 시도 통과, 에이전트가 쓴 Python 모듈 4개 번역기 검사 통과(2000사이클), Repair는 SV와 Python 후보에서 비슷한 횟수였습니다. 한도가 풀린 뒤 같은 명령으로 자동 재개하도록 걸어 두었습니다.
 - `axis_adapter`(SV, Python 후보 모두 Repair 0회): Verifier 0의 ADP-T01 체커에서만 실패했고 Arbiter가 test_wrong으로 판정했다 (체커가 m_axis_tlast=0을 같은 비트의 남은 바이트로 오해석). 사용자가 E1, E2를 승인해 sjlee로 기록하고 이어서 실행한다.
+- **16:37 Gemini 주간 한도로 다시 멈춤 ("Resets in 102h46m", 10월 17일 23시경).** 그때까지 결과:
+  - `axis_adapter`: SV, Python 후보 모두 통과 (Repair 각 1회, lint 0, Python 번역기 검사 통과). 후보 간 차분 검사에서 Verifier 보강 단계에 멈춤.
+  - `axis_cobs_decode`: 실패. SV, Python 후보 모두 Repair가 인터페이스 변경을 요청함 (COBS-E01 "rst=1인 동안 s_axis_tready=0"은 동기 리셋과 레지스터 출력으로는 같은 사이클에 만족할 수 없음. P8 CRC-E01과 같은 SPEC 문장 문제). 그런데 두 후보의 마지막 IR은 원본 테스트벤치를 모두 통과함 (16/16, 16/16).
+  - `axis_crc_append`: 실패. SV, Python 후보 모두 Repair 충돌 (모듈 나누기 문제).
+  - `axis_async_fifo`: Architect, Verifier 2개 통과 뒤 Author에서 멈춤.
+  - 지금까지 SV와 Python 후보의 차이는 없음. 첫 시도 통과율, 실패 양상, Repair 수가 같고(cobs의 Python 후보만 Repair 2회 더) 번역기 검사는 모두 통과. 실패는 SPEC 문장과 모듈 나누기에서 나옴.
+- 사용자 결정(16:55경): 모든 역할(Author 포함)을 `claude-sonnet-5-5-low`로 바꿔 남은 `axis_adapter`(마무리)와 `axis_async_fifo`를 이어서 실행한다. 앞 단계(Architect, Verifier, Author 결과)는 Gemini로 만든 것을 그대로 이어 쓰므로 블록 안에서 모델이 섞인다.
+- 16:53 Claude 한도도 차서 두 실행이 다시 멈췄다 ("Resets in 146h", 10월 19일 19시경). Sonnet으로는 에이전트 3회(Verifier 보강 1, Author 1, 그리고 한도 오류)만 돌았다. `axis_adapter`는 보강 테스트 단계, `axis_async_fifo`는 Author 단계에서 멈춤. agy의 모든 모델 한도가 찼으므로 Gemini 한도가 풀리는 10월 17일 23시경 이후에 같은 명령으로 이어서 실행한다.
+- 사용자 결정(17시경): coding agent를 agy에서 Claude Code CLI(2.1.295)로 바꾸고 모델은 Sonnet, effort low (`experiments/p0/local/agents.claude.json`, `config/roles.json`). 인증은 CLI 로그인을 쓰고, 사용자 설정·훅·플러그인·MCP·스킬은 읽지 않게 했다 (`--setting-sources ""`, `--strict-mcp-config`, `--disable-slash-commands`). 파이프라인 격리(sandbox-exec) 안에서 시험 실행 통과. 한도 문구에 Claude Code의 "usage limit", "hit your limit"을 더했다. 같은 명령으로 `axis_adapter`, `axis_async_fifo`를 이어서 실행한다.
+- **19:14 Claude Code(Sonnet low)로 두 실행 마침.**
+  - `axis_adapter`: 통과. SV, Python 후보 모두 통과(Repair 각 1회, lint 0, 번역기 검사 통과), 원본 테스트벤치 두 후보 모두 9/9. SV 후보(c0)를 고름.
+  - `axis_async_fifo`: 실패. SV 후보는 Repair가 인터페이스 변경을 요청함 (AFIFO-E02 "s_rst가 걸린 사이클에 s_axis_tready=0"은 동기 리셋 도메인에서 조각이 리셋을 읽을 수 없어 같은 사이클에 만족할 수 없음. COBS-E01, CRC-E01과 같은 SPEC 문장 문제). 그래도 SV 후보 IR은 원본 테스트벤치 20/20 통과.
+  - Python 후보는 `axis_async_fifo_mem`의 Author가 실패함: `mem[wr_addr] = wr_word`, `rd_word = mem[rd_addr]`를 Python 조각 번역기(pyfrag)가 받지 않음 ("비트 선택은 신호 이름에만"). memory 읽기·쓰기를 Python 조각에서 쓸 수 없는 번역기의 빈틈이다. 그래서 묶음 전체(c1)가 실패로 처리됨. pilot.json의 c1 원본 테스트벤치 20/20은 Python으로 쓴 m, s와 IR이 없는 mem 자리에 golden IR을 넣은 결과라 c1 통과로 볼 수 없다.
+- **사용자 요청(19시 반경): 드러난 문제를 먼저 고침.**
+  - **Repair의 L1 변경 요청은 Arbiter가 먼저 판정** (P8 회고 조정안 1): 지금까지 cobs, async_fifo, CRC(b60e)가 모두 테스트가 SPEC을 엄격하게 읽은 탓(리셋이 걸린 그 사이클)인데도 Arbiter 없이 실패로 끝났다. 이제 Repair가 `request_interface_change`를 내면 실패한 Verifier마다 Arbiter가 `repair_claim`(Repair의 주장)과 함께 판정한다. test_wrong이면 기댓값 수정 승인 대기, spec_ambiguous면 검토 항목, rtl_wrong일 때만 INTERFACE_CHANGE로 멈춘다. 한 후보가 여러 승인 항목을 기다릴 수 있어(`pending_ids`) 모두 결정돼야 다시 돈다. 시험 2개 추가.
+  - **Python 조각의 메모리 읽기·쓰기:** `mem[addr]`로 한 워드씩 읽고 쓴다 (쓰기는 `seq`만, 워드 일부 선택이나 범위 선택은 오류). 설계 모델 실행기도 `memory`(inferred)를 실행한다 (워드는 쓴 적 없으면 0, 깊이 밖 쓰기는 무시). 깊이 식의 `**`를 상수로 계산. 실패했던 async_fifo Python 후보의 mem IR이 이제 검사와 방출을 통과한다. 안내서(`ir_guide.md`)에 규칙 추가, 픽스처 `py_ram`과 시험(번역, 실행, 오용 오류, 틀린 RTL 검출) 추가.
+  - **비교 드라이버:** IR이 없는 모듈이 있는 후보는 원본 테스트벤치 판정을 건너뛰고 `skipped`로 남긴다 (golden IR로 채운 결과가 그 후보의 통과로 보이던 문제).
+  - 이미 끝난 pilot 실행(cobs, async_fifo, CRC)은 새 경로로 다시 돌려야 결과가 바뀐다. 아직 다시 돌리지 않았다.
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 
@@ -201,7 +219,7 @@
 실측: 에이전트 실행이 첫 실행 20회(약 3시간), b60e 8회(하니스 결함으로 버림), 674c 5회(약 32분)로 계보 합계 33회였습니다. 사람 결정은 SPEC 고정 1, 기댓값 변경 4, 최종 승인 2, SPEC 변경 1, RTL Freeze 2였습니다. 기댓값 변경 4건과 b60e 실패는 모두 같은 원인(속성 표본에 리셋 없음)이었고, 하니스를 고친 뒤 첫 실행은 Repair와 사람 결정 없이 통과했습니다.
 
 - **검토 항목 조건**
-  1. Repair가 `interface_change`를 내도 사유가 테스트나 체커를 가리키면 Arbiter로 보냅니다. 지금은 Arbiter 없이 실패로 끝납니다 (b60e).
+  1. Repair가 `interface_change`를 내도 사유가 테스트나 체커를 가리키면 Arbiter로 보냅니다. 지금은 Arbiter 없이 실패로 끝납니다 (b60e). **완료 (2026-10-13):** 실패한 Verifier마다 Arbiter가 먼저 판정.
   2. 같은 테스트와 속성이 두 후보에서 같은 이유로 실패하면 한 항목으로 묶습니다 (E1/E2, E3/E4는 같은 결정을 두 번 받음).
   3. 기댓값 변경 항목은 결정 뒤 결정 결과(승인자, 시각)로 바꿔 보입니다. 지금은 "(사람 승인 대기)"로 남습니다.
   4. ASSUMPTION(실행마다 7~8개)은 L1, 타이밍, 리셋을 건드리는 것만 검토 항목으로 올리고 나머지는 Architect 기록으로 둡니다. MODEL_FAMILY는 역할 설정이 바뀔 때만 올립니다.

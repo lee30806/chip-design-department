@@ -146,3 +146,41 @@ def test_roles_language_per_candidate(tmp_path):
     r = roles.load(p)
     assert [r.lang_of(c) for c in range(3)] == ["sv", "py", "sv"]
     assert roles.load(ROOT / "config" / "roles.json").lang_of(1) == "sv"
+
+
+def test_memory_word_access():
+    """메모리는 mem[주소]로 한 워드씩: SV 배열 접근으로 옮기고, reads/writes에 메모리 이름이 들어간다. 실행기도 같은 의미."""
+    m = load(PY / "py_ram.ir.json")
+    assert not m.lower_errors and validate(m) == []
+    k = {b["id"]: b for b in m.blocks}
+    assert k["k_write"]["body"].splitlines()[1].strip() == "mem[waddr] <= word;" and "mem" in k["k_write"]["writes"]
+    assert "mem" in k["k_read"]["reads"]
+    sim = PySim(m)
+    sim.set({"rst": 1})
+    sim.step()
+    sim.set({"rst": 0, "we": 1, "waddr": 5, "wdata": 0x10})
+    sim.step()
+    sim.set({"we": 0, "re": 1, "raddr": 5})
+    sim.step()
+    assert sim.outputs()["rdata"] == (0x10 ^ 0x5A) + 1 and sim.outputs()["rhi"] == ((0x10 ^ 0x5A) + 1) >> 4
+    sim.set({"raddr": 6})   # 쓴 적 없는 워드는 0
+    sim.step()
+    assert sim.outputs()["rdata"] == 1
+
+
+@pytest.mark.parametrize("body,msg", [
+    ("if we:\n    mem[waddr][3] = 1", "워드의 일부"),
+    ("if we:\n    mem[3:0] = word", "한 워드씩"),
+    ("if we:\n    mem = word", "한 워드씩"),
+])
+def test_memory_misuse_is_reported(body, msg):
+    raw = _raw("py_ram")
+    _blk(raw, "k_write")["body"] = body
+    issues = validate(Module(raw))
+    assert issues and msg in issues[0].message
+
+
+def test_memory_write_only_in_seq():
+    raw = _raw("py_ram")
+    _blk(raw, "k_word")["body"] = "mem[waddr] = word"
+    assert any("seq 블록에서만" in i.message for i in validate(Module(raw)))

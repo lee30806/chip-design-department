@@ -7,10 +7,12 @@
 `pysim`이 같은 의미로 실행한다. 두 쪽은 이 파일의 폭 규칙(`Widths`)을 함께 쓴다.
 
 허용하는 것:
-- 문장: `x = e`, `x[i] = e`, `x[hi:lo] = e`, `x op= e`(+ - & | ^ << >>), `if/elif/else`, `for i in range(a[, b])`,
+- 문장: `x = e`, `x[i] = e`, `x[hi:lo] = e`, `mem[a] = e`(메모리, seq만), `x op= e`(+ - & | ^ << >>), `if/elif/else`, `for i in range(a[, b])`,
   `pass`, 설명 문자열. `comb`에서는 blocking(`=`), `seq`에서는 non-blocking(`<=`)으로 옮긴다.
 - 식: 신호, 상수(파라미터, enum 멤버), 정수, True/False, + - * & | ^ ~ << >>, 비교 하나(== != < <= > >=),
   and/or/not, `a if c else b`, `x[i]`, `x[hi:lo]`(SV처럼 양 끝 포함, 상수 범위).
+- 메모리(`memory` 블록의 `name`): `mem[주소]`로 한 워드를 읽고 쓴다 (`seq`에서 `mem[a] = e` → `mem[a] <= e;`).
+  워드의 일부는 워드를 신호에 받은 뒤 고른다. 주소가 깊이를 넘으면 쓰기는 무시하고 읽기는 0이다 (SV에서는 X).
 - 도움 함수: `cat(a, b, ...)` → `{a, b}`, `rep(n, x)` → `{n{x}}`, `u(w, v)` → 폭 w의 상수,
   `any_bits(x)` → `|x`, `all_bits(x)` → `&x`, `parity(x)` → `^x`.
 
@@ -76,8 +78,10 @@ def const_int(node: ast.expr, consts: dict[str, int] | None = None) -> int:
         return node.value
     if isinstance(node, ast.Name) and consts and node.id in consts:
         return consts[node.id]
-    if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult):
+    if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.Pow):
         a, b = const_int(node.left, consts), const_int(node.right, consts)
+        if isinstance(node.op, ast.Pow):   # 메모리 깊이 2**ADDR_WIDTH
+            return a ** b
         return a + b if isinstance(node.op, ast.Add) else a - b if isinstance(node.op, ast.Sub) else a * b
     raise FragError("상수 정수가 필요함", getattr(node, "lineno", None))
 
@@ -221,6 +225,8 @@ class Widths:
     const_sym: dict[str, SymW] = field(default_factory=dict)
     enums: dict[str, int] = field(default_factory=dict)     # enum 타입 → 폭
     params: set[str] = field(default_factory=set)
+    mems: dict[str, SymW] = field(default_factory=dict)     # 메모리 이름 → 워드 폭
+    depth: dict[str, int] = field(default_factory=dict)     # 메모리 이름 → 깊이
 
     def type_sym(self, t: str) -> SymW:
         t = t.strip()
@@ -259,6 +265,9 @@ class Widths:
         for b in raw.get("blocks", []):
             if b.get("kind") == "fsm":
                 w.sym[f'{b["state_name"]}_q'] = w_const(w.enums.get(b["state_type"], 32))
+            elif b.get("kind") == "memory":
+                w.mems[b["name"]] = w.type_sym(b["word_type"])
+                w.depth[b["name"]] = const_int(ast.parse(str(b["depth"]).strip(), mode="eval").body, w.consts)
         w.width = {n: w_val(s, w.consts) for n, s in w.sym.items()}
         return w
 
@@ -288,6 +297,8 @@ class Widths:
         if isinstance(n, ast.IfExp):
             return w_max(self.self_sym(n.body, loops), self.self_sym(n.orelse, loops))
         if isinstance(n, ast.Subscript):
+            if isinstance(n.value, ast.Name) and n.value.id in self.mems:
+                return self.mems[n.value.id]
             if isinstance(n.slice, ast.Slice):
                 hi, lo = (Lin.of(x, self.params, self.consts) for x in (n.slice.lower, n.slice.upper))
                 d = hi - lo
@@ -373,6 +384,8 @@ class _Tr:
         if isinstance(n, ast.Name):
             if n.id in HELPERS:
                 raise FragError(f"도움 함수 {n.id}는 호출로만 씀", ln)
+            if n.id in self.wd.mems:
+                raise FragError(f"메모리 {n.id}는 {n.id}[주소]로 한 워드씩 씀", ln)
             if n.id not in self.wd.consts and n.id not in self.loops:
                 if n.id not in self.wd.width:
                     raise FragError(f"모르는 이름 {n.id}", ln)
@@ -430,9 +443,16 @@ class _Tr:
 
     def subscript(self, n: ast.Subscript, target: bool = False) -> str:
         ln = n.lineno
-        if not isinstance(n.value, ast.Name) or n.value.id not in self.wd.width:
+        if isinstance(n.value, ast.Subscript) and isinstance(n.value.value, ast.Name) and n.value.value.id in self.wd.mems:
+            raise FragError("메모리 워드의 일부는 고를 수 없음. 워드를 신호에 받은 뒤 고름", ln)
+        if not isinstance(n.value, ast.Name) or (n.value.id not in self.wd.width and n.value.id not in self.wd.mems):
             raise FragError("비트 선택은 신호 이름에만", ln)
         base = n.value.id
+        if base in self.wd.mems:
+            if isinstance(n.slice, ast.Slice):
+                raise FragError("메모리는 mem[주소]로 한 워드씩", ln)
+            if target and self.kind != "seq":
+                raise FragError("메모리 쓰기는 seq 블록에서만", ln)
         if target:
             self.writes[base] = None
         else:
@@ -479,6 +499,8 @@ class _Tr:
     # -- 문장 --
     def target(self, t: ast.expr) -> tuple[str, SymW]:
         if isinstance(t, ast.Name):
+            if t.id in self.wd.mems:
+                raise FragError(f"메모리 {t.id}는 {t.id}[주소]로 한 워드씩 씀", t.lineno)
             if t.id in self.wd.consts or t.id in self.loops or t.id in HELPERS or t.id not in self.wd.width:
                 raise FragError(f"{t.id}에는 쓸 수 없음", t.lineno)
             self.writes[t.id] = None

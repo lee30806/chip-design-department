@@ -394,3 +394,48 @@ def test_repair_conflict_lead_requests_architect_revision(tmp_path):
     res = {p["c"]: p["decision"].get("result", p["decision"]["decision"]) for p in rep["pending"]}
     assert res == {0: "architect", 1: "superseded"} and approve.pending(run) == []
     assert "ARCHITECTURE_REVISED" in {r["code"] for r in rep["review"]}
+
+
+def _files_interface_change(tmp_path, verdict):
+    """두 Verifier 모두 틀린 속성으로 실패하고, Repair는 L1 변경을 요청함. Arbiter는 실패한 Verifier마다 판정."""
+    f = _files_wrong_v1(tmp_path)
+    good = f["Verifier"]
+    bad = f.pop("Verifier|verifier__v1")
+    v = {"verdict": verdict, "reqs": ["ADP-01"], "reason": "SPEC보다 엄격한 기댓값" if verdict == "test_wrong" else "SPEC대로임",
+         "proposal": "bogus 속성을 지운다"}
+    return {"Architect": f["Architect"], "Author": f["Author"], "Verifier|기댓값 수정": good, "Verifier": bad,
+            "Repair": {"out/patches.json": json.dumps([{"op": "request_interface_change", "reason": "리셋 포트를 읽어야 함"}])},
+            "Arbiter|__ic__": {"out/verdict.json": json.dumps(v)}}
+
+
+def test_interface_change_request_goes_to_arbiter_first(tmp_path):
+    from pipeline.scheduler import approve
+
+    files = _files_interface_change(tmp_path, "test_wrong")
+    run = tmp_path / "run"
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval", json.dumps(rep, ensure_ascii=False)[:3000]
+    items = approve.pending(run)
+    assert sorted((p["verifier"], p["c"]) for p in items) == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    assert all(p["repair_claim"]["reason"] == "리셋 포트를 읽어야 함" for p in items)
+    mm = json.loads((run / "work" / "arbiter__axis_adapter_core__c0__r0__ic__v0" / "mismatch.json").read_text())
+    assert mm["repair_claim"]["module"] == "axis_adapter_core"
+    assert "INTERFACE_CHANGE" not in {r["code"] for r in rep["review"]}
+    # 한 후보가 기다리는 항목 중 일부만 결정하면 아직 다시 돌리지 않는다
+    approve.decide(run, [p["id"] for p in items if p["verifier"] == 0 and p["c"] == 0], "approved", by="design-lead")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval"
+    assert _calls(tmp_path).count("Verifier|기댓값_수정") == 1
+    approve.decide(run, [p["id"] for p in approve.pending(run)], "approved", by="design-lead")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert _calls(tmp_path).count("Verifier|기댓값_수정") == 2
+
+
+def test_interface_change_stands_when_arbiter_says_rtl_wrong(tmp_path):
+    files = _files_interface_change(tmp_path, "rtl_wrong")
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "failed"
+    assert all(c["status"] == "interface_change" for c in rep["candidates"].values())
+    assert "INTERFACE_CHANGE" in {r["code"] for r in rep["review"]} and not rep["pending"]
+    assert _calls(tmp_path).count("Arbiter|__ic__") == 4   # 후보 둘 × 실패한 Verifier 둘

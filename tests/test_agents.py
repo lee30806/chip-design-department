@@ -51,8 +51,8 @@ def test_roles_warn_on_same_family():
     from pipeline.agents.roles import load
 
     roles = load()
-    assert roles.agents["author"].model == "gemini-3.8-flash-high" and roles.counts["author"] == 2
-    assert roles.warnings() and "Gemini" in roles.warnings()[0]
+    assert roles.agents["author"].model == "sonnet" and roles.counts["author"] == 2   # 2026-10-13 Claude Code CLI, 모든 역할 같은 모델
+    assert roles.warnings() and "Claude" in roles.warnings()[0]
 
 
 # ---------------------------------------------------------------- 도구 CLI (작업 디렉터리에 설치된 사본)

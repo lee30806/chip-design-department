@@ -9,6 +9,8 @@
              Repair들이 원인을 서로 넘기면(충돌) Design-lead 결정 대기: 고칠 모듈 지정(그 모듈의 Repair만, 형제 지목 금지)
              또는 Architect 재구성(충돌 경위로 모듈 트리를 다시 정하고 Author부터 다시. Block Top L1과 Verifier 테스트는 그대로)
              일부 Verifier에서만 실패 → Arbiter (rtl_wrong이면 Repair, test_wrong이면 사람 승인 대기, 모호하면 검토 항목)
+             Repair가 L1 변경을 요청하면 실패한 Verifier마다 Arbiter가 먼저 판정 (test_wrong이면 기댓값 수정 승인 대기,
+             모호하면 검토 항목, rtl_wrong이면 L1 변경 요청을 검토 항목으로 남기고 후보를 멈춤)
     → 묶음 선택(모든 모듈 통과, Repair 적음, lint 적음)과 Author 후보 간 차분 검사 → 통합(E1, E2) → 최종 보고서
 
 상태는 단계마다 `state.json`에 저장한다. 병렬로 도는 후보와 에이전트 작업은 각자 파일(`modules/`, `tasks/`)에 저장한다. 강제로 멈춘 뒤 같은 명령으로 다시 실행하면 끝난 단계와 끝난 에이전트 작업은
@@ -196,10 +198,14 @@ class Run:
             for m in p["mods"]:
                 key = f"{m}/c{p['c']}"
                 st = self.mod_state(key)
-                if st["status"] == "waiting_approval" and st.get("pending") == p["id"]:
-                    st["status"] = "running"
+                ids = st.get("pending_ids") or [st.get("pending")]
+                if st["status"] == "waiting_approval" and p["id"] in ids:
                     if p["decision"]["decision"] == "rejected":
                         st.setdefault("skip_arbiter", []).append(p["verifier"])
+                    decided = {q["id"] for q in self.state.get("pending", []) if q.get("decision")}
+                    if all(i in decided for i in ids):   # 기다리던 항목이 모두 결정되면 다시 돌린다
+                        st["status"] = "running"
+                        st.pop("pending_ids", None)
                     self.save_mod(key, st)
             p["applied"] = time.strftime("%Y-%m-%d %H:%M:%S")
             self.event("decision", f"{p['id']} {p['decision']['decision']} ({p['decision'].get('by')})")
@@ -531,6 +537,45 @@ class Run:
                 return x["module"]
         return mods[0]
 
+    def arbitrate(self, lib: dict, top: str, tbs: list[str], gname: str, mods: list[str], c: int, sts: dict,
+                  v: dict, tag: str, claim: dict | None = None) -> str:
+        """Verifier v의 실패를 Arbiter가 판정한다. test_wrong이면 기댓값 수정 승인 대기, spec_ambiguous면 검토 항목과 대기.
+        claim은 Repair의 L1 변경 요청 (RTL로는 기댓값을 맞출 수 없다는 주장)."""
+        rep = self.failure_report(lib, top, v)
+        mismatch = rep["report"] or rep
+        if claim:
+            mismatch = {**mismatch, "repair_claim": claim}
+        rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
+        name = f"arbiter/{gname}/c{c}/{tag}" + (f"/v{v['verifier']}" if claim else "") + (f"/t{rev}" if rev else "") + self.arch_tag()
+        ares = self.agent("arbiter", arbiter.make_task(name, self.spec_path, mismatch, Path(tbs[v["verifier"]])),
+                          arbiter.check(self.spec_path))
+        vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
+        verdict = vj["verdict"]
+        keys = {m: f"{m}/c{c}" for m in mods}
+
+        def save_all(**upd):
+            for m in mods:
+                sts[m].update(**upd)
+                self.save_mod(keys[m], sts[m])
+        for st in sts.values():
+            st.setdefault("arbiter", []).append(verdict)
+        if verdict == "test_wrong":
+            pid = self.add_pending({"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
+                                    "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
+                                    "first_failure": (rep["report"] or {}).get("first_failure"),
+                                    "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {})})
+            self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 {pid} (사람 승인 대기)"
+                        + (" (Repair의 L1 변경 요청을 Arbiter가 테스트 쪽 문제로 판정)" if claim else ""),
+                        str(ares.workdir), "arbiter")
+            # L1 변경 요청은 실패한 Verifier마다 판정하므로 한 후보가 항목 여럿을 기다릴 수 있다
+            ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
+            save_all(status="waiting_approval", pending=pid, pending_ids=ids + [pid])
+        elif verdict == "spec_ambiguous":
+            self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: Verifier 사이 해석이 갈림" if not claim else
+                        f"{gname} 후보 {c}: Repair의 L1 변경 요청에 대해 SPEC이 모호함", str(ares.workdir), "arbiter")
+            save_all(status="waiting_approval")
+        return verdict
+
     def candidate_loop(self, c: int, mods: list[str], tree: dict, tbs: list[str]) -> dict[str, dict]:
         """c번 후보 묶음: 모듈마다 c번 Author 후보를 모아 Block Top에서 함께 검증한다 (하위 모듈이 하나면 그 후보 하나).
         실패면 Arbiter/Repair. Repair는 원인 후보 모듈 하나에 넘기고, 그 Repair가 형제 모듈을 지목하면 그 모듈로 넘긴다."""
@@ -580,28 +625,8 @@ class Run:
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
             if failed and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip:
                 # 한 Verifier에서만 실패: 그 Verifier의 오류일 수 있으므로 Arbiter가 판정한다
-                v = failed[0]
-                rep = self.failure_report(lib, top_ir["module"], v)
-                rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
-                ares = self.agent("arbiter", arbiter.make_task(f"arbiter/{gname}/c{c}/r{total}" + (f"/t{rev}" if rev else "") + self.arch_tag(),
-                                                               self.spec_path, rep["report"] or rep, Path(tbs[v["verifier"]])),
-                                  arbiter.check(self.spec_path))
-                vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
-                verdict = vj["verdict"]
-                for st in sts.values():
-                    st.setdefault("arbiter", []).append(verdict)
-                if verdict == "test_wrong":
-                    pid = self.add_pending({"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
-                                            "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
-                                            "first_failure": (rep["report"] or {}).get("first_failure"),
-                                            "arbiter_dir": str(ares.workdir)})
-                    self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 {pid} (사람 승인 대기)",
-                                str(ares.workdir), "arbiter")
-                    save_all(status="waiting_approval", pending=pid)
-                    break
-                if verdict == "spec_ambiguous":
-                    self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: Verifier 사이 해석이 갈림", str(ares.workdir), "arbiter")
-                    save_all(status="waiting_approval")
+                verdict = self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, failed[0], f"r{total}")
+                if verdict in ("test_wrong", "spec_ambiguous"):
                     break
             fail_v = failed[0] if failed else {"findings": [], "out": ""}
             failure = self.failure_report(lib, top_ir["module"], fail_v) if failed else {"classified": vres["e1"], "report": None}
@@ -631,6 +656,13 @@ class Run:
                     break
                 patches = json.loads(Path(rres.outputs[repair.OUT]).read_text())
                 if (reason := repair.interface_change(patches)) is not None:
+                    # L1 변경 요청은 테스트 기댓값 탓일 수 있다: 실패한 Verifier마다 Arbiter가 먼저 판정한다 (P8 회고 1)
+                    claim = {"module": mod, "reason": reason}
+                    verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/ic", claim)
+                                for v in failed if v["verifier"] not in skip]
+                    if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
+                        stop = {}   # arbitrate가 승인 대기로 바꿔 둠
+                        break
                     self.review("INTERFACE_CHANGE", f"{mod} 후보 {c}: Repair가 L1 변경을 요청함: {reason}", rres.workdir, "repair")
                     stop = dict(status="interface_change")
                     break
@@ -662,7 +694,8 @@ class Run:
                 self.save_mod(keys[mod], st)
                 break
             if stop is not None:
-                save_all(**stop)
+                if stop:
+                    save_all(**stop)
                 break
         return sts
 

@@ -54,6 +54,7 @@ body와 cond를 Python 문법으로 쓴다. 실행되는 Python이 아니라 사
 - `reads`와 `writes`는 툴이 계산해 채운다. 쓰지 않아도 된다.
 - 문장: `x = e`, `x[i] = e`, `x[hi:lo] = e`, `x += e`(+ - & | ^ << >>), `if/elif/else`, `for i in range(N)`, `pass`.
 - 식: `+ - * & | ^ ~ << >>`, 비교 하나(`a == b`, 사슬 비교 금지), `and or not`, `a if c else b`, `x[i]`, `x[hi:lo]`(SV처럼 양 끝 포함).
+- 메모리(`memory` 블록의 `name`): `mem[addr]`로 한 워드씩 읽고 쓴다. 쓰기는 `seq`에서만 (`if wr_en:` / `    mem[wr_addr] = wr_word`). 워드의 일부는 워드를 신호에 받은 뒤 고른다.
 - 도움 함수: `cat(a, b)`(연결), `rep(n, x)`(반복), `u(w, v)`(폭 w 상수), `any_bits(x)`, `all_bits(x)`, `parity(x)`.
 - 폭: 툴이 SV 규칙대로 계산하고 확장과 절단을 캐스트로 적는다. 대입 대상보다 넓은 결과는 잘린다. 정수 리터럴은 식의 다른 피연산자 폭을 따른다 (`cnt == 0`, `cnt + 1`). 연결 안의 상수는 `u(4, 9)`처럼 폭을 쓴다.
 - 쓸 수 없는 것: 함수 정의, 리스트, 문자열, `while`, 나눗셈, 사슬 비교, 부호 있는 값, struct 타입.

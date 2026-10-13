@@ -10,7 +10,8 @@ Python 조각을 SV와 같은 의미로 실행한다. 판정은 늘 방출한 RT
   리셋값을 넣는다. 비동기 리셋은 리셋이 걸린 동안 바로 리셋값을 유지한다.
 - 조합 논리는 값이 더 바뀌지 않을 때까지 되풀이해 계산한다 (조합 루프는 Validator V6이 막음).
 
-지원 범위: 도메인 하나, `comb`/`seq`/`fsm` 블록, 인스턴스와 연결(계층). `memory`, `cdc_sync`, struct, signed는 아직 없다.
+지원 범위: 도메인 하나, `comb`/`seq`/`fsm`/`memory`(inferred) 블록, 인스턴스와 연결(계층). `cdc_sync`, struct, signed는 아직 없다.
+메모리 워드는 `<이름>[<주소>]` 키로 값 표에 둔다 (쓴 적 없는 워드는 0).
 조각이 SV인 모듈(`lang: sv`)은 동작 블록이 없을 때만(구조만 있는 Block Top) 실행할 수 있다.
 """
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 import ast
 
 from pipeline.ir.model import Module
-from pipeline.ir.pyfrag import FragError, Widths, mask, operand_w, parse_body, parse_expr, parse_literal, type_width
+from pipeline.ir.pyfrag import FragError, Widths, mask, operand_w, parse_body, parse_expr, parse_literal, type_width, w_val
 
 
 class SimError(Exception):
@@ -33,7 +34,7 @@ class _Scope:
         if m.lang != "py" and any(b["kind"] != "memory" for b in m.blocks):
             raise SimError(f"{m.name}: SV 조각 모듈은 실행할 수 없음 (lang: py만)")
         for b in m.blocks:
-            if b["kind"] not in ("comb", "seq", "fsm"):
+            if b["kind"] not in ("comb", "seq", "fsm", "memory"):
                 raise SimError(f'{m.name}: 실행기가 아직 모르는 블록 {b["kind"]}')
         try:
             self.wd = Widths.of(m.source_raw, params)
@@ -50,6 +51,8 @@ class _Scope:
             sb = src.get(b["id"], b)
             if b["kind"] == "comb":
                 self.combs.append(parse_body(sb["body"]))
+            elif b["kind"] == "memory":
+                continue
             elif b["kind"] == "seq":
                 resets = [(n, parse_literal(storage[n].reset, self.width[n], self.consts))
                           for n in b["writes"] if storage[n].reset is not None]
@@ -69,6 +72,16 @@ class _Scope:
 
     def _ci(self, n: ast.expr, env: dict[str, int]) -> int:
         return self.wd.const(n, env)
+
+    def wid(self, n: str) -> int:
+        """신호 폭. 메모리 워드(`mem[3]`)는 워드 폭."""
+        return self.width[n] if n in self.width else w_val(self.wd.mems[n.split("[")[0]], self.consts)
+
+    def word(self, n: ast.Subscript, env: dict[str, int]) -> str | None:
+        """메모리 워드 키 (`mem[3]`). 주소가 깊이를 넘으면 None."""
+        name = n.value.id
+        i = self.ev(n.slice, env, operand_w(self._w(n.slice, env)))
+        return f"{name}[{i}]" if i < self.wd.depth[name] else None
 
     def _get(self, name: str, env: dict[str, int]) -> int:
         if name in env:
@@ -114,6 +127,9 @@ class _Scope:
         if isinstance(n, ast.IfExp):
             return self.ev(n.body if self.truth(n.test, env) else n.orelse, env, ctx)
         if isinstance(n, ast.Subscript):
+            if n.value.id in self.wd.mems:
+                k = self.word(n, env)
+                return self.sim.val.get(self.prefix + k, 0) & m if k else 0
             base = self._get(n.value.id, env)
             if isinstance(n.slice, ast.Slice):
                 hi, lo = self._ci(n.slice.lower, env), self._ci(n.slice.upper, env)
@@ -175,6 +191,13 @@ class _Scope:
             write(t.id, lambda old: v)
             return
         name = t.value.id
+        if name in self.wd.mems:
+            k = self.word(t, env)
+            w = self.wid(name + "[0]")
+            v = self.ev(val, env, max(w, self._w(val, env))) & mask(w)
+            if k:   # 깊이를 넘는 주소에 쓰기는 무시 (SV와 같음)
+                write(k, lambda old: v)
+            return
         if isinstance(t.slice, ast.Slice):
             hi, lo = self._ci(t.slice.lower, env), self._ci(t.slice.upper, env)
         else:
@@ -188,7 +211,7 @@ class _Scope:
 
         def write(n, f):
             k = self.prefix + n
-            val[k] = f(val[k]) & mask(self.width[n])
+            val[k] = f(val.get(k, 0)) & mask(self.wid(n))
         for body in self.combs:
             self.run(body, {}, write)
 
@@ -202,7 +225,7 @@ class _Scope:
 
             def write(n, f):
                 k = self.prefix + n
-                pending[k] = f(pending.get(k, val[k])) & mask(self.width[n])
+                pending[k] = f(pending.get(k, val.get(k, 0))) & mask(self.wid(n))
             self.run(body, {}, write)
         for dom, q, reset, trs in self.fsms:
             k = self.prefix + q

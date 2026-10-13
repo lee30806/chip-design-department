@@ -22,7 +22,7 @@ def _emit(tmp_path, m, text=None, lib=None):
     return f
 
 
-@pytest.mark.parametrize("name", ["pkt_parser", "py_ops"])
+@pytest.mark.parametrize("name", ["pkt_parser", "py_ops", "py_ram"])
 def test_translation_matches_model(tmp_path, name):
     m = load(PY / f"{name}.ir.json")
     res = check(name, {name: m}, [_emit(tmp_path, m)], tmp_path / "b", cycles=1500)
@@ -71,3 +71,12 @@ def test_parameterized_module_with_overridden_params(tmp_path):
     (tmp_path / "g").mkdir()
     files[1] = _emit(tmp_path / "g", golden)   # SV 조각으로 쓴 원본
     assert check("wrap", lib, files, tmp_path / "b2", cycles=1500)["ok"]
+
+
+def test_wrong_memory_rtl_is_caught(tmp_path):
+    m = load(PY / "py_ram.ir.json")
+    text = emit(m).text
+    assert "mem[waddr] <= word;" in text
+    res = check("py_ram", {"py_ram": m}, [_emit(tmp_path, m, text.replace("mem[waddr] <= word;", "mem[waddr] <= wdata;"))],
+                tmp_path / "b", cycles=1500)
+    assert not res["ok"] and res["mismatch"]["output"] in ("rdata", "rhi")
