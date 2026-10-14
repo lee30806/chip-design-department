@@ -119,3 +119,11 @@ def test_valid_ready_checker_ignores_reset():
     step(1, 0, 7)
     step(0, 0, 0)          # 리셋 밖: 위반
     assert [x["cycle"] for x in c.violations] == [4]
+
+
+def test_requirement_ids_accept_lists():
+    """cover_protocol, add_property의 req는 ID 하나나 목록 (P8a async_fifo: 목록을 넘겨 TB 실행 오류)."""
+    pytest.importorskip("cocotb")
+    from pipeline.tb.lib import req_ids
+
+    assert req_ids({"A-01"}, "A-02", ["A-03", "A-01"], ("A-04",)) == ["A-01", "A-02", "A-03", "A-04"]

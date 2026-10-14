@@ -82,9 +82,10 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
       {item.kind === "repair_conflict" && (
         <div className="small stack">
           <div>후보 묶음 c{String(d.c)} · 서로 넘긴 순서 {((d.chain as string[]) ?? []).join(" → ")}</div>
-          <div><b>첫 실패</b> {String((d.first_failure as Record<string, unknown>)?.reason ?? "")}</div>
-          {((d.claims as { module: string; suspects: string; reason: string }[]) ?? []).map((c, i) => (
-            <div key={i}><b>{c.module} → {c.suspects}</b> {c.reason}</div>
+          <div><b>첫 실패</b> {String((d.first_failure as Record<string, unknown>)?.reason
+            ?? (d.first_failure as Record<string, unknown>)?.message ?? "")}</div>
+          {((d.claims as { module: string; suspects?: string | null; reason: string }[]) ?? []).map((c, i) => (
+            <div key={i}><b>{c.module}{c.suspects ? ` → ${c.suspects}` : ""}</b> {c.reason}</div>
           ))}
         </div>
       )}

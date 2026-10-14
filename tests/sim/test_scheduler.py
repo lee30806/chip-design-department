@@ -500,3 +500,48 @@ def test_repeated_failure_rtl_wrong_keeps_repairing(tmp_path):
     assert rep["status"] == "failed"
     assert all("Repair 상한" in (c["reason"] or "") for c in rep["candidates"].values())
     assert _calls(tmp_path).count("Arbiter|__repeat__") == 4   # 같은 실패는 한 번만 판정
+
+
+def test_lead_pinned_repair_that_regresses_is_rolled_back(tmp_path):
+    """lead가 지정한 모듈의 Repair 뒤 실패한 테스트가 늘면 그 Repair를 되돌리고 lead에게 다시 묻는다.
+    테스트벤치에 처음부터 통과하는 테스트(리셋 뒤 조용함)를 더하고, 지정 Repair가 그 테스트까지 깨뜨리게 한다."""
+    from pipeline.scheduler import approve
+
+    files = _files_conflict(tmp_path)
+    tb = Path(files["Verifier"]["out/test_axis_adapter.py"][1:])
+    quiet = tmp_path / "tb_quiet.py"
+    quiet.write_text(tb.read_text() + '''
+
+@cocotb.test()
+async def quiet_after_reset(dut):
+    h = make(dut, Model(), name="quiet_after_reset")
+    await h.start()
+    await h.drain(extra=20)
+    h.finish()
+''')
+    files["Verifier"] = {"out/test_axis_adapter.py": f"@{quiet}"}
+    files["Repair|lead 지정"] = {"out/patches.json": json.dumps([
+        {"op": "set", "target": "blocks/k_ctl", "field": "body", "value": "m_axis_tvalid <= 1'b1;\ns_axis_tvalid_reg <= 1'b0;"},
+        {"op": "set", "target": "blocks/k_ctl", "field": "reads", "value": []}])}
+    items = _conflicts(tmp_path, files)
+    run = tmp_path / "run"
+    before = json.loads((run / "modules" / "axis_adapter_core__c0.json").read_text())["ir"]
+    for p in items.values():
+        approve.decide(run, [p["id"]], "repair", by="lead", module="axis_adapter_core")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval", json.dumps(rep, ensure_ascii=False)[:3000]
+    again = [p for p in approve.pending(run) if p.get("regressed")]
+    assert sorted(p["c"] for p in again) == [0, 1] and all(p["chain"] == ["axis_adapter_core"] for p in again)
+    assert "LEAD_REPAIR_REGRESSED" in {r["code"] for r in rep["review"]}
+    st = json.loads((run / "modules" / "axis_adapter_core__c0.json").read_text())
+    assert st["ir"] == before and "lead_repair" not in st   # 되돌리고 지정도 풀림
+
+
+def test_failure_without_harness_result_still_reports_test_and_message(tmp_path):
+    """테스트 안의 assert로 실패해 하니스 결과 파일이 없어도, Repair와 lead가 볼 첫 실패(테스트와 메시지)는 남긴다."""
+    run = Run.__new__(Run)
+    (tmp_path / "out").mkdir()
+    v = {"out": str(tmp_path / "out"), "findings": [{"test": "sc02_reset", "rule": "AssertionError", "message": "tlast too early"}]}
+    rep = run.failure_report({}, "t", v)
+    assert rep["report"]["first_failure"] == {"check": "assertion", "test": "sc02_reset", "message": "tlast too early"}
+    assert rep["classified"][0]["type"] == "sim_mismatch"

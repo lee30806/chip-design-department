@@ -159,3 +159,23 @@ def test_claude_code_session_limit_is_quota(tmp_path):
     """Claude Code의 세션 한도 안내는 Repair 실패가 아니라 사용량 한도로 멈춰야 한다 (P8a async_fifo)."""
     with pytest.raises(QuotaExceeded):
         run_task(_cfg("quota_cc"), _task(), tmp_path / "w", retries=1)
+
+
+def test_architect_rejects_packed_word_between_modules():
+    """하위 모듈끼리 여러 필드를 묶은 워드를 넘기면 거부한다. 자식 파라미터 하나에 합을 바인딩해 숨겨도 잡는다 (P8a async_fifo)."""
+    from pipeline.agents.architect import packed_ports
+
+    def mod(name, port, typ, d, params=()):
+        return {"module": name, "role": "module", "params": [{"name": p, "type": "int", "default": "8"} for p in params],
+                "ports": [{"name": port, "dir": d, "type": typ, "domain": "sys"}]}
+    top = {"module": "t", "params": [{"name": "DW", "type": "int", "default": "8"}, {"name": "IW", "type": "int", "default": "4"}],
+           "instances": [{"name": "u_w", "module": "w", "params": {"DW": "DW", "IW": "IW"}},
+                         {"name": "u_r", "module": "r", "params": {"WW": "DW+IW+1"}}],
+           "connections": [{"id": "c", "from": "u_w.word", "to": "u_r.word"}]}
+    kids = {"w": mod("w", "word", "logic [DW+IW:0]", "output", ("DW", "IW")), "r": mod("r", "word", "logic [WW-1:0]", "input", ("WW",))}
+    errs = packed_ports(top, kids)
+    assert len(errs) == 2 and all("[묶음 워드]" in e for e in errs)
+    kids["w"]["ports"][0]["type"] = kids["r"]["ports"][0]["type"] = "logic [DW-1:0]"   # 필드 하나
+    top["instances"][1]["params"] = {"WW": "DW"}
+    kids["r"]["ports"][0]["type"] = "logic [WW-1:0]"
+    assert packed_ports(top, kids) == []

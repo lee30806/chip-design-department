@@ -8,6 +8,7 @@
              (상한, IR 해시 진동 감지. Repair가 형제 모듈을 지목하면 그 모듈의 Repair로 넘김)
              Repair들이 원인을 서로 넘기면(충돌) Design-lead 결정 대기: 고칠 모듈 지정(그 모듈의 Repair만, 형제 지목 금지)
              또는 Architect 재구성(충돌 경위로 모듈 트리를 다시 정하고 Author부터 다시. Block Top L1과 Verifier 테스트는 그대로)
+             lead가 지정한 Repair 뒤 실패한 테스트가 늘면 그 Repair를 되돌리고 lead 결정을 다시 받음
              일부 Verifier에서만 실패 → Arbiter (rtl_wrong이면 Repair, test_wrong이면 사람 승인 대기, 모호하면 검토 항목)
              같은 테스트가 Repair 두 번 뒤에도 같은 이유로 실패하면 상한 전에 실패한 Verifier마다 Arbiter가 판정
              Repair가 L1 변경을 요청하면 실패한 Verifier마다 Arbiter가 먼저 판정 (test_wrong이면 기댓값 수정 승인 대기,
@@ -501,7 +502,12 @@ class Run:
         out = Path(v["out"])
         test = self.result_name(out, [f["test"] for f in v["findings"] if f["test"]])
         if test is None:
-            return {"classified": [{"type": _sim_type(f["rule"]), **f} for f in v["findings"]], "report": None}
+            # 하니스 결과가 없는 실패 (테스트 안의 assert 등): 트레이스는 없지만 실패한 테스트와 메시지는 넘긴다
+            # (없으면 Repair와 lead가 첫 불일치를 모른 채 판단함. P8a async_fifo E1)
+            named = [f for f in v["findings"] if f["test"]]
+            report = {"first_failure": {"check": "assertion", "test": named[0]["test"], "message": named[0]["message"]},
+                      "note": "하니스 결과 파일이 없는 실패 (테스트 안의 assert). 트레이스 없음"} if named else None
+            return {"classified": [{"type": _sim_type(f["rule"]), **f} for f in v["findings"]], "report": report}
         mods = {n: Module(r) for n, r in lib.items()}
         rep = mismatch_report(mods[top], json.loads((out / f"{test}.result.json").read_text()),
                               json.loads((out / f"{test}.trace.json").read_text()),
@@ -634,6 +640,27 @@ class Run:
                 save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]])
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
+            nfail = sum(len({f["test"] for f in x["findings"] if f["test"]}) or 1 for x in failed)
+            # lead가 지정한 Repair 뒤 실패한 테스트가 늘면 그 Repair를 되돌리고 lead에게 다시 묻는다 (P8a async_fifo)
+            undo = next(((m, sts[m]["undo"]) for m in mods if sts[m].get("undo")), None)
+            for m in mods:
+                sts[m].pop("undo", None)
+            if undo and nfail > undo[1]["fail_count"]:
+                m, u = undo
+                sts[m]["ir"], sts[m]["history"] = u["ir"], sts[m]["history"][:u["hist_len"]]
+                for x in mods:
+                    sts[x].pop("lead_repair", None)
+                rp = (self.failure_report(lib, top_ir["module"], failed[0]).get("report") or {}) if failed else {}
+                msg = f"lead가 지정한 {m}의 Repair 뒤 실패한 테스트가 {u['fail_count']}개 → {nfail}개로 늘어 그 Repair를 되돌림"
+                pid = self.add_pending({"kind": "repair_conflict", "group": gname, "mods": mods, "c": c, "chain": [m],
+                                        "claims": [{"module": m, "suspects": None, "reason": msg, "workdir": u["workdir"]}],
+                                        "reqs": [r] if (r := (rp.get("first_failure") or {}).get("req")) else [],
+                                        "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag,
+                                        "regressed": True})
+                self.review("LEAD_REPAIR_REGRESSED", f"{gname} 후보 {c}: {msg}. Design-lead 결정 {pid} 대기 "
+                            "(다른 모듈 지정 또는 Architect 재구성)", u["workdir"], "repair")
+                save_all(status="waiting_approval", pending=pid)
+                break
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
             single = bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
             if single:
@@ -715,6 +742,8 @@ class Run:
                     self.review("OSCILLATION", f"{mod} 후보 {c}: 같은 IR로 돌아옴 (진동). 사람에게 넘김", rres.workdir)
                     stop = dict(status="failed", reason=f"{mod}: 진동")
                     break
+                if pin:   # 다음 검증에서 실패가 늘면 되돌린다
+                    st["undo"] = {"ir": st["ir"], "hist_len": len(st["history"]), "fail_count": nfail, "workdir": str(rres.workdir)}
                 st["hashes"].append(h)
                 st["history"] += patches
                 st["ir"] = new.ir

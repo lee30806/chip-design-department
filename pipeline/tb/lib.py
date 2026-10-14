@@ -38,6 +38,14 @@ def _handle(dut, name: str):
     return dut
 
 
+def req_ids(*groups) -> list[str]:
+    """요구사항 ID 모음. 하나씩은 ID 하나(str)나 목록이다 (Verifier가 목록을 넘기면 집합에 넣을 수 없어 TB 오류가 났음)."""
+    out: set[str] = set()
+    for g in groups:
+        out |= {g} if isinstance(g, str) else set(g)
+    return sorted(out)
+
+
 def _int(h) -> int | None:
     try:
         return int(h.value)
@@ -297,11 +305,11 @@ class Harness:
     def set_ready(self, bundle: str, pattern) -> None:
         self.drivers[bundle].pattern = list(pattern)
 
-    def cover_protocol(self, bundle: str, req: str) -> None:
-        """T2 체커가 이 번들의 전송을 한 번 이상 검사했으면 req를 실행된 요구사항으로 센다 (T5)."""
+    def cover_protocol(self, bundle: str, req: str | list[str]) -> None:
+        """T2 체커가 이 번들의 전송을 한 번 이상 검사했으면 req(ID 하나나 목록)를 실행된 요구사항으로 센다 (T5)."""
         self.protocol_reqs[bundle] = req
 
-    def add_property(self, name: str, domain: str, fn, req: str | None = None) -> None:
+    def add_property(self, name: str, domain: str, fn, req: str | list[str] | None = None) -> None:
         """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (그 도메인의 리셋 포트 포함, 클럭 제외)."""
         self.properties.append((name, domain, fn, req))
 
@@ -333,9 +341,8 @@ class Harness:
         if out:
             Path(out).mkdir(parents=True, exist_ok=True)
             # 실행된 요구사항: 기댓값이 맞은 것과, 한 번이라도 평가된 속성의 요구사항 (T5)
-            reqs = (self.sb.reqs | {req for _, _, _, req in self.properties if req and self.prop_evals}
-                    | {r for c in self.checkers if (r := self.protocol_reqs.get(c.name)) and c.handshakes})
-            reqs = sorted(reqs)
+            reqs = req_ids(self.sb.reqs, *[req for _, _, _, req in self.properties if req and self.prop_evals],
+                           *[r for c in self.checkers if (r := self.protocol_reqs.get(c.name)) and c.handshakes])
             rec = {"test": self.name, "scoreboard": self.sb.first, "matched": self.sb.matched, "reqs": reqs,
                    "outputs": self.sb.seen,
                    "protocol": [v for c in self.checkers for v in c.violations], "properties": self.prop_fail}

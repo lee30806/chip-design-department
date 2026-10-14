@@ -5,11 +5,12 @@
 재구성(make_revise_task): 형제 모듈의 Repair들이 실패 원인을 서로 넘겨 Design-lead가 근본 원인 수정을 요청하면, 지금 모듈 트리와
 충돌 경위(`conflict.json`)를 받아 모듈 경계와 하위 모듈 L1을 다시 정한다. Block Top의 L1은 그대로라서 Verifier 테스트는 그대로 쓴다.
 종료 게이트: Block Top의 L1이 바뀌지 않음, Block Top이 V1~V10 통과(하위 모듈 L1을 라이브러리로), 하위 모듈 L1이 V1~V3 통과,
-             가정 목록이 있음.
+             가정 목록이 있음, 하위 모듈끼리 잇는 포트가 여러 필드를 묶은 워드가 아님(폭이 파라미터 둘 이상의 합).
 """
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from pipeline.agents.task import ROOT, Task
@@ -46,6 +47,8 @@ TASK = """\
 ## 규칙
 - `out/` 밖의 파일은 만들거나 고치지 않는다.
 - 클럭과 리셋은 `domain_map`으로만 연결한다.
+- 하위 모듈 사이에서 여러 필드(data, last, id 등)를 한 워드로 묶어 넘기지 않는다. 묶는 모듈과 푸는 모듈이 비트 순서를 따로 정하면
+  어긋난다. 필드마다 포트를 둔다. 메모리에 워드로 저장해야 하면 묶기와 풀기를 모두 그 메모리를 가진 모듈 안에 둔다.
 """
 
 
@@ -92,6 +95,37 @@ def read_tree(work: Path, top: str) -> tuple[dict, dict[str, dict], list[str]]:
     return top_ir, irs, assumptions
 
 
+def packed_ports(top_ir: dict, children: dict[str, dict]) -> list[str]:
+    """하위 모듈끼리 잇는 포트 중 폭이 자식 파라미터 둘 이상의 합인 것 (여러 필드를 한 워드로 묶은 것으로 봄).
+    P8a async_fifo: 묶는 모듈과 푸는 모듈이 비트 순서를 따로 정해 한 비트씩 어긋났다."""
+    insts = {i["name"]: i["module"] for i in top_ir.get("instances", [])}
+    binds = {i["name"]: i.get("params", {}) for i in top_ir.get("instances", [])}
+    top_params = {p["name"] for p in top_ir.get("params", [])}
+    out = []
+    for c in top_ir.get("connections", []):
+        ends = [c.get(k, "").split(".", 1) for k in ("from", "to")]
+        if any(len(e) != 2 or e[0] == "self" or e[0] not in insts for e in ends):
+            continue
+        for owner, port in ends:
+            child = children.get(insts[owner]) or {}
+            params = {p["name"] for p in child.get("params", [])}
+            for b in child.get("ports", []):
+                for sig in b.get("signals", [b]):
+                    if port not in (b.get("bundle"), sig.get("name")):
+                        continue
+                    m = re.search(r"\[(.+):", sig.get("type", ""))
+                    if not m:
+                        continue
+                    # 자식 파라미터 하나(WORD_WIDTH)에 합을 바인딩해 숨긴 경우도 보도록 인스턴스 바인딩으로 바꿔 본다
+                    width = re.sub(r"[A-Za-z_]\w*", lambda x: f"({binds[owner][x.group(0)]})"
+                                   if x.group(0) in params and x.group(0) in binds[owner] else x.group(0), m.group(1))
+                    used = set(re.findall(r"[A-Za-z_]\w*", width)) & (params | top_params) if "+" in width else set()
+                    if len(used) >= 2:
+                        out.append(f'[묶음 워드] {owner}.{sig["name"]} ({sig["type"]}): 하위 모듈 사이에서 여러 필드를 한 워드로 '
+                                   "묶어 넘기지 않는다. 필드마다 포트를 두거나, 묶기와 풀기를 같은 모듈(메모리를 가진 모듈) 안에 둔다")
+    return sorted(set(out))
+
+
 def check(block_top_l1: dict):
     top = block_top_l1["module"]
 
@@ -113,6 +147,7 @@ def check(block_top_l1: dict):
         errs += [f"{top}: {i}" for i in errors(validate(Module(top_ir), lib))]
         used = {i["module"] for i in top_ir.get("instances", [])}
         errs += [f"쓰이지 않는 하위 모듈: {n}" for n in children if n not in used]
+        errs += packed_ports(top_ir, children)
         if not assumptions:
             errs.append("가정 목록이 비어 있음 (SPEC이 정하지 않아 정한 것을 적음)")
         return errs

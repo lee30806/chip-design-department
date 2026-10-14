@@ -115,6 +115,30 @@
   - 그런데도 두 후보 모두 원본 테스트벤치 20/20 통과 (원본 TB는 pause와 상태 출력을 깊게 보지 않음).
   - 다음 후보 작업: P8 회고 반복 상한 1(같은 테스트가 Repair 두 번 연속 실패하면 상한 전에 Arbiter를 부름)을 구현하면 이런 경우가 Arbiter와 사람에게 간다. SV와 Python 후보는 같은 이유로 실패해 언어 차이는 아님.
 - **사용자 지시(10월 14일 아침): 커밋/푸시 후 제안안 진행.** 같은 실패(실패한 Verifier와 테스트 이름이 같음)가 Repair 두 번 뒤에도 이어지면 상한 전에 실패한 Verifier마다 Arbiter가 `repeated_failure`와 함께 판정한다. test_wrong이면 기댓값 수정 승인 대기, 모호하면 검토 항목, rtl_wrong이면 Repair를 이어 가고 같은 실패는 다시 판정하지 않는다. 한 Verifier만 실패한 경우는 이미 매번 Arbiter를 거치므로 제외. 시험 2개 추가.
+- 커밋 2c0e592 뒤 async_fifo를 처음부터 다시 실행 (이전 결과는 `.r3`에 보관).
+- **07:23 async_fifo 결과: 승인 대기.** 후보 0(SV)은 Repair 충돌 E1 (afifo_mem → afifo_rd → afifo_wr → afifo_rd, 실패 테스트 sc02_s_reset_mid_frame: s 리셋이 프레임 도중에 걸리면 tlast가 일찍 나옴). 후보 1(Python)은 afifo_rd가 같은 IR로 돌아와 진동으로 실패. Repair 2회라 반복 실패 Arbiter 기준에는 닿지 않음.
+  - 사용자(Design-lead) 결정: afifo_rd에서 Repair (sjlee 기록). mem, wr 두 Repair가 AFIFO-05 종료 로직은 rd에 있다고 지목. 이어서 실행.
+  - 관찰: rd의 Repair가 "failure.json에 report가 없어 불일치 위치를 특정하지 못함"이라고 함. 실패한 테스트의 불일치 리포트(트레이스)가 Repair에 전달되지 않은 경우가 있음. 조사 거리.
+- **07:27 반복 실패 Arbiter가 처음 동작.** lead가 정한 afifo_rd Repair 전에, 같은 테스트(sc02_s_reset_mid_frame)가 Repair 2번 뒤에도 실패해 Arbiter가 판정: Verifier 0 test_wrong (E2). 테스트가 리셋 해제 뒤에도 보내던 프레임의 나머지를 계속 보내면서 "마지막 전에는 tlast 없음"을 단언해 AFIFO-05에 없는 것을 요구. 다른 테스트의 `set_ready`에 list를 넘기는 TypeError도 함께 고치도록 함.
+  - 사용자가 E2를 승인했고 sjlee로 기록. 이어서 실행.
+- **07:35 async_fifo 결과: 실패.** E2 반영 뒤 후보 0의 afifo_rd Repair(lead 지정) 3번이 상한 5회에 걸림. 후보 1(Python)은 앞서 진동으로 실패.
+  - 원인 분석: E2 직전(r6) 첫 불일치가 `tid` 5 → 2, `tlast` 0 → 1로 한 비트 어긋남. afifo_wr이 데이터 워드를 묶는 비트 순서와 afifo_rd가 푸는 순서가 다르다 (모듈 사이 워드 배치 계약 불일치). Architect가 L1에 워드 폭만 정하고 필드 배치는 정하지 않아 두 Author가 각자 정함.
+  - lead 지정 afifo_rd Repair는 이걸 바로잡지 못하고 RTL을 더 망가뜨림 (r7부터 sc01_single_frame에서 데이터 누락). Repair 충돌 E1의 바른 결정은 Architect 재구성(워드 배치를 L1 계약으로 정함)이었을 가능성이 높다. 사람 결정 시 첫 불일치 리포트가 없어(`first_failure` null) 판단 근거가 부족했다.
+  - 개선 후보: (1) 모듈 사이 묶음 워드는 Architect가 필드 배치(struct나 비트 범위)를 L1에 정한다. (2) Repair 충돌 항목에 첫 불일치 리포트를 꼭 붙인다 (이번에 null). (3) lead 지정 Repair 뒤 실패가 늘면 되돌린다.
+- **사용자 지시(10월 14일 오전): 개선 후보 세 가지 진행.**
+  1. **묶음 워드 금지 (Architect):** 하위 모듈 사이에서 여러 필드를 한 워드로 묶어 넘기지 않는다는 규칙을 Architect 과제에 넣고, 게이트에서 하위 모듈끼리 잇는 포트의 폭이 파라미터 둘 이상의 합이면 거부한다 (인스턴스 바인딩으로 숨긴 `WORD_WIDTH`도 잡음). 지난 실행 트리에 적용해 보니 async_fifo r2, r3, r4만 걸리고 r1(메모리 모듈 안에서 묶고 풂)과 다른 블록은 통과.
+  2. **첫 실패 리포트:** 하니스 결과가 없는 실패(테스트 안의 assert)도 실패한 테스트와 메시지를 리포트에 넣는다. Repair, Arbiter, Repair 충돌 항목이 첫 실패를 모른 채 판단하던 문제. 게이트웨이 화면도 메시지를 보여 줌.
+  3. **lead 지정 Repair 되돌리기:** lead가 지정한 모듈의 Repair 뒤 실패한 테스트 수가 늘면 그 Repair를 되돌리고(IR과 patch 기록), 지정을 풀고, Repair 충돌 항목을 다시 올린다 (LEAD_REPAIR_REGRESSED). lead는 다른 모듈이나 Architect 재구성을 고를 수 있다.
+  - 시험 3개 추가 (묶음 워드 검사, assert 실패 리포트, 되돌리기).
+  - 전체 시험 271 통과, 1 실패(`test_http_api`: 부하 중 실행이 stopped로 끝남, 따로 돌리면 통과). async_fifo를 처음부터 다시 실행 (이전 결과 `.r4`).
+- **08:28 async_fifo 재실행 결과: TB 실행 오류로 실패.** 새 Architect 트리(afifo_wr, afifo_rd, afifo_mem)는 묶음 워드 검사를 통과함. 실패 원인은 하니스: Verifier가 `cover_protocol`에 요구사항 ID 목록을 넘겨 `finish()`가 `unhashable type: 'list'`로 죽음 (앞서 Arbiter가 말한 TypeError와 같은 것). 요구사항은 ID 하나나 목록을 받도록 고침 (`req_ids`), 시험 추가. 후보 상태를 running으로 되돌려 이어서 실행 (손대기 전 `.bak-tberr`).
+- **08:32 async_fifo: 승인 대기 (E1, E2).** 하니스를 고친 뒤 두 후보 모두 Verifier 0 테스트는 통과하고 Verifier 1의 fill_full 하나만 실패 (m_axis_tready를 1500클럭 0으로 둔 동안 못 나온 비트를 missing으로 봄). Arbiter test_wrong: 막힌 동안의 출력 기한은 SPEC에 없음.
+  - 사용자가 E1, E2를 승인했고 sjlee로 기록. 이어서 실행.
+- **08:45 async_fifo: 승인 대기 (E3, E4).** fill_full 수정 뒤 Verifier 1의 sc02 리셋 테스트가 두 후보에서 실패, Arbiter test_wrong (송신 큐의 남은 비트가 리셋 뒤에도 들어오는데 "마지막 출력이 종료 비트"를 요구). 지난 실행 E2와 같은 종류.
+  - 사용자가 E3, E4를 승인했고 sjlee로 기록. 이어서 실행.
+  - 관찰: 리셋 시험에서 하니스 송신 큐가 리셋 뒤에도 계속 보내는 것이 같은 오판을 두 번 만듦. 하니스에 "도메인 리셋 때 그 도메인 송신 큐 비우기"를 두는 것이 개선 거리.
+- **09:05 async_fifo 통과.** SV, Python 후보 모두 통과 (Repair SV 4, Python 6, lint SV 20, Python 21). 원본 테스트벤치 두 후보 모두 20/20. SV 후보를 고름. 에이전트 누적 30회, 사람 결정은 기댓값 수정 4건(E1~E4) 승인. (Python 후보는 `memory`와 `cdc_sync`를 쓰는 모듈이라 번역기 검사를 건너뜀.)
+- **P8a 비교 실험 결과 (4블록, 모든 역할 Claude Code Sonnet low):** adapter, cobs_decode, crc_append, async_fifo 모두 SV와 Python 후보가 함께 통과. 원본 테스트벤치도 두 후보 모두 통과. 언어 때문에 생긴 실패는 Python 조각의 메모리 지원 빈틈 하나(고침)뿐이고, 나머지 실패는 모두 파이프라인 쪽(방출기, 하니스 리셋 처리와 req 목록, 한도 문구, 묶음 워드 계약)이나 Verifier 테스트 해석에서 나왔다. Repair 수는 Python 후보가 같거나 조금 많다 (cobs 1→2, crc 0→1, fifo 4→6).
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 
