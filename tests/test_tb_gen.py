@@ -127,3 +127,23 @@ def test_requirement_ids_accept_lists():
     from pipeline.tb.lib import req_ids
 
     assert req_ids({"A-01"}, "A-02", ["A-03", "A-01"], ("A-04",)) == ["A-01", "A-02", "A-03", "A-04"]
+
+
+def test_ready_pattern_repeats_or_holds():
+    """set_ready의 pattern은 되풀이하고, then을 주면 한 번 쓴 뒤 그 값을 유지한다 (P8a async_fifo fill_up 오해)."""
+    pytest.importorskip("cocotb")
+    from types import SimpleNamespace as N
+
+    from pipeline.tb.lib import ReadyDriver
+
+    def run(then):
+        dut = N(m_ready=N(value=0))
+        d = ReadyDriver(dut, {"ready": "m_ready"}, [0, 0, 1])
+        d.then = then
+        seen = []
+        for _ in range(7):
+            d.on_falling()
+            seen.append(dut.m_ready.value)
+        return seen
+    assert run(None) == [0, 0, 1, 0, 0, 1, 0]
+    assert run(1) == [0, 0, 1, 1, 1, 1, 1]

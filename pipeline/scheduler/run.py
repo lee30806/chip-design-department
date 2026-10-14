@@ -796,6 +796,17 @@ class Run:
                     self.event("suspect", f"{mod} → {sus[0]}: {sus[1][:200]}")
                     claims.append({"module": mod, "suspects": sus[0], "reason": sus[1], "workdir": str(rres.workdir)})
                     if sus[0] in tried:
+                        # 형제 Repair들이 서로 넘김: 모듈 쪽이 아니라 테스트 쪽 문제일 수 있으므로 lead에게 올리기 전에 Arbiter가 한 번 판정
+                        # (P8a async_fifo: Verifier의 set_ready 오해로 생긴 실패가 Repair 충돌로 올라가 lead가 테스트를 고를 수 없었음)
+                        if failed and sig not in sts[mods[0]].get("repeat_arbitrated", []):
+                            save_all(repeat_arbitrated=sts[mods[0]].get("repeat_arbitrated", []) + [sig])
+                            conflict = {"repairs": total, "modules": tried + [sus[0]],
+                                        "note": f"형제 모듈의 Repair들이 서로 원인을 넘김 ({' → '.join(tried + [sus[0]])}). 각 모듈은 자기 쪽이 SPEC대로라고 함"}
+                            verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/conflict",
+                                                       repeated=conflict) for v in failed if v["verifier"] not in skip]
+                            if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
+                                stop = {}
+                                break
                         rp = failure.get("report") or {}
                         pid = self.add_pending({"kind": "repair_conflict", "group": gname, "mods": mods, "c": c,
                                                 "chain": tried + [sus[0]], "claims": claims,

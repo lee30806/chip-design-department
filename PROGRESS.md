@@ -15,7 +15,7 @@
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
 | P8 첫 Block Top End-to-End | **완료 (2026-10-13)** | 신규 블록 `axis_crc_append` RTL Freeze (실행 674c). agy Seat, 오픈소스 대체 EDA. 커밋 `34b2205` |
-| P8a Python 동작 조각 | **완료 (2026-10-14)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 비교 4블록 모두 두 언어 후보 통과 (단 async_fifo는 방출기 버그로 무효, 재검증 필요). 범위: 후보 하나만 Python (후보 0 SV, 후보 1 Python) |
+| P8a Python 동작 조각 | **완료 (2026-10-14)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 비교 4블록 모두 통과 (adapter, cobs, crc는 두 언어 후보 모두, async_fifo는 방출기 수정 뒤 재검증에서 Python 후보). 범위: 후보 하나만 Python (후보 0 SV, 후보 1 Python) |
 | P9 운영 안정화 | **보류 (사용자 결정 2026-10-13)** | P8 회고에서 넘긴 항목은 아래 대기 항목 |
 
 ## 제외 항목 (사용자 결정)
@@ -150,6 +150,22 @@
   - **V6 빈틈과 방출기 버그 발견:** 인스턴스 출력이 부모 포트와 다른 인스턴스로 함께 나가면 넷 이름이 갈렸다. 방출기는 한쪽을 구동 없는 wire나 구동 없는 출력 포트로 남겼고, V6는 인스턴스를 넘는 조합 루프를 놓쳤다. 넷 이름을 부모 포트 이름으로 통일하고 V6가 방출기와 같은 넷 표를 쓰게 고침. 시험 2개 (번역기 검사로 RTL 동작 확인, 인스턴스를 넘는 루프).
   - **영향:** 지난 async_fifo 트리 모두 `m_pause_ack`가 이 모양이었다. 통과로 기록한 P8a async_fifo RTL은 출력 `m_pause_ack`가 구동되지 않는다 (verilator UNDRIVEN). 앞선 실행의 "m_pause_ack가 1이 되지 않음" 실패도 이 버그였고 Repair로는 고칠 수 없었다. **P8a async_fifo 통과는 무효.** 다른 P8a 블록과 P8 RTL Freeze(674c)에는 없음.
   - 골격 lint의 UNDRIVEN, MULTIDRIVEN 경고도 생성기 버그(GENERATOR_BUG)로 멈춤 (전에는 에러만).
+- **13:25 async_fifo 재검증 (커밋 84fde33 뒤 처음부터): Repair 충돌 E1.** 후보 0(SV)은 afifo_rd_ctl ↔ afifo_mem 충돌 (쓴 비트가 m_axis로 나오지 않음), 후보 1(Python)은 afifo_rd_ctl Repair 상한 3회로 실패. afifo_rd_ctl이 이미 상한을 다 써서 그 모듈 지정은 의미가 없었다.
+  - 사용자(Design-lead) 결정: Architect 재구성 (sjlee 기록). 이어서 실행.
+  - 관찰: 상한을 다 쓴 모듈을 지정하면 Repair 없이 바로 실패한다. 충돌 항목에 모듈별 남은 Repair 횟수를 보여 주는 것이 개선 거리.
+- **13:39 async_fifo: Architect 재구성 뒤에도 두 후보 모두 Repair 충돌 (E2, E3, afifo_rd_mem ↔ afifo_wr_ctl).** 그런데 원본 테스트벤치는 두 후보 모두 20/20 통과. 원인 조사:
+  - 실패는 두 Verifier의 `fill_up` 하나뿐. 둘 다 `h.set_ready("m_axis", [0] * 40 + [1])`(v1은 1500)을 "막았다가 계속 받기"로 썼지만 하니스는 패턴을 되풀이해 41(1501)사이클에 한 번만 받는다. 1200비트를 다 못 빼 missing. **RTL 문제가 아니라 Verifier의 하니스 API 오해**이고, 앞 실행의 fill_full 기댓값 수정(E1/E2)도 같은 원인이었을 가능성이 크다 (당시 Arbiter는 "막힌 동안 기한"으로 판정).
+  - 고침: `set_ready(bundle, pattern, then=값)`으로 패턴을 한 번만 쓰고 값을 유지하는 방법을 더하고, 안내서에 "패턴은 되풀이한다"와 예를 적음. 시험 추가.
+  - 고침: Repair 충돌을 lead에게 올리기 전에 실패한 Verifier마다 Arbiter가 한 번 판정 (테스트 쪽이면 기댓값 수정 승인, 아니면 충돌 항목). 충돌 항목에는 "테스트가 틀림"을 고를 수 없었다. 시험 추가.
+  - 이 실행(E2, E3 대기)은 테스트 탓이라 버리고 처음부터 다시 돌린다 (`.r6`에 보관).
+- **16:48 async_fifo 재검증 (처음부터, 세션 한도로 한 번 멈췄다 이어서): Repair 충돌 E1(후보 1), E2(후보 0).** 충돌 전 Arbiter 판정은 rtl_wrong(새 경로 동작). 원인: "상대가 리셋 중" 플래그를 cdc_sync로 넘기는데 동기화 셀은 리셋 직후 0이라, s 쪽이 처음에 m이 깨어난 것으로 보고 첫 비트를 받은 뒤 늦게 온 플래그를 "프레임 중 리셋"으로 보고 나머지를 버림. 모듈 사이 약속(플래그 뜻) 문제.
+  - IR 안내서와 Architect 규칙에 "도메인을 넘는 상태 플래그는 0이 안전한 뜻(상대가 준비됨)으로"를 더함.
+  - 사용자(Design-lead) 결정: 둘 다 Architect 재구성 (sjlee 기록). 이어서 실행.
+- **17:55 async_fifo: Architect 재구성 뒤 두 후보 모두 sc02(프레임 도중 s 리셋)만 실패.** 반복 실패 Arbiter가 두 Verifier 모두 test_wrong (E3: 비트별 비교가 남음, E4: 참조 모델이 s_rst를 모델링하지 않음). 같은 실패라 후보가 묶여 항목 둘. 사용자가 E3, E4를 승인했고 sjlee로 기록. 이어서 실행.
+- **17:58 async_fifo: 두 후보 모두 Verifier 0 통과, Verifier 1 sc02만 남음 (E5).** 고친 모델이 리셋 때 출력에 이미 제시된(valid 유지 중) 비트까지 버림. Arbiter test_wrong (AFIFO-04, AFIFO-05). 사용자가 승인했고 sjlee로 기록. 이어서 실행.
+- **18:00 async_fifo 재검증 통과 (방출기 수정 뒤).** Python 후보(c1)가 통과해 선택됨 (Repair 2, lint 20, 번역기 검사 통과). SV 후보(c0)는 테스트가 고쳐지기 전 afifo_rd Repair 상한 3회를 다 써서 실패. 원본 테스트벤치는 두 후보 모두 20/20. 최종 RTL은 UNDRIVEN/MULTIDRIVEN 0, `eda comb` 루프 0. 에이전트 누적 44회, 사람 결정은 Architect 재구성 2번(E1~E2는 한 번에 반영), 기댓값 수정 3건(E3~E5, 후보 묶음).
+  - 관찰: Repair 상한 3회가 테스트 탓 실패에 먼저 소진되면, 테스트가 고쳐진 뒤 그 후보는 다시 해볼 기회가 없다. 승인된 기댓값 수정으로 테스트가 바뀌면 Repair 횟수를 되돌리는 것이 개선 거리.
+  - P8a 결론 갱신: 4블록 모두 두 언어 후보 중 하나 이상 통과, async_fifo는 Python 후보가 선택됨.
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 

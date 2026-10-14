@@ -335,7 +335,9 @@ def _files_conflict(tmp_path):
             "Repair|repair__axis_adapter_out": {"out/patches.json": json.dumps(
                 [{"op": "suspect_module", "module": "axis_adapter_core", "reason": "데이터가 core에서 틀림"}])},
             "Repair|repair__axis_adapter_core": {"out/patches.json": json.dumps(
-                [{"op": "suspect_module", "module": "axis_adapter_out", "reason": "core 출력은 맞고 out이 틀림"}])}}
+                [{"op": "suspect_module", "module": "axis_adapter_out", "reason": "core 출력은 맞고 out이 틀림"}])},
+            # 충돌을 lead에게 올리기 전 Arbiter 판정: 테스트는 맞음
+            "Arbiter": {"out/verdict.json": json.dumps({"verdict": "rtl_wrong", "reqs": ["ADP-01"], "reason": "SPEC대로 기댓값이 맞음"})}}
 
 
 def _conflicts(tmp_path, files):
@@ -582,3 +584,20 @@ def test_comb_path_constraint_is_reviewed(tmp_path, monkeypatch):
     assert rep["status"] == "pass" and seen and seen[0] == [("", "")]
     comb = [r for r in rep["review"] if r["code"] == "COMB_PATH"]
     assert comb and "s_axis_tdata→m_axis_tdata" in comb[0]["message"]
+
+
+def test_repair_conflict_goes_to_arbiter_first(tmp_path):
+    """Repair들이 서로 넘기면 lead에게 올리기 전에 Arbiter가 판정한다. 테스트 쪽 문제면 기댓값 수정 승인으로 간다."""
+    from pipeline.scheduler import approve
+
+    files = _files_conflict(tmp_path)
+    files["Arbiter"] = {"out/verdict.json": json.dumps({"verdict": "test_wrong", "reqs": ["ADP-01"], "reason": "테스트가 ready를 잘못 씀",
+                                                        "proposal": "ready 패턴을 고친다"})}
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "waiting_approval"
+    items = approve.pending(tmp_path / "run")
+    # 두 Verifier가 모두 실패: Verifier마다 항목 하나, 두 후보가 묶임
+    assert sorted((p["kind"], p["verifier"], sorted([p["c"]] + [x["c"] for x in p.get("also", [])])) for p in items) == \
+        [("expectation_change", 0, [0, 1]), ("expectation_change", 1, [0, 1])]
+    assert "REPAIR_CONFLICT" not in {r["code"] for r in rep["review"]}
+    assert all("서로 원인을 넘김" in p["repeated_failure"]["note"] for p in approve.pending(tmp_path / "run"))

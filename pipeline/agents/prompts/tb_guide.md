@@ -18,7 +18,8 @@ async def basic(dut):
     h = make(dut, Model(), name="basic")  # name은 테스트마다 달라야 한다
     h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: L1 포트 값 dict (그 도메인의 리셋 포트 포함, 클럭 제외)
     h.cover_protocol("m_axis", "REQ-ID")   # valid/ready 규칙 체커가 이 번들을 검사하면 그 요구사항을 실행한 것으로 셈
-    h.set_ready("m_axis", [1, 0, 1])       # 출력 번들의 ready 패턴 (backpressure)
+    h.set_ready("m_axis", [1, 0, 1])       # 출력 번들의 ready 패턴 (backpressure). 패턴은 끝나면 처음부터 되풀이한다
+    h.set_ready("m_axis", [0] * 100, then=1)   # 처음 100사이클만 막고 그 뒤로 계속 받기 (then 값을 유지)
     await h.start()                       # 클럭 시작, 리셋, 표본 시작
     h.send("s_axis", {"s_axis_tdata": 1, "s_axis_tlast": 0}, idle=0)   # 입력 번들에 전송 하나 (data 신호 모두 지정)
     await h.drain()                       # 입력을 다 보내고 기대 출력이 다 올 때까지 기다림

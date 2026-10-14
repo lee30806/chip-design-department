@@ -100,10 +100,12 @@ class ValidReadyDriver:
 
 
 class ReadyDriver:
-    """DUT가 source인 번들의 ready를 구동한다. pattern은 사이클마다 돌려 쓰는 ready 값 목록."""
+    """DUT가 source인 번들의 ready를 구동한다. pattern은 사이클마다 돌려 쓰는 ready 값 목록 (끝나면 처음부터 되풀이).
+    then을 주면 pattern을 한 번만 쓰고 그 뒤로는 then 값을 유지한다."""
 
     def __init__(self, dut, b: dict, pattern=(1,)):
         self.ready, self.pattern, self.i = getattr(dut, b["ready"]), list(pattern), 0
+        self.then: int | None = None
 
     def reset(self) -> None:
         self.ready.value = 0
@@ -111,7 +113,10 @@ class ReadyDriver:
     busy = False
 
     def on_falling(self) -> None:
-        self.ready.value = self.pattern[self.i % len(self.pattern)]
+        if self.then is not None and self.i >= len(self.pattern):
+            self.ready.value = self.then
+        else:
+            self.ready.value = self.pattern[self.i % len(self.pattern)]
         self.i += 1
 
     def on_sample(self) -> None:
@@ -307,8 +312,12 @@ class Harness:
     def send(self, bundle: str, txn: dict, idle: int = 0) -> None:
         self.drivers[bundle].send(txn, idle)
 
-    def set_ready(self, bundle: str, pattern) -> None:
-        self.drivers[bundle].pattern = list(pattern)
+    def set_ready(self, bundle: str, pattern, then: int | None = None) -> None:
+        """출력 번들의 ready. pattern은 끝나면 처음부터 되풀이한다. then을 주면 pattern을 한 번만 쓰고 then 값을 유지한다
+        (예: 처음 1500사이클 막았다가 계속 받기: `set_ready(b, [0] * 1500, then=1)`). P8a async_fifo: Verifier 둘이
+        `[0] * 1500 + [1]`을 "막았다가 계속 받기"로 써서, 1501사이클에 한 번만 받는 테스트가 됨."""
+        d = self.drivers[bundle]
+        d.pattern, d.then, d.i = list(pattern), then, 0
 
     def cover_protocol(self, bundle: str, req: str | list[str]) -> None:
         """T2 체커가 이 번들의 전송을 한 번 이상 검사했으면 req(ID 하나나 목록)를 실행된 요구사항으로 센다 (T5)."""
