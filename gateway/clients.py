@@ -47,10 +47,22 @@ class Pipeline:
 
 
 class OpenRig:
-    """OpenRig 데몬 API (조회만. 이후 대화 중계의 기반)."""
+    """OpenRig 데몬 API: Seat 상태 조회와 대화 중계(보내기, 화면 읽기). P0 X6에서 정한 방식대로 봉투 없이(raw) 보낸다."""
 
-    def __init__(self, base: str, rig: str = "chip-dept"):
-        self.base, self.rig = base.rstrip("/"), rig
+    def __init__(self, base: str, rig: str = "chip-dept", token: str | None = None):
+        self.base, self.rig, self.token = base.rstrip("/"), rig, token
+
+    def _auth(self) -> dict:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    def send(self, session: str, text: str) -> dict:
+        """봉투(From/To, 답장 안내) 없이 텍스트를 Seat 화면에 보낸다 (`rig send --raw`와 같음)."""
+        return _call(self.base + "/api/transport/send", "POST", {"session": session, "text": text}, self._auth(), timeout=60)
+
+    def capture(self, session: str, lines: int = 300) -> str:
+        """Seat 화면(터미널)의 마지막 lines줄."""
+        got = _call(self.base + "/api/transport/capture", "POST", {"session": session, "lines": lines}, self._auth())
+        return (got or {}).get("content") or ""
 
     def seats(self) -> dict:
         try:

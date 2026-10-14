@@ -36,6 +36,7 @@ from pipeline.spec.parse import load as load_spec
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = Path(os.environ.get("CHIPDEPT_STORE", ROOT / "build" / "store"))
 FEEDBACK_SCHEMA = json.loads((ROOT / "schema" / "feedback.schema.json").read_text(encoding="utf-8"))
+GEN_BUG_STATUS = ("open", "fixed", "wontfix")
 RERUN_LIMIT = 3            # 같은 Block Top에서 환류에 따른 재실행이 이만큼 되면 멈추고 알린다
 STALL_HOURS = 24.0         # 이 시간 동안 진행(상태 파일 갱신)이 없으면 멈추고 알린다
 LONG_RUN_HOURS = 2.0       # 실행 하나가 이 시간을 넘으면 운영에게 한 번 알린다 (멈추지는 않음. P8 회고: 실측 약 32분)
@@ -439,7 +440,34 @@ class Store:
         return {"result": "config_changed", "config": cfg}
 
     def generator_bugs(self) -> list[dict]:
-        return self._read_jsonl("generator_bugs.jsonl")
+        """번호(G1부터, 기록 순서)를 붙여 돌려준다. 상태: open, fixed(고침), wontfix(고치지 않기로)."""
+        return [{"id": f"G{i + 1}", **r} for i, r in enumerate(self._read_jsonl("generator_bugs.jsonl"))]
+
+    def update_generator_bug(self, gid: str, status: str, by: str, role: str | None, note: str = "") -> dict:
+        """생성기 버그 처리 상태를 바꾼다 (P9 환류 관리). Design-lead만."""
+        _require(role, ROLES_FEEDBACK, "생성기 버그 처리")
+        if status not in GEN_BUG_STATUS or not by.strip():
+            raise ApiError(400, f"status는 {list(GEN_BUG_STATUS)} 중 하나, by가 필요함")
+        with self.lock:
+            recs = self._read_jsonl("generator_bugs.jsonl")
+            i = int(gid[1:]) - 1 if gid[:1] == "G" and gid[1:].isdigit() else -1
+            if not 0 <= i < len(recs):
+                raise ApiError(404, f"없는 생성기 버그: {gid}")
+            recs[i] = {**recs[i], "status": status, "history": recs[i].get("history", []) +
+                       [{"at": _now(), "by": by, "status": status, "note": note}]}
+            p = self.root / "generator_bugs.jsonl"
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
+            tmp.replace(p)
+        return {"id": gid, **recs[i]}
+
+    def settings(self) -> dict:
+        """설정 화면용: 기본 역할 설정, 설정 변경으로 덮은 값, 다음 실행에 실제로 쓰일 값, 에이전트 목록 (P9)."""
+        eff = self._roles_for({})
+        agents = [{"name": a.name, "family": a.family, "runtime": a.runtime, "model": a.model}
+                  for a in load_agents(Path(eff["agents"]))]
+        return {"base": json.loads(self.base_roles.read_text(encoding="utf-8")), "overrides": self.config(),
+                "effective": {"roles": eff["roles"], "limits": eff["limits"]}, "agents": agents}
 
     def notifications(self) -> list[dict]:
         return self._read_jsonl("notifications.jsonl")

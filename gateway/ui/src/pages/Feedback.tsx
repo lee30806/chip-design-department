@@ -10,6 +10,43 @@ const FORMS = {
 } as const;
 type Form = keyof typeof FORMS;
 
+type GenBug = { id: string; at: string; message: string; module?: string; run_id?: string | null; status: string;
+  history?: { at: string; by: string; status: string; note: string }[] };
+const BUG_STATUS: Record<string, string> = { open: "열림", fixed: "고침", wontfix: "고치지 않음" };
+
+function GeneratorBugs() {
+  const user = useUser();
+  const bugs = useGet<GenBug[]>("/api/generator-bugs");
+  const act = useAction();
+  const [note, setNote] = useState<Record<string, string>>({});
+  const set = async (id: string, status: string) => {
+    const r = await act.run(() => api.post(`/api/generator-bugs/${id}`, { status, note: note[id] ?? "" }));
+    if (r) bugs.reload();
+  };
+  return (
+    <section className="panel scroll">
+      <h2>생성기 버그</h2>
+      <p className="small muted">골격(조각 밖) lint 에러와 생성기 버그 리포트. LLM에 보내지 않고 Emitter를 사람이 고칩니다. 처리 상태는 Design-lead가 바꿉니다.</p>
+      <Err msg={bugs.error || act.error} />
+      <table><thead><tr><th>ID</th><th>언제</th><th>실행</th><th>내용</th><th>상태</th><th></th></tr></thead><tbody>
+        {(bugs.data ?? []).slice().reverse().map((b) => (
+          <tr key={b.id}><td className="mono">{b.id}</td><td className="small">{b.at}</td><td className="mono small">{b.run_id ?? "-"}</td>
+            <td className="small">{b.module ? `${b.module}: ` : ""}{b.message}
+              {(b.history ?? []).map((h, i) => <div key={i} className="muted">{h.at} {h.by}: {BUG_STATUS[h.status] ?? h.status} {h.note}</div>)}</td>
+            <td className="small">{BUG_STATUS[b.status] ?? b.status}</td>
+            <td>{can.feedback(user) && (
+              <div className="row">
+                <input placeholder="메모" value={note[b.id] ?? ""} onChange={(e) => setNote({ ...note, [b.id]: e.target.value })} />
+                {Object.keys(BUG_STATUS).filter((k) => k !== b.status).map((k) =>
+                  <button key={k} disabled={act.busy} onClick={() => set(b.id, k)}>{BUG_STATUS[k]}</button>)}
+              </div>)}</td></tr>
+        ))}
+        {bugs.data?.length === 0 && <tr><td colSpan={6} className="muted">생성기 버그가 없습니다.</td></tr>}
+      </tbody></table>
+    </section>
+  );
+}
+
 type History = { id: string; at: string; form: string; by: string; run_id: string | null; result?: string; status?: string; new_run?: string };
 
 export default function Feedback() {
@@ -112,6 +149,7 @@ export default function Feedback() {
           ))}
         </tbody></table>
       </section>
+      <GeneratorBugs />
     </main>
   );
 }

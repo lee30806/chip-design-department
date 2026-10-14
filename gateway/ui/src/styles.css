@@ -99,3 +99,14 @@ label > input, label > select, label > textarea { color: var(--fg); }
 .imgbox { background: var(--sunken); border-radius: 4px; padding: 8px; min-height: 80px; display: grid; place-items: center; }
 .imgbox img { max-width: 100%; background: #fff; }
 .login { max-width: 360px; margin: 12vh auto; }
+
+/* P9: 대시보드 타일, Seat 대화, 링크 버튼 */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.tile { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: inherit; }
+.tile b { font-size: 28px; }
+.tile small { color: var(--muted); }
+.chat { max-height: 420px; overflow-y: auto; }
+.msg { border-left: 3px solid var(--line); padding-left: 8px; }
+.msg .mine { white-space: pre-wrap; }
+.msg .reply { background: var(--sunken); padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; margin: 4px 0 0; }
+tr.on { background: var(--sunken); }

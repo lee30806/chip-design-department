@@ -137,6 +137,20 @@ def make_handler(gw: Gateway, ui_dist: Path = UI_DIST, secure_cookie: bool = Fal
                     return 200, {k: v.get("description", "") for k, v in formats().items()}
                 if seg == ["seats"]:
                     return 200, gw.seats()
+                if (r := m(r"seats/([\w.]+)/messages")):
+                    return 200, gw.chat.messages(r[1])
+                if seg == ["dashboard"]:
+                    return 200, gw.dashboard()
+                if seg == ["generator-bugs"]:
+                    return 200, gw.generator_bugs()
+                if seg == ["settings"]:
+                    return 200, gw.settings()
+                if (r := m(r"runs/([\w.-]+)/report")):
+                    return 200, gw.report(r[1])
+                if (r := m(r"runs/([\w.-]+)/report\.md")):
+                    md = gw.report_markdown(r[1])
+                    return 200, ("text/markdown; charset=utf-8", md.encode("utf-8")), {
+                        "Content-Disposition": f'attachment; filename="{r[1]}-report.md"'}
                 if seg == ["users"]:
                     require(u, "manage_users")
                     return 200, gw.accounts.users()
@@ -147,6 +161,12 @@ def make_handler(gw: Gateway, ui_dist: Path = UI_DIST, secure_cookie: bool = Fal
             # POST
             if seg == ["runs"]:
                 return 200, gw.submit_run(u, str(b.get("spec_id", "")), b.get("config"))
+            if (r := m(r"seats/([\w.]+)/messages")):
+                return 200, gw.chat.send(u, r[1], str(b.get("text", "")), str(b.get("kind", "chat")))
+            if (r := m(r"generator-bugs/(G\d+)")):
+                return 200, gw.update_generator_bug(u, r[1], str(b.get("status", "")), str(b.get("note", "")))
+            if (r := m(r"runs/([\w.-]+)/discard")):
+                return 200, gw.discard_run(u, r[1], str(b.get("reason", "")))
             if (r := m(r"runs/([\w.-]+)/signoff")):
                 return 200, gw.signoff(u, r[1], str(b.get("kind", "")), str(b.get("decision", "")), str(b.get("note", "")))
             if seg == ["specs"]:

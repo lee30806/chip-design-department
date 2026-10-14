@@ -23,6 +23,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
 
 from gateway.auth import Accounts
+from gateway.chat import Chat
 from gateway.clients import OpenRig, Pipeline, UpstreamError
 from gateway.db import DB, now
 from gateway.perms import APPROVAL_KINDS, LEAD_KINDS, Forbidden, require
@@ -46,6 +47,7 @@ class Gateway:
         self.specs = Specs(self.db, self.home)
         self.pipeline, self.openrig = pipeline, openrig
         self.store_dir = Path(store_dir) if store_dir else None
+        self.chat = Chat(self.db, openrig)
 
     # -- 실행 --
     def runs(self) -> list[dict]:
@@ -277,6 +279,93 @@ class Gateway:
 
     def seats(self) -> dict:
         return self.openrig.seats()
+
+    # -- P9: 대시보드, 환류 관리, 리포트, 설정 --
+    def dashboard(self) -> dict:
+        """첫 화면: 실행 상태별 수와 진행 중인 실행(계보 에이전트 합계), 승인함 종류별 대기, 최근 알림, 열린 생성기 버그, Seat 상태."""
+        runs = self.runs()
+        by_status: dict[str, int] = {}
+        for r in runs:
+            by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+        active = [{k: r.get(k) for k in ("run_id", "block", "status", "agent_runs", "lineage_agent_runs", "pending", "created")}
+                  for r in runs if r["status"] not in ("pass", "failed", "spec_rejected")]
+        pend: dict[str, int] = {}
+        for p in self.pending():
+            pend[p["kind"]] = pend.get(p["kind"], 0) + 1
+        seats = self.seats()
+        seat_states: dict[str, int] = {}
+        for n in seats.get("nodes", []) or []:
+            st = (n.get("agentActivity") or {}).get("state") or "unknown"
+            seat_states[st] = seat_states.get(st, 0) + 1
+        bugs = self.pipeline.get("/generator-bugs")
+        return {"runs": by_status, "active": active, "pending": pend,
+                "notifications": list(reversed(self.pipeline.get("/notifications")))[:20],
+                "generator_bugs_open": sum(1 for b in bugs if b.get("status") == "open"),
+                "seats": {"available": seats.get("available", False), "states": seat_states}}
+
+    def generator_bugs(self) -> list[dict]:
+        return self.pipeline.get("/generator-bugs")
+
+    def update_generator_bug(self, user: dict, gid: str, status: str, note: str = "") -> dict:
+        require(user, "feedback")   # 환류 관리는 Design-lead 창구
+        out = self.pipeline.post(f"/generator-bugs/{gid}", {"status": status, "by": user["username"], "note": note}, "feedback")
+        self.db.audit(user["username"], "generator_bug", {"id": gid, "status": status, "note": note})
+        return out
+
+    def discard_run(self, user: dict, run_id: str, reason: str) -> dict:
+        """툴 결함으로 버린 재실행 표시 (재실행 상한 계산에서 뺌). Design-lead 창구."""
+        require(user, "feedback")
+        out = self.pipeline.post(f"/runs/{run_id}/discard", {"reason": reason, "by": user["username"]}, "feedback")
+        self.db.audit(user["username"], "run_discard", {"run_id": run_id, "reason": reason})
+        return out
+
+    def settings(self) -> dict:
+        return self.pipeline.get("/settings")
+
+    def report(self, run_id: str) -> dict:
+        """실행 보고서: 파이프라인 최종 보고서, 승인과 판정, 환류 이력. RTL Freeze 기록으로 내려받는 자료."""
+        st = self.run(run_id)
+        try:
+            rep = self.pipeline.get(f"/runs/{run_id}/report")
+        except UpstreamError as e:
+            rep = {"error": str(e)}
+        spec = None
+        if st.get("spec_id"):
+            row = self.db.one("SELECT name, frozen_sha FROM specs WHERE id=?", (st["spec_id"],))
+            spec = {"id": st["spec_id"], **(row or {})}
+        return {"run_id": run_id, "block": st.get("block"), "status": st.get("status"), "spec": spec,
+                "spec_sha256": st.get("spec_sha256"), "lineage": st.get("lineage"), "agent_runs": st.get("agent_runs"),
+                "lineage_agent_runs": st.get("lineage_agent_runs"), "chosen": st.get("chosen"),
+                "approvals": st.get("approvals", []), "signoffs": st.get("signoffs", []),
+                "feedback": self.pipeline.get(f"/runs/{run_id}/history"), "pipeline_report": rep, "generated": now()}
+
+    def report_markdown(self, run_id: str) -> str:
+        r = self.report(run_id)
+        pr = r["pipeline_report"] if isinstance(r["pipeline_report"], dict) else {}
+        lines = [f"# 실행 보고서: {r['block']} ({r['run_id']})", "",
+                 f"- 상태: {r['status']}", f"- SPEC: {(r['spec'] or {}).get('name', '-')} (sha256 {r['spec_sha256']})",
+                 f"- 계보: {json.dumps(r['lineage'], ensure_ascii=False)}",
+                 f"- 에이전트 실행: {r['agent_runs']}회 (계보 합계 {r['lineage_agent_runs']}회)",
+                 f"- 선택된 후보: {json.dumps(r['chosen'], ensure_ascii=False)}", f"- 만든 시각: {r['generated']}", "",
+                 "## 승인과 결정", "", "| 종류 | 대상 | 결정 | 누가 | 언제 | 메모 |", "| --- | --- | --- | --- | --- | --- |"]
+        lines += [f"| {a['kind']} | {a['target']} | {a['decision']} | {a['by']} | {a['at']} | {(a.get('note') or '').replace('|', '/')} |"
+                  for a in r["approvals"]] or ["| - | | | | | |"]
+        lines += ["", "## 판정 (DV, PI)", "", "| 종류 | 판정 | 누가 | 언제 | 메모 |", "| --- | --- | --- | --- | --- |"]
+        lines += [f"| {s['kind']} | {s['decision']} | {s['by']} | {s['at']} | {(s.get('note') or '').replace('|', '/')} |"
+                  for s in r["signoffs"]] or ["| - | | | | |"]
+        lines += ["", "## 환류 이력", ""] + ([f"- {h.get('id')} {h.get('form')} ({h.get('by')}, {h.get('at')}): "
+                                            f"{h.get('reason') or h.get('description') or h.get('result') or ''}"
+                                            for h in r["feedback"]] or ["- 없음"])
+        if pr.get("review"):
+            counts: dict[str, int] = {}
+            for x in pr["review"]:
+                counts[x["code"]] = counts.get(x["code"], 0) + 1
+            lines += ["", "## 검토 항목", ""] + [f"- {k}: {v}" for k, v in sorted(counts.items())]
+        if pr.get("candidates"):
+            lines += ["", "## 후보", "", "| 후보 | 상태 | Repair | lint | 사유 |", "| --- | --- | --- | --- | --- |"]
+            lines += [f"| {k} | {v.get('status')} | {v.get('repairs')} | {v.get('lint')} | {(v.get('reason') or '')[:120]} |"
+                      for k, v in pr["candidates"].items()]
+        return "\n".join(lines) + "\n"
 
 
 __all__ = ["Gateway", "Conflict", "Forbidden", "SpecError", "UpstreamError"]

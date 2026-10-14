@@ -1,21 +1,21 @@
 {
- "_doc": "부서 계층의 Seat 15개. id는 rig.yaml의 pod.member이고 세션 이름은 {pod}-{member}@chip-dept. api_role은 파이프라인 API에 밝히는 역할(없으면 조회만). verifier_blind는 파이프라인 Verifier 산출물을 읽지 못함(DV). model(명단 전체 또는 Seat마다)을 적지 않으면 agy 기본 모델.",
+ "_doc": "부서 계층의 Seat 15개. id는 rig.yaml의 pod.member이고 세션 이름은 {pod}-{member}@chip-dept. api_role은 파이프라인 API에 밝히는 역할(없으면 조회만). verifier_blind는 파이프라인 Verifier 산출물을 읽지 못함(DV). model(명단 전체 또는 Seat마다)을 적지 않으면 agy 기본 모델. 2026-10-14 사용자 결정: 설계 쪽(Chip-lead, design)은 gemini-3.8-flash-medium, 검사 쪽(DV, PI)은 gpt-oss-120b-medium (설계와 검사의 모델 계열을 나눔). 같은 날 gpt-oss가 agy 한도에 걸려 사용자 결정으로 DV, PI도 당분간 gemini-3.8-flash-medium (한도가 풀리면 gpt-oss로 되돌릴 수 있음).",
  "rig": "chip-dept",
  "seats": [
-  {"id": "lead.chip", "label": "Chip-lead", "api_role": "chip-lead"},
-  {"id": "design.lead", "label": "Design-lead", "api_role": "design-lead"},
-  {"id": "design.arch", "label": "Architecture Engineer"},
-  {"id": "design.rtl", "label": "RTL Engineer", "api_role": "rtl-engineer"},
-  {"id": "design.sanity", "label": "Sanity Engineer"},
-  {"id": "dv.lead", "label": "DV-lead", "verifier_blind": true},
-  {"id": "dv.vplan", "label": "vPlan", "verifier_blind": true},
-  {"id": "dv.tb", "label": "TB", "verifier_blind": true},
-  {"id": "dv.checker", "label": "Checker/Assertion", "verifier_blind": true},
-  {"id": "pi.lead", "label": "PI-lead"},
-  {"id": "pi.synth", "label": "Synthesis"},
-  {"id": "pi.lec", "label": "LEC"},
-  {"id": "pi.power", "label": "Power Intent"},
-  {"id": "pi.sta", "label": "STA"},
-  {"id": "pi.sdc", "label": "SDC Lint"}
+  {"id": "lead.chip", "label": "Chip-lead", "api_role": "chip-lead", "model": "gemini-3.8-flash-medium"},
+  {"id": "design.lead", "label": "Design-lead", "api_role": "design-lead", "model": "gemini-3.8-flash-medium"},
+  {"id": "design.arch", "label": "Architecture Engineer", "model": "gemini-3.8-flash-medium"},
+  {"id": "design.rtl", "label": "RTL Engineer", "api_role": "rtl-engineer", "model": "gemini-3.8-flash-medium"},
+  {"id": "design.sanity", "label": "Sanity Engineer", "model": "gemini-3.8-flash-medium"},
+  {"id": "dv.lead", "label": "DV-lead", "verifier_blind": true, "model": "gemini-3.8-flash-medium"},
+  {"id": "dv.vplan", "label": "vPlan", "verifier_blind": true, "model": "gemini-3.8-flash-medium"},
+  {"id": "dv.tb", "label": "TB", "verifier_blind": true, "model": "gemini-3.8-flash-medium"},
+  {"id": "dv.checker", "label": "Checker/Assertion", "verifier_blind": true, "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.lead", "label": "PI-lead", "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.synth", "label": "Synthesis", "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.lec", "label": "LEC", "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.power", "label": "Power Intent", "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.sta", "label": "STA", "model": "gemini-3.8-flash-medium"},
+  {"id": "pi.sdc", "label": "SDC Lint", "model": "gemini-3.8-flash-medium"}
  ]
 }

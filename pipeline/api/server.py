@@ -69,7 +69,7 @@ def make_handler(store: Store, token: str | None = None):
                             "report": store.report, "pending": store.pending, "rtl": store.rtl,
                             "history": store.history}.get(sub, lambda _: (_ for _ in ()).throw(ApiError(404, "없는 경로")))(rid)
                 fixed = {"/feedback": store.history, "/generator-bugs": store.generator_bugs,
-                         "/notifications": store.notifications, "/config": store.config}
+                         "/notifications": store.notifications, "/config": store.config, "/settings": store.settings}
                 if path in fixed:
                     return fixed[path]()
                 raise ApiError(404, "없는 경로")
@@ -84,6 +84,9 @@ def make_handler(store: Store, token: str | None = None):
                 return store.watchdog()
             if path == "/feedback":
                 return store.feedback(body, role)
+            gm = re.fullmatch(r"/generator-bugs/(G\d+)", path)
+            if gm:
+                return store.update_generator_bug(gm.group(1), body.get("status", ""), body.get("by", ""), role, body.get("note", ""))
             fm = re.fullmatch(r"/feedback/([\w-]+)/decision", path)
             if fm:
                 return store.decide_spec_change(fm.group(1), body.get("decision", ""), body.get("by", ""), role, body.get("note", ""))

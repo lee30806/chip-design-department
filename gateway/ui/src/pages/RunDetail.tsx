@@ -8,6 +8,25 @@ type RunInfo = RunSummary & {
   approvals: { id: number; kind: string; decision: string; by: string; at: string; note: string | null; spec_sha: string | null }[];
 };
 
+/** 툴 결함으로 버린 재실행 표시 (재실행 상한 계산에서 뺌). Design-lead만, 환류 재실행에만. */
+function Discard({ runId, info, reload }: { runId: string; info: RunInfo; reload: () => void }) {
+  const user = useUser();
+  const [reason, setReason] = useState("");
+  const act = useAction();
+  const d = (info as RunInfo & { discarded?: { reason: string; by: string; at: string } | null }).discarded;
+  if (d) return <p className="panel small">툴 결함으로 버린 실행: {d.reason} ({d.by}, {d.at}). 재실행 상한 계산에서 빠집니다.</p>;
+  if (info.kind === "initial" || !can.feedback(user)) return null;
+  return (
+    <div className="panel row small">
+      <span>툴 결함으로 버린 실행이면 사유와 함께 표시합니다 (재실행 상한에서 뺌).</span>
+      <input style={{ flex: 1 }} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="사유 (예: 하니스 결함)" />
+      <button className="danger" disabled={act.busy || !reason.trim()}
+        onClick={async () => { if (await act.run(() => api.post(`/api/runs/${runId}/discard`, { reason }))) reload(); }}>버림 표시</button>
+      <Err msg={act.error} />
+    </div>
+  );
+}
+
 const TABS = ["개요", "모듈", "검토 항목", "실패 분류", "RTL", "에이전트 작업"] as const;
 
 export default function RunDetail() {
@@ -21,8 +40,10 @@ export default function RunDetail() {
         <h1 className="mono">{id}</h1>
         <Status s={info.data?.status} />
         <span className="sub">읽기 전용. 고칠 것은 환류 양식으로 요청합니다.</span>
+        <a className="btn" href={`/api/runs/${id}/report.md`} download>보고서 내려받기</a>
         <button onClick={() => { info.reload(); detail.reload(); }}>새로 읽기</button>
       </div>
+      {info.data && <Discard runId={id!} info={info.data} reload={info.reload} />}
       <Err msg={info.error || detail.error} />
       <div className="tabs" role="tablist">
         {TABS.map((t) => <button key={t} role="tab" className={t === tab ? "on" : ""} onClick={() => setTab(t)}>{t}</button>)}

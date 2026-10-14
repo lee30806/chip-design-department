@@ -3,10 +3,12 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { api, ApiError, ROLE_LABEL, type User } from "./api";
 import { Err, UserContext, useAction } from "./common";
 import Approvals from "./pages/Approvals";
+import Dashboard from "./pages/Dashboard";
 import Feedback from "./pages/Feedback";
 import RunDetail from "./pages/RunDetail";
 import Runs from "./pages/Runs";
 import Seats from "./pages/Seats";
+import Settings from "./pages/Settings";
 import SpecView from "./pages/SpecView";
 import Specs from "./pages/Specs";
 
@@ -48,11 +50,13 @@ export default function App() {
   if (user === undefined) return null;
   if (user === null) return <Login onLogin={setUser} />;
   const nav = [
+    ["/dashboard", "대시보드"],
     ["/runs", "실행"],
     ["/specs", "SPEC 작업대"],
     ["/approvals", "승인함"],
     ["/feedback", "환류"],
     ["/seats", "Seat"],
+    ["/settings", "설정"],
   ];
   return (
     <UserContext.Provider value={user}>
@@ -71,7 +75,9 @@ export default function App() {
         </span>
       </header>
       <Routes>
-        <Route path="/" element={<Navigate to="/runs" replace />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/runs/:id" element={<RunDetail />} />
         <Route path="/specs" element={<Specs />} />
