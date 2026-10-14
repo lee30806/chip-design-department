@@ -170,6 +170,7 @@
   - **Repair 횟수 돌려주기:** 승인된 기댓값 수정으로 테스트가 바뀌면, 마지막 테스트 수정 뒤 쓴 Repair 횟수를 모든 후보에 돌려주고 Repair 상한으로 멈춘 후보를 다시 돌린다. 사람 승인마다 한 번이라 무한히 돌지 않는다. 작업 이름(캐시 키)은 늘기만 하는 `repair_seq`로 바꿔, 돌려준 뒤 같은 이름의 예전 결과를 재사용하지 않게 함. 시험: 틀린 테스트에 상한을 다 쓴 후보가 승인 뒤 다시 돌아 통과.
   - **남은 Repair 횟수:** Repair 충돌 항목에 모듈별 남은 횟수(`remaining`)를 붙이고, approve CLI와 게이트웨이에 보임. 다 쓴 모듈은 고칠 모듈로 지정할 수 없음 (게이트웨이 선택 목록에서도 막음). 시험 추가.
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
+  - **사용자 지시(10월 14일): `gemini-3.1-pro-high` 삭제.** `department/seats.json`에서 모델 설정을 빼고, `department/bin/seat`는 모델이 없으면 `--model` 없이 agy 기본 모델로 Seat를 띄운다 (명단 전체나 Seat마다 `model`을 적으면 그것을 씀). 지난 기록(PROGRESS, P0 결과, 설정 메모)의 언급은 이력이라 그대로 둠.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 
 ### 2026-10-13 P8a Python 동작 조각 (사용자 결정)

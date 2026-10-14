@@ -1,7 +1,6 @@
 {
- "_doc": "부서 계층의 Seat 15개. id는 rig.yaml의 pod.member이고 세션 이름은 {pod}-{member}@chip-dept. api_role은 파이프라인 API에 밝히는 역할(없으면 조회만). verifier_blind는 파이프라인 Verifier 산출물을 읽지 못함(DV).",
+ "_doc": "부서 계층의 Seat 15개. id는 rig.yaml의 pod.member이고 세션 이름은 {pod}-{member}@chip-dept. api_role은 파이프라인 API에 밝히는 역할(없으면 조회만). verifier_blind는 파이프라인 Verifier 산출물을 읽지 못함(DV). model(명단 전체 또는 Seat마다)을 적지 않으면 agy 기본 모델.",
  "rig": "chip-dept",
- "model": "gemini-3.1-pro-high",
  "seats": [
   {"id": "lead.chip", "label": "Chip-lead", "api_role": "chip-lead"},
   {"id": "design.lead", "label": "Design-lead", "api_role": "design-lead"},

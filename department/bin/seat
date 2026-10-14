@@ -89,7 +89,9 @@ def main() -> int:
         trust_worktree(wt.resolve(), Path(env["HOME"]))
         # 권한은 OS sandbox가 강제하므로(쓰기 범위, 다른 Seat 키, 게이트웨이 토큰) agy의 명령별 확인은 끈다.
         # 확인을 켜 두면 무인 Seat가 명령마다 멈춘다.
-        cmd = ["agy", "--model", s.get("model", seatlib.ROSTER["model"]), "--dangerously-skip-permissions", "-i",
+        # 모델은 Seat나 명단(seats.json)에 적은 것을 쓰고, 없으면 agy 기본 모델 (2026-10-14: 쓸 수 없게 된 gemini-3.1-pro-high를 뺌)
+        model = s.get("model") or seatlib.ROSTER.get("model")
+        cmd = ["agy", *(["--model", model] if model else []), "--dangerously-skip-permissions", "-i",
                f"너는 {s['label']} Seat다. AGENTS.md의 지침을 읽고, 지시를 기다려라."]
     os.execvpe("sandbox-exec", ["sandbox-exec", "-f", str(prof), *cmd], env)
 
