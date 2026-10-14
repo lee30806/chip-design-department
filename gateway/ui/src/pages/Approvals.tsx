@@ -110,7 +110,11 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
           <input id={`note-${item.kind}-${item.target}`} style={{ flex: 1, minWidth: 200 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="메모 (Repair나 Architect에 전할 판단 근거)" />
           <select value={module} onChange={(e) => setModule(e.target.value)}>
             <option value="">고칠 모듈 선택</option>
-            {mods.map((m) => <option key={m} value={m}>{m}</option>)}
+            {mods.map((m) => {
+              const left = (d.remaining as Record<string, number> | undefined)?.[m];
+              return <option key={m} value={m} disabled={left === 0}>
+                {m}{left === undefined ? "" : ` (남은 Repair ${left}${left === 0 ? ", 지정 불가" : ""})`}</option>;
+            })}
           </select>
           <button className="primary" disabled={act.busy || !module} onClick={() => decide("repair")}>이 모듈에서 Repair</button>
           <button disabled={act.busy} onClick={() => decide("architect")}>Architect에 근본 원인 수정 요청</button>

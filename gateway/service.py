@@ -190,7 +190,7 @@ class Gateway:
             for p in r.get("pending") or []:
                 full = next((x for x in self.pipeline.get(f"/runs/{r['run_id']}/pending") if x["id"] == p), {})
                 kind = full.get("kind", "expectation_change")
-                keys = ("group", "c", "mods", "chain", "claims", "first_failure", "spec") if kind == "repair_conflict" else \
+                keys = ("group", "c", "mods", "chain", "claims", "first_failure", "spec", "remaining") if kind == "repair_conflict" else \
                     ("verifier", "group", "c", "also", "reason", "proposal", "first_failure")
                 items.append({"kind": kind, "target": f"{r['run_id']}:{p}", "title": f"{r['block']} {p}",
                               "run_id": r["run_id"], "spec_sha": r.get("spec_sha256"), "reqs": full.get("reqs"),

@@ -57,6 +57,8 @@ def decide(run_dir: Path, ids: list[str], decision: str, by: str, note: str = ""
             raise ValueError(f"{i}({kind})의 결정은 {' 또는 '.join(DECISIONS[kind])}: {decision}")
         if kind == "repair_conflict" and decision == "repair" and module not in items[i]["mods"]:
             raise ValueError(f"{i}: 고칠 모듈은 {items[i]['mods']} 가운데 하나여야 함 (지금 {module})")
+        if kind == "repair_conflict" and decision == "repair" and items[i].get("remaining", {}).get(module) == 0:
+            raise ValueError(f"{i}: {module}은 Repair 상한을 다 써서 지정해도 Repair 없이 실패함. 다른 모듈이나 architect를 고름")
     spec = Path(st["spec"])
     spec_sha = hashlib.sha256(spec.read_bytes()).hexdigest()[:16] if spec.exists() else None
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -73,7 +75,8 @@ def decide(run_dir: Path, ids: list[str], decision: str, by: str, note: str = ""
 def _summary(p: dict) -> str:
     ff = p.get("first_failure") or {}
     if p["kind"] == "repair_conflict":
-        return (f"{p['id']}  Repair 충돌  {p['group']} 후보 {p['c']}  {','.join(p.get('reqs') or [])}  {ff.get('reason', '')}\n"
+        left = "  남은 Repair " + ", ".join(f"{m} {n}" for m, n in p["remaining"].items()) if p.get("remaining") else ""
+        return (f"{p['id']}  Repair 충돌  {p['group']} 후보 {p['c']}  {','.join(p.get('reqs') or [])}  {ff.get('reason', '')}{left}\n"
                 + "\n".join(f"    {x['module']}" + (f" → {x['suspects']}" if x.get('suspects') else "") + f": {x['reason'][:160]}" for x in p["claims"]))
     where = ff.get("property") or ff.get("stream") or ff.get("bundle") or ""
     cs = ",".join(str(c) for c in [p["c"]] + [x["c"] for x in p.get("also", [])])   # 같은 실패로 묶인 후보들

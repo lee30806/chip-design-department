@@ -237,6 +237,7 @@ class Run:
                     todo.append(p)
         if approved:
             self.verifier_diff_review(tbs, l1, "수정 후 ")
+            self.refund_repairs([p["id"] for ps in approved.values() for p in ps])
         for p in todo:
             if p["decision"].get("result") == "revise_failed":
                 continue
@@ -257,6 +258,32 @@ class Run:
             self.event("decision", f"{p['id']} {p['decision']['decision']} ({p['decision'].get('by')})")
         self.save()
         return tbs
+
+    def refund_repairs(self, ids: list[str]) -> None:
+        """승인된 기댓값 수정으로 테스트가 바뀌면, 마지막 테스트 수정 뒤 쓴 Repair 횟수를 모든 후보에 돌려준다. 그 횟수는 틀린 테스트에
+        맞추느라 쓴 것일 수 있다 (P8a async_fifo: SV 후보가 테스트가 고쳐지기 전에 상한을 다 써서 다시 해볼 기회가 없었음).
+        Repair 상한으로 멈춘 후보는 다시 돌린다. 돌려주는 일은 사람 승인마다 한 번이라 무한히 돌지 않는다."""
+        revive = set()
+        for f in sorted((self.dir / "modules").glob("*.json")):
+            key = f.stem.replace("__", "/")
+            st = self.mod_state(key)
+            back = st.get("repairs_since_tb", 0)
+            if back:
+                st["repairs"] = max(0, st["repairs"] - back)
+                st.setdefault("refunds", []).append({"items": ids, "repairs": back})
+            st["repairs_since_tb"] = 0
+            if st["status"] == "failed" and "Repair 상한" in (st.get("reason") or ""):
+                revive.add(key.rsplit("/c", 1)[1])
+            self.save_mod(key, st)
+        for f in sorted((self.dir / "modules").glob("*.json")):
+            key = f.stem.replace("__", "/")
+            st = self.mod_state(key)
+            if key.rsplit("/c", 1)[1] in revive and st["status"] == "failed" and "Repair 상한" in (st.get("reason") or ""):
+                st["status"] = "running"
+                st.pop("reason", None)
+                self.save_mod(key, st)
+        if revive:
+            self.event("refund", f"테스트 수정 {ids}: Repair 횟수를 돌려주고 상한으로 멈춘 후보 {sorted(revive)}를 다시 돌림")
 
     def apply_lead_decisions(self, tree: dict) -> dict:
         """Repair 충돌(repair_conflict)에 대한 Design-lead 결정을 반영하고 (바뀌었을 수 있는) 모듈 트리를 돌려준다.
@@ -673,7 +700,7 @@ class Run:
         gname = mods[0] if len(mods) == 1 else top_ir["module"]
         limit = self.roles.limits.get("repair_per_candidate", 5)
         while True:
-            total = sum(st["repairs"] for st in sts.values())
+            total = sum(_seq(st) for st in sts.values())   # 작업 이름과 검증 태그용 (되돌린 횟수와 무관하게 늘기만 함)
             lib = {top_ir["module"]: top_ir, **{n: (sts[n]["ir"] if n in sts else ch) for n, ch in children.items()}}
             v11 = v11_frozen({n: Module(r) for n, r in lib.items()}, tree["frozen"])
             if v11:
@@ -724,6 +751,7 @@ class Run:
                 rp = (self.failure_report(lib, top_ir["module"], failed[0]).get("report") or {}) if failed else {}
                 msg = f"lead가 지정한 {m}의 Repair 뒤 실패한 테스트가 {u['fail_count']}개 → {nfail}개로 늘어 그 Repair를 되돌림"
                 pid = self.add_pending({"kind": "repair_conflict", "group": gname, "mods": mods, "c": c, "chain": [m],
+                                        "remaining": {x: max(0, limit - sts[x]["repairs"]) for x in mods},
                                         "claims": [{"module": m, "suspects": None, "reason": msg, "workdir": u["workdir"]}],
                                         "reqs": [r] if (r := (rp.get("first_failure") or {}).get("req")) else [],
                                         "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag,
@@ -771,10 +799,13 @@ class Run:
                 block = None if len(mods) == 1 else {
                     "top": top_ir["module"], "instances": top_ir.get("instances", []), "connections": top_ir.get("connections", []),
                     "siblings": {n: children[n] for n in mods if n != mod}}
-                rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{st['repairs']}{self.arch_tag()}", st["ir"],
+                n = _seq(st)
+                rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{n}{self.arch_tag()}", st["ir"],
                                                              self.spec_path, failure, st["history"], block, lead=pin),
                                   repair.check(st["ir"], siblings=set(block["siblings"]) if block else None, pinned=bool(pin)))
                 st["repairs"] += 1
+                st["repair_seq"] = n + 1
+                st["repairs_since_tb"] = st.get("repairs_since_tb", 0) + 1
                 self.save_mod(keys[mod], st)
                 if not rres.ok:
                     stop = dict(status="failed", reason=f"{mod}: Repair 실패: {rres.errors[:3]}")
@@ -809,6 +840,7 @@ class Run:
                                 break
                         rp = failure.get("report") or {}
                         pid = self.add_pending({"kind": "repair_conflict", "group": gname, "mods": mods, "c": c,
+                                                "remaining": {x: max(0, limit - sts[x]["repairs"]) for x in mods},
                                                 "chain": tried + [sus[0]], "claims": claims,
                                                 "reqs": [r] if (r := (rp.get("first_failure") or {}).get("req")) else [],
                                                 "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag})
@@ -1177,6 +1209,11 @@ def diff_window(rec: dict, diff: dict, limit: int = 300) -> list:
 def load_decisions(run_dir: Path) -> list[dict]:
     p = Path(run_dir) / "decisions.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+
+
+def _seq(st: dict) -> int:
+    """Repair 작업 번호. 되돌릴 수 있는 횟수(repairs)와 달리 늘기만 해서 작업 이름(캐시 키)이 겹치지 않는다."""
+    return st.get("repair_seq", st["repairs"])
 
 
 def _assumption(a: dict) -> str:

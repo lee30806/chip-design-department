@@ -601,3 +601,46 @@ def test_repair_conflict_goes_to_arbiter_first(tmp_path):
         [("expectation_change", 0, [0, 1]), ("expectation_change", 1, [0, 1])]
     assert "REPAIR_CONFLICT" not in {r["code"] for r in rep["review"]}
     assert all("서로 원인을 넘김" in p["repeated_failure"]["note"] for p in approve.pending(tmp_path / "run"))
+
+
+def test_approved_test_fix_refunds_repairs_and_revives_capped_candidate(tmp_path):
+    """후보 0은 틀린 테스트에 맞추느라 Repair 상한을 다 써서 멈추고, 후보 1은 기댓값 수정 승인을 기다린다.
+    승인으로 테스트가 바뀌면 Repair 횟수를 돌려받고 후보 0도 다시 돌아 통과한다 (P8a async_fifo SV 후보)."""
+    from pipeline.scheduler import approve
+
+    f = _files_wrong_v1(tmp_path)
+    body = json.loads(f["Author"]["out/axis_adapter_core.ir.json"])
+    k = next(b for b in body["blocks"] if b["id"] == "k_ports")["body"]
+    tw = {"verdict": "test_wrong", "reqs": ["ADP-01"], "reason": "SPEC에 없는 검사", "proposal": "bogus 속성을 지운다"}
+    files = {"Architect": f["Architect"], "Author": f["Author"], "Verifier|기댓값 수정": f["Verifier|기댓값 수정"],
+             "Verifier|verifier__v1": f["Verifier|verifier__v1"], "Verifier": f["Verifier"],
+             "Arbiter|__c0__": {"out/verdict.json": json.dumps({**tw, "verdict": "rtl_wrong", "proposal": ""})},
+             "Arbiter|__c1__": {"out/verdict.json": json.dumps(tw)}}
+    for n in range(6):
+        files[f"Repair|__r{n}"] = {"out/patches.json": json.dumps(
+            [{"op": "set", "target": "blocks/k_ports", "field": "body", "value": f"// repair {n}\n{k}"}])}
+    run = tmp_path / "run"
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    c0 = json.loads((run / "modules" / "axis_adapter_core__c0.json").read_text())
+    assert c0["status"] == "failed" and "Repair 상한" in c0["reason"] and c0["repairs"] == 2, json.dumps(rep, ensure_ascii=False)[:2000]
+    approve.decide(run, [p["id"] for p in approve.pending(run)], "approved", by="design-lead")
+    rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert all(c["status"] == "pass" for c in rep["candidates"].values())
+    c0 = json.loads((run / "modules" / "axis_adapter_core__c0.json").read_text())
+    assert c0["repairs"] == 0 and c0["refunds"][0]["repairs"] == 2 and c0["repair_seq"] == 2   # 작업 번호는 그대로 늘어난 채
+
+
+def test_lead_cannot_pin_module_without_repairs_left(tmp_path):
+    """Repair 충돌 항목은 모듈별 남은 Repair 횟수를 보이고, 다 쓴 모듈은 고칠 모듈로 지정할 수 없다."""
+    from pipeline.scheduler import approve
+
+    run = tmp_path / "run"
+    run.mkdir()
+    item = {"id": "E1", "kind": "repair_conflict", "group": "g", "mods": ["a", "b"], "c": 0, "chain": ["a", "b", "a"],
+            "claims": [{"module": "a", "suspects": "b", "reason": "x"}], "remaining": {"a": 0, "b": 2}}
+    (run / "state.json").write_text(json.dumps({"status": "waiting_approval", "spec": str(SPEC), "pending": [item], "review": []}))
+    assert "남은 Repair a 0, b 2" in approve._summary(item)
+    with pytest.raises(ValueError, match="상한을 다 써서"):
+        approve.decide(run, ["E1"], "repair", by="lead", module="a")
+    assert approve.decide(run, ["E1"], "repair", by="lead", module="b")[0]["module"] == "b"
