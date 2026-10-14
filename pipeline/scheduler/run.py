@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
+import os
 import random
 import sys
 import threading
@@ -45,7 +47,7 @@ from pipeline.tb.gen import harness_source, trace_names
 from pipeline.tb.diffsim import compare, describe, episodes, make_plan, truncate, without
 from pipeline.tb.report import mismatch_report
 from pipeline.validator.checks import errors, validate
-from pipeline.validator.structure import frozen_scope, v11_frozen
+from pipeline.validator.structure import feedthrough_paths, feedthrough_rule, frozen_scope, v11_frozen
 from pipeline.verify import pyequiv
 from pipeline.verify.run import lint, sim
 
@@ -92,11 +94,40 @@ class Run:
         with self.lock:
             self.state["events"].append({"t": time.strftime("%H:%M:%S"), "kind": kind, "msg": msg})
 
-    def review(self, code: str, msg: str, where: str = "", source: str = "scheduler") -> None:
-        item = {"code": code, "severity": "review", "where": where, "message": msg, "source": source}
+    def review(self, code: str, msg: str, where: str = "", source: str = "scheduler", pending: str | None = None) -> None:
+        item = {"code": code, "severity": "review", "where": where, "message": msg, "source": source,
+                **({"pending": pending} if pending else {})}
         with self.lock:
             if item not in self.state["review"]:
                 self.state["review"].append(item)
+
+    def roles_changed(self) -> bool:
+        """역할 설정(역할별 모델과 계열)을 처음 보면 True. 같은 설정의 경고(MODEL_FAMILY)를 실행마다 올리지 않으려고
+        본 설정을 저장소 밖(`roles_seen.json`)에 기록한다 (P8 회고)."""
+        seen_path = Path(os.environ.get("CHIPDEPT_ROLES_SEEN") or RUNS.parent / "roles_seen.json")
+        fp = hashlib.sha256(json.dumps({r: [a.model, a.family] for r, a in sorted(self.roles.agents.items())},
+                                       sort_keys=True).encode()).hexdigest()[:16]
+        try:
+            seen = json.loads(seen_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            seen = []
+        if fp in seen:
+            self.event("roles", f"역할 설정 {fp}는 전에 본 것이라 MODEL_FAMILY 검토 항목을 올리지 않음")
+            return False
+        seen_path.parent.mkdir(parents=True, exist_ok=True)
+        seen_path.write_text(json.dumps(seen + [fp]), encoding="utf-8")
+        return True
+
+    def close_review(self, p: dict) -> None:
+        """사람 결정이 반영되면 그 항목을 기다리던 검토 항목에 결과(결정, 사람, 시각)를 적는다 (P8 회고: "승인 대기"로 남던 문제)."""
+        d = p.get("decision") or {}
+        res = d.get("result") or d.get("decision")
+        tag = f" → {res}{' ' + d['module'] if d.get('module') else ''} ({d.get('by') or '-'}, {d.get('at') or p.get('applied')})"
+        with self.lock:
+            for r in self.state["review"]:
+                if r.get("pending") == p["id"] and "decided" not in r:
+                    r["message"] = r["message"].replace(" (사람 승인 대기)", "").replace(f" {p['id']} 대기", f" {p['id']}") + tag
+                    r["decided"] = {"decision": res, "by": d.get("by"), "at": d.get("at") or p.get("applied")}
 
     def mod_state(self, key: str) -> dict:
         p = self.dir / "modules" / f"{key.replace('/', '__')}.json"
@@ -152,6 +183,18 @@ class Run:
         self.save()
         return pid
 
+    def join_pending(self, item: dict, key: str) -> str | None:
+        """같은 Verifier의 같은 테스트가 같은 이유로 다른 후보에서도 실패했으면, 아직 결정하지 않은 그 항목에 이 후보를 붙인다
+        (P8 회고: 같은 결정을 후보마다 두 번 받음). 붙였으면 그 항목의 id."""
+        decided = {d["id"] for d in load_decisions(self.dir)}
+        with self.lock:
+            for p in self.state.get("pending", []):
+                if p["kind"] == item["kind"] and p.get("group_key") == key and p["id"] not in decided and not p.get("applied"):
+                    if p["c"] != item["c"] and all(x["c"] != item["c"] for x in p.get("also", [])):
+                        p.setdefault("also", []).append({k: item.get(k) for k in ("c", "mods", "arbiter_dir", "first_failure")})
+                    return p["id"]
+        return None
+
     def apply_decisions(self, tree: dict, tbs: list[str]) -> list[str]:
         """사람 결정을 반영한다. 승인: Verifier가 수정안대로 테스트를 고치고, 그 Verifier를 기다리던 후보를 모두 다시 돌린다.
         거절: 그 후보를 다시 돌리되 그 Verifier의 실패는 Arbiter 없이 Repair로 보낸다."""
@@ -197,8 +240,8 @@ class Run:
         for p in todo:
             if p["decision"].get("result") == "revise_failed":
                 continue
-            for m in p["mods"]:
-                key = f"{m}/c{p['c']}"
+            for m, c in [(m, p["c"]) for m in p["mods"]] + [(m, x["c"]) for x in p.get("also", []) for m in x["mods"]]:
+                key = f"{m}/c{c}"
                 st = self.mod_state(key)
                 ids = st.get("pending_ids") or [st.get("pending")]
                 if st["status"] == "waiting_approval" and p["id"] in ids:
@@ -210,6 +253,7 @@ class Run:
                         st.pop("pending_ids", None)
                     self.save_mod(key, st)
             p["applied"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.close_review(p)
             self.event("decision", f"{p['id']} {p['decision']['decision']} ({p['decision'].get('by')})")
         self.save()
         return tbs
@@ -235,6 +279,7 @@ class Run:
                     p["decision"] = {**(p.get("decision") or {"decision": "superseded"}), "result": "superseded",
                                      "superseded_by": f"Architect 재구성 {[x['id'] for x in arch]}"}
                     p["applied"] = now
+                    self.close_review(p)
             tree = new
         else:
             for p in arch:
@@ -259,6 +304,7 @@ class Run:
                         self.save_mod(key, st)
         for p in todo:
             p["applied"] = now
+            self.close_review(p)
             d = p["decision"]
             self.event("decision", f"{p['id']} {d['decision']}{' ' + d['module'] if d.get('module') else ''} ({d.get('by')})")
         self.save()
@@ -279,7 +325,8 @@ class Run:
             return None
         top_ir, children, assumptions = architect.read_tree(Path(res.workdir), top_l1["module"])
         for a in assumptions:
-            self.review("ASSUMPTION", f"[재구성 {rev}] {a}", "architect", "architect")
+            if architect.needs_review(a):
+                self.review("ASSUMPTION", f"[재구성 {rev}] {_assumption(a)}", "architect", "architect")
         lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
         new = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions}
         # 이전 트리의 후보 상태와 L1은 보관하고 새 트리로 Author부터 다시 돌린다
@@ -333,8 +380,9 @@ class Run:
             self.finish_step("architect", None)
             return None
         top_ir, children, assumptions = architect.read_tree(Path(res.workdir), top_l1["module"])
-        for a in assumptions:
-            self.review("ASSUMPTION", a, "architect", "architect")
+        for a in assumptions:   # 모듈 안의 배분만 정한 가정은 Architect 기록(tree)에만 남긴다
+            if architect.needs_review(a):
+                self.review("ASSUMPTION", _assumption(a), "architect", "architect")
         lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
         tree = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions}
         (self.dir / "ir").mkdir(exist_ok=True)
@@ -376,8 +424,9 @@ class Run:
             results = list(ex.map(lambda n: self.agent("verifier", verifier.make_task(n, l1, self.spec_path),
                                                        verifier.check(l1)), names))
         tbs = [r.outputs[verifier.out_rel(l1["module"])] for r in results if r.ok]
-        for w in self.roles.warnings():
-            self.review("MODEL_FAMILY", w, "roles")
+        if (ws := self.roles.warnings()) and self.roles_changed():
+            for w in ws:
+                self.review("MODEL_FAMILY", w, "roles")
         if len(tbs) >= 2:
             self.verifier_diff_review(tbs, l1)
         self.finish_step("verifiers", tbs)
@@ -570,15 +619,28 @@ class Run:
         for st in sts.values():
             st.setdefault("arbiter", []).append(verdict)
         if verdict == "test_wrong":
-            pid = self.add_pending({"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
-                                    "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
-                                    "first_failure": (rep["report"] or {}).get("first_failure"),
-                                    "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {}),
-                                    **({"repeated_failure": repeated} if repeated else {})})
+            ff = (rep["report"] or {}).get("first_failure") or {}
+            # 같은 실패: 같은 Verifier, 같은 테스트, 같은 검사 (사이클과 값은 후보마다 다를 수 있음)
+            key = json.dumps([v["verifier"], (rep["report"] or {}).get("test") or ff.get("test"), ff.get("check"),
+                              ff.get("property") or ff.get("stream") or ff.get("bundle") or ff.get("message"),
+                              ff.get("kind") or ff.get("rule")], ensure_ascii=False)
+            item = {"kind": "expectation_change", "verifier": v["verifier"], "group": gname, "mods": mods,
+                    "c": c, "reqs": vj.get("reqs"), "reason": vj.get("reason"), "proposal": vj.get("proposal"),
+                    "first_failure": (rep["report"] or {}).get("first_failure"), "group_key": key,
+                    "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {}),
+                    **({"repeated_failure": repeated} if repeated else {})}
+            joined = self.join_pending(item, key)
+            if joined:
+                ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
+                self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 같은 실패라 기댓값 수정 제안 "
+                            f"{joined}에 묶음 (사람 승인 대기)", str(ares.workdir), "arbiter", pending=joined)
+                save_all(status="waiting_approval", pending=joined, pending_ids=ids + [joined])
+                return verdict
+            pid = self.add_pending(item)
             self.review("EXPECTATION_CHANGE", f"{gname} 후보 {c}: Verifier {v['verifier']}의 기댓값 수정 제안 {pid} (사람 승인 대기)"
                         + (" (Repair의 L1 변경 요청을 Arbiter가 테스트 쪽 문제로 판정)" if claim else "")
                         + (f" (Repair {repeated['repairs']}번 뒤에도 같은 테스트가 실패해 Arbiter가 판정)" if repeated else ""),
-                        str(ares.workdir), "arbiter")
+                        str(ares.workdir), "arbiter", pending=pid)
             # L1 변경 요청은 실패한 Verifier마다 판정하므로 한 후보가 항목 여럿을 기다릴 수 있다
             ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
             save_all(status="waiting_approval", pending=pid, pending_ids=ids + [pid])
@@ -630,14 +692,23 @@ class Run:
                                 str(self.dir / "verify" / vtag / f'pyequiv_{x["module"]}'))
                 save_all(status="failed", reason=f'번역기 검사 실패: {[x["module"] for x in bad]}')
                 break
-            if skel := [x for x in vres["e1"] if x["type"] == "lint_skeleton" and x.get("severity") == "error"]:
+            # 골격에서 구동이 없거나 둘인 신호는 경고여도 생성기 버그다 (P8a async_fifo: 인스턴스 출력의 넷 이름이 갈려 m_pause_ack 무구동)
+            if skel := [x for x in vres["e1"] if x["type"] == "lint_skeleton" and (
+                    x.get("severity") == "error" or any(f" {r}]" in x["message"] for r in ("UNDRIVEN", "MULTIDRIVEN")))]:
                 # 방출기가 만든 골격의 lint 에러: 생성기 버그다. Repair나 Verifier로 고칠 일이 아니므로 사람에게 넘긴다
                 self.review("GENERATOR_BUG", f"{gname} 후보 {c}: 골격 lint 에러 (생성기 버그): "
                             f'{"; ".join(x["message"] for x in skel[:3])[:400]}', str(self.dir / "verify" / vtag / "rtl"))
                 save_all(status="failed", reason=f'생성기 버그 (골격 lint 에러 {len(skel)}건)')
                 break
             if vres["ok"]:
-                save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]])
+                # SPEC 9절이 입력→출력 조합 경로를 막으면 통과한 후보의 경로를 검토 항목으로 낸다 (P8 회고: pi.lead가 RTL을 읽어 찾음)
+                rule = feedthrough_rule(self.spec_path.read_text(encoding="utf-8"))
+                if rule and (paths := feedthrough_paths(Module(top_ir), {n: Module(r) for n, r in lib.items()}, rule)):
+                    self.review("COMB_PATH", f"{gname} 후보 {c}: SPEC 9절이 입력→출력 조합 경로를 막는데 경로가 있음 "
+                                f"({len(paths)}개): {', '.join(f'{i}→{o}' for i, o in paths[:8])}",
+                                str(self.dir / "verify" / vtag / "rtl"))
+                save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]],
+                         comb_paths=len(paths) if rule else None)
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
             nfail = sum(len({f["test"] for f in x["findings"] if f["test"]}) or 1 for x in failed)
@@ -658,7 +729,7 @@ class Run:
                                         "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag,
                                         "regressed": True})
                 self.review("LEAD_REPAIR_REGRESSED", f"{gname} 후보 {c}: {msg}. Design-lead 결정 {pid} 대기 "
-                            "(다른 모듈 지정 또는 Architect 재구성)", u["workdir"], "repair")
+                            "(다른 모듈 지정 또는 Architect 재구성)", u["workdir"], "repair", pending=pid)
                 save_all(status="waiting_approval", pending=pid)
                 break
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
@@ -731,7 +802,8 @@ class Run:
                                                 "reqs": [r] if (r := (rp.get("first_failure") or {}).get("req")) else [],
                                                 "first_failure": rp.get("first_failure"), "spec": rp.get("spec"), "verify": vtag})
                         self.review("REPAIR_CONFLICT", f"{gname} 후보 {c}: Repair들이 서로 원인을 넘김 ({' → '.join(tried + [sus[0]])}). "
-                                    f"Design-lead 결정 {pid} 대기 (고칠 모듈 지정 또는 Architect 재구성)", rres.workdir, "repair")
+                                    f"Design-lead 결정 {pid} 대기 (고칠 모듈 지정 또는 Architect 재구성)", rres.workdir, "repair",
+                                    pending=pid)
                         stop = dict(status="waiting_approval", pending=pid)
                         break
                     mod = sus[0]
@@ -1094,6 +1166,10 @@ def diff_window(rec: dict, diff: dict, limit: int = 300) -> list:
 def load_decisions(run_dir: Path) -> list[dict]:
     p = Path(run_dir) / "decisions.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+
+
+def _assumption(a: dict) -> str:
+    return (f"[{', '.join(a['affects'])}] " if a.get("affects") else "") + a["text"]
 
 
 def _sim_type(rule: str) -> str:

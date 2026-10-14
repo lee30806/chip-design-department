@@ -76,7 +76,8 @@ def _summary(p: dict) -> str:
         return (f"{p['id']}  Repair 충돌  {p['group']} 후보 {p['c']}  {','.join(p.get('reqs') or [])}  {ff.get('reason', '')}\n"
                 + "\n".join(f"    {x['module']}" + (f" → {x['suspects']}" if x.get('suspects') else "") + f": {x['reason'][:160]}" for x in p["claims"]))
     where = ff.get("property") or ff.get("stream") or ff.get("bundle") or ""
-    return (f"{p['id']}  {p['group']} 후보 {p['c']}  Verifier {p['verifier']}  {','.join(p.get('reqs') or [])}  "
+    cs = ",".join(str(c) for c in [p["c"]] + [x["c"] for x in p.get("also", [])])   # 같은 실패로 묶인 후보들
+    return (f"{p['id']}  {p['group']} 후보 {cs}  Verifier {p['verifier']}  {','.join(p.get('reqs') or [])}  "
             f"{ff.get('check', '')} {where}\n    수정안: {(p.get('proposal') or '')[:200]}")
 
 

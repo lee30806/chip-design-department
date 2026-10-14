@@ -74,7 +74,8 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
       </div>
       {item.kind === "expectation_change" && (
         <div className="small stack">
-          <div>Verifier {String(d.verifier)} · 후보 묶음 c{String(d.c)}</div>
+          <div>Verifier {String(d.verifier)} · 후보 묶음 c{String(d.c)}
+            {((d.also as { c: number }[]) ?? []).map((x) => `, c${x.c}`).join("")}</div>
           <div><b>판정 이유</b> {String(d.reason ?? "")}</div>
           <div><b>수정안</b> {String(d.proposal ?? "")}</div>
         </div>
@@ -92,6 +93,11 @@ function PendingCard({ item, canDecide, done }: { item: PendingItem; canDecide: 
       {item.kind === "spec_change" && (
         <div className="small stack">
           <div><b>이유</b> {String(d.reason ?? "")} <span className="muted">({String(d.by ?? "")}, {String(d.source ?? "")})</span></div>
+          {d.spec_check != null && (() => {
+            const sc = d.spec_check as { gate: string; errors: string[]; new_review: string[] };
+            return <div><b>SPEC 검사</b> {sc.gate}
+              {[...sc.errors, ...sc.new_review].map((x, i) => <div key={i} className="muted">{x}</div>)}</div>;
+          })()}
           <pre className="small">{JSON.stringify(d.spec_diff, null, 1)}</pre>
         </div>
       )}

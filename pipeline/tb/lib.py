@@ -71,6 +71,11 @@ class ValidReadyDriver:
     def send(self, txn: dict, idle: int = 0) -> None:
         self.queue.append((idle, txn))
 
+    def flush(self) -> None:
+        """도메인 리셋: 보내던 전송과 남은 큐를 버린다 (보내는 쪽도 함께 리셋된 것으로 본다)."""
+        self.queue.clear()
+        self.cur, self.idle = None, 0
+
     @property
     def busy(self) -> bool:
         return bool(self.queue) or self.cur is not None or self.idle > 0
@@ -378,6 +383,13 @@ class Harness:
             c = self.cycle[domain]
             for d in drivers:
                 d.on_sample()
+            # 테스트가 도중에 리셋을 걸면 그 도메인의 입력 큐를 비운다. 리셋 뒤에도 남은 전송이 들어가면
+            # 테스트가 리셋 전 프레임의 나머지를 리셋 뒤 출력으로 오해한다 (P8a async_fifo sc02, 두 번)
+            port, active = self.cfg["resets"][domain]
+            if _int(getattr(self.dut, port)) == active:
+                for d in drivers:
+                    if hasattr(d, "flush"):
+                        d.flush()
             for s in self.samplers[domain]:
                 s.sample(c)
             if self.properties:

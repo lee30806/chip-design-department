@@ -134,3 +134,38 @@ def test_v11_frozen_detects_l1_change_but_not_body_change():
     raw["ports"][1]["type"] = "logic [1:0]"
     lib["pkt_parser"] = Module(raw)
     assert [str(i) for i in v11_frozen(lib, base)] == ["[V11] pkt_parser/l1: 동결 범위가 바뀜"]
+
+
+def test_feedthrough_rule_and_paths():
+    """SPEC 9절의 조합 통과 금지를 읽고, 입력→출력 조합 경로를 찾는다 (P8 회고: E1에서 검토 항목으로)."""
+    from pipeline.ir.model import load
+    from pipeline.validator.structure import feedthrough_paths, feedthrough_rule
+
+    sec = "## 9. 구현 제약\n\n### 금지 사항\n- {}\n\n## 10. 열린 질문\n- 출력 레지스터는 나중에\n"
+    assert feedthrough_rule(sec.format("래치")) is None   # 10절의 문장은 보지 않음
+    assert feedthrough_rule(sec.format("s_axis_* 포트에서 m_axis_* 포트로의 순수 조합 통과 경로")) == [("s_axis_", "m_axis_")]
+    assert feedthrough_rule(sec.format("입출력 조합 통과 경로(feedthrough)")) == [("", "")]
+    m = load(Path(__file__).parent / "fixtures" / "py" / "py_ops.ir.json")
+    paths = feedthrough_paths(m, {}, [("", "")])
+    assert ("a", "sum9") in paths and not any(o in ("acc", "par") for _, o in paths)   # 레지스터 출력은 경로 없음
+    assert feedthrough_paths(m, {}, [("b", "inv")]) == []
+
+
+def test_combinational_loop_across_instances():
+    """하위 모듈 둘이 각자 입력을 출력으로 조합 통과하고 서로 이어 고리를 만들면 V6 조합 루프 (부모 IR에서 잡힘)."""
+    dom = [{"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst", "active": "high", "async": False}}]
+
+    def thru(name):
+        return Module({"module": name, "role": "module", "params": [], "domains": dom,
+                       "ports": [{"name": "i", "dir": "input", "type": "logic", "domain": "sys"},
+                                 {"name": "o", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire"}],
+                       "blocks": [{"id": "k", "kind": "comb", "reads": ["i"], "writes": ["o"], "body": "o = ~i;"}]})
+    lib = {"ta": thru("ta"), "tb": thru("tb")}
+    top = Module({"module": "top", "role": "block_top", "params": [], "domains": dom,
+                  "ports": [{"name": "y", "dir": "output", "type": "logic", "domain": "sys"}],
+                  "instances": [{"name": "u_a", "module": "ta", "domain_map": {"sys": "sys"}},
+                                {"name": "u_b", "module": "tb", "domain_map": {"sys": "sys"}}],
+                  "connections": [{"id": "c1", "from": "u_a.o", "to": "u_b.i"}, {"id": "c2", "from": "u_b.o", "to": "u_a.i"},
+                                  {"id": "c3", "from": "u_b.o", "to": "self.y"}]})
+    issues = [str(i) for i in validate(top, lib)]
+    assert any("[V6]" in i and "조합 루프" in i for i in issues), issues

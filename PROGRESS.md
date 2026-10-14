@@ -15,7 +15,7 @@
 | P6 부서 계층 (OpenRig) | **완료 (가능한 범위)** | 완료 기준 2개 시험 통과. 폐쇄망 설치, Linux 격리, Sanity 연동은 대기 |
 | P7 게이트웨이와 Web UI 1차 | **완료** | 완료 기준: 승인자만 승인, 모든 승인 기록. SSO와 대화 중계는 이후 |
 | P8 첫 Block Top End-to-End | **완료 (2026-10-13)** | 신규 블록 `axis_crc_append` RTL Freeze (실행 674c). agy Seat, 오픈소스 대체 EDA. 커밋 `34b2205` |
-| P8a Python 동작 조각 | **구현 완료, 실제 비교 진행 중 (2026-10-13)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 남은 일: 실제 블록에서 SV 후보와 비교 (작업 9) |
+| P8a Python 동작 조각 | **완료 (2026-10-14)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 비교 4블록 모두 두 언어 후보 통과 (단 async_fifo는 방출기 버그로 무효, 재검증 필요). 범위: 후보 하나만 Python (후보 0 SV, 후보 1 Python) |
 | P9 운영 안정화 | **보류 (사용자 결정 2026-10-13)** | P8 회고에서 넘긴 항목은 아래 대기 항목 |
 
 ## 제외 항목 (사용자 결정)
@@ -45,7 +45,6 @@
 | 동결 해제 전파 (L1 변경 요청 → Architect 재실행, 진행 중 루프 취소) | P4 | L1 변경이 실제로 필요한 블록 (P8) |
 | 두 단계 이상의 모듈 트리 | P4 | 하위 모듈이 다시 나뉘는 블록 (P8) |
 | 에이전트 단독 평가 나머지 (Author, Verifier, Architect 각 3블록, Repair cobs) | P4 | agy 사용량 여유 |
-| P8 회고 조정안 적용 (검토 항목 조건, Repair 상한 3, 예산 60, 조합 경로 검사) | P9 | P9 재개 |
 | 대체 LEC 무한 증명 (사내 Formality/Conformal 또는 FSM 재인코딩 끄기) | P8 | 사내 LEC 또는 PI 결정 |
 | `axis_crc_append` CRC-E03 정의, Q-01 결정, DV 공백(SVA, 16비트 롤오버) | P8 | 다음 SPEC 개정 |
 | golden 블록 Verifier 체커의 리셋 표본 가정 재확인 | P8 | P9 재개 |
@@ -139,6 +138,18 @@
   - 관찰: 리셋 시험에서 하니스 송신 큐가 리셋 뒤에도 계속 보내는 것이 같은 오판을 두 번 만듦. 하니스에 "도메인 리셋 때 그 도메인 송신 큐 비우기"를 두는 것이 개선 거리.
 - **09:05 async_fifo 통과.** SV, Python 후보 모두 통과 (Repair SV 4, Python 6, lint SV 20, Python 21). 원본 테스트벤치 두 후보 모두 20/20. SV 후보를 고름. 에이전트 누적 30회, 사람 결정은 기댓값 수정 4건(E1~E4) 승인. (Python 후보는 `memory`와 `cdc_sync`를 쓰는 모듈이라 번역기 검사를 건너뜀.)
 - **P8a 비교 실험 결과 (4블록, 모든 역할 Claude Code Sonnet low):** adapter, cobs_decode, crc_append, async_fifo 모두 SV와 Python 후보가 함께 통과. 원본 테스트벤치도 두 후보 모두 통과. 언어 때문에 생긴 실패는 Python 조각의 메모리 지원 빈틈 하나(고침)뿐이고, 나머지 실패는 모두 파이프라인 쪽(방출기, 하니스 리셋 처리와 req 목록, 한도 문구, 묶음 워드 계약)이나 Verifier 테스트 해석에서 나왔다. Repair 수는 Python 후보가 같거나 조금 많다 (cobs 1→2, crc 0→1, fifo 4→6).
+- **사용자 결정(10월 14일): Python 조각은 후보 하나만.** `config/roles.json`의 `author.langs`를 `["sv", "py"]`로 바꿈 (후보 0 SV, 후보 1 Python). 근거: 통과율 차이 없음, Python은 Repair가 같거나 조금 많음, 번역기 검사는 memory/cdc_sync 모듈을 아직 못 봄. 두 언어 후보의 차분 검사로 다양성을 얻고 비용은 후보 하나로 제한. 실제 설정을 읽는 시험(API, 게이트웨이, 부서) 통과. **P8a 완료.**
+- **사용자 지시(10월 14일): P8 회고 조정안(운영 정리 제외)과 하니스 송신 큐 비우기 진행.**
+  - **하니스:** 테스트 도중 리셋을 걸면 그 도메인 입력 번들의 남은 전송을 버린다 (async_fifo sc02 오판 두 번). Verifier 안내서에도 적음. 시험 추가 (고치기 전에는 실패 확인).
+  - **반복 상한과 예산:** `repair_per_candidate` 5 → 3, `budget_agent_runs` 200 → 60 (P8a async_fifo 최대 30회). 실행 상태에 같은 Block Top 계보의 에이전트 실행 합계(`lineage_agent_runs`)를 보임. 실행이 2시간을 넘으면 감시(watchdog)가 운영에게 한 번 알림(멈추지 않음).
+  - **툴 결함으로 버린 실행:** `POST /runs/<id>/discard`(chip-lead, design-lead)로 사유와 함께 기록하면 환류 재실행 상한 계산에서 뺀다.
+  - **검토 항목:** (1) 같은 Verifier의 같은 테스트가 같은 이유로 여러 후보에서 실패하면 기댓값 수정 항목 하나로 묶고 한 번 결정으로 모든 후보를 풂. (2) 결정이 반영되면 그 검토 항목에 결과(결정, 사람, 시각)를 적음. (3) 가정은 Architect가 `affects`(l1, timing, reset, spec_gap)를 표시하고, 비지 않은 것만 검토 항목 (모듈 안 배분은 Architect 기록에만). 회고는 L1, 타이밍, 리셋만이었으나 SPEC 미정의를 정한 가정도 사람이 봐야 해서 spec_gap을 더함. 표시가 없는 가정은 검토 항목. (4) MODEL_FAMILY는 처음 보는 역할 설정에서만 (본 설정은 저장소 밖 `roles_seen.json`). (5) SPEC 변경 요청에 SPEC 툴 검사(게이트, 오류, 새로 생긴 검토 항목)를 붙이고 게이트웨이에 보임.
+  - **조합 경로 검사:** SPEC 9절의 출력 레지스터·조합 통과 금지를 읽어, 통과한 후보의 입력→출력 조합 경로를 COMB_PATH 검토 항목으로 냄 (IR 그래프). PI에는 `eda comb`(합성 넷리스트 기준)을 더함. P8 첫 실행(0a82) RTL에서 두 검사 모두 pi.lead가 찾은 경로 3개(m_axis_tready→s_axis_tready, s_axis_tdata→m_axis_tdata, s_axis_tvalid→m_axis_tvalid)를 찾고, 674c와 P8a crc에서는 0개.
+- **사용자 지시(10월 14일): 조합 경로 검사에 조합 루프 금지 추가.**
+  - `eda comb`이 합성 넷리스트의 조합 루프를 ERROR로 낸다 (강연결 요소). 실제 RTL 6개(P8 0a82, 674c, P8a 4블록)에서 루프 0개로 오탐 없음. IR 단계는 Validator V6가 이미 조합 루프를 오류로 막는다.
+  - **V6 빈틈과 방출기 버그 발견:** 인스턴스 출력이 부모 포트와 다른 인스턴스로 함께 나가면 넷 이름이 갈렸다. 방출기는 한쪽을 구동 없는 wire나 구동 없는 출력 포트로 남겼고, V6는 인스턴스를 넘는 조합 루프를 놓쳤다. 넷 이름을 부모 포트 이름으로 통일하고 V6가 방출기와 같은 넷 표를 쓰게 고침. 시험 2개 (번역기 검사로 RTL 동작 확인, 인스턴스를 넘는 루프).
+  - **영향:** 지난 async_fifo 트리 모두 `m_pause_ack`가 이 모양이었다. 통과로 기록한 P8a async_fifo RTL은 출력 `m_pause_ack`가 구동되지 않는다 (verilator UNDRIVEN). 앞선 실행의 "m_pause_ack가 1이 되지 않음" 실패도 이 버그였고 Repair로는 고칠 수 없었다. **P8a async_fifo 통과는 무효.** 다른 P8a 블록과 P8 RTL Freeze(674c)에는 없음.
+  - 골격 lint의 UNDRIVEN, MULTIDRIVEN 경고도 생성기 버그(GENERATOR_BUG)로 멈춤 (전에는 에러만).
 - `department/seats.json`의 Seat 모델도 `gemini-3.1-pro-high`라서 Seat를 다시 띄우면 같은 문제가 납니다. 이번 비교에는 Seat를 쓰지 않아 그대로 두었습니다.
 - `axis_async_fifo`는 `memory`, `cdc_sync`를 써서 설계 모델 실행기가 지원하지 않으므로 Python 후보의 번역기 검사는 건너뜁니다 (번역과 RTL 검증은 그대로 함).
 

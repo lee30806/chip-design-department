@@ -190,7 +190,7 @@ def _use_files(env, tmp_path, f):
 
 
 def test_expectation_change_only_by_approver(env, tmp_path):
-    # Verifier 1의 테스트에 틀린 속성 → Arbiter test_wrong → 승인 대기 E1, E2
+    # Verifier 1의 테스트에 틀린 속성 → Arbiter test_wrong → 두 후보의 같은 실패가 승인 대기 항목 하나(E1)로 묶임
     _use_files(env, tmp_path, _files_wrong_v1(tmp_path))
     st = env["st"]
     c = env["c"]
@@ -199,7 +199,8 @@ def test_expectation_change_only_by_approver(env, tmp_path):
     rid = c["des"].call("POST", "/api/runs", {"spec_id": s["id"]})[1]["run_id"]
     assert st.wait(rid, timeout=600)["status"] == "waiting_approval"
     pend = [p for p in c["apr"].call("GET", "/api/approvals/pending")[1] if p["kind"] == "expectation_change"]
-    assert len(pend) == 2 and all(p["reqs"] == ["ADP-01"] and p["detail"]["proposal"] for p in pend)
+    assert len(pend) == 1 and all(p["reqs"] == ["ADP-01"] and p["detail"]["proposal"] for p in pend)
+    assert sorted([pend[0]["detail"]["c"]] + [x["c"] for x in pend[0]["detail"]["also"]]) == [0, 1]
     _non_approvers_refused(env, "expectation_change", pend[0]["target"])
     for p in pend:
         code, rec = c["apr"].call("POST", "/api/approvals", {"kind": "expectation_change", "target": p["target"],

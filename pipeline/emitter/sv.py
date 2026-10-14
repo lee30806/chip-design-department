@@ -148,23 +148,37 @@ def _instance_nets(m: Module, library: dict[str, Module]) -> tuple[dict[tuple[st
 
     nets: dict[tuple[str, str], tuple[str, str]] = {}
     wires: list[tuple[str, str, str]] = []
+    resolved = []
     for c in m.connections:
         ends = [_endpoint_ports(m, c[k], library) for k in ("from", "to")]
         if not all(ends):
             raise EmitError(f'connections/{c["id"]}: 끝점을 해석할 수 없음 (Validator V2를 먼저 통과해야 함)')
-        owners = [c[k].split(".", 1)[0] for k in ("from", "to")]
+        resolved.append((c, ends, [c[k].split(".", 1)[0] for k in ("from", "to")]))
+    # 인스턴스 출력이 부모 포트에도 이어지면 그 포트 이름을 넷 이름으로 쓴다. 같은 출력을 읽는 다른 인스턴스도
+    # 그 이름을 써야 한다 (wire를 따로 만들면 아무도 구동하지 않음)
+    alias: dict[tuple[str, str], str] = {}
+    for c, ends, owners in resolved:
+        for (da, na), (db, nb) in zip(*ends):
+            if owners[0] == "self" and db == "output":
+                alias[(owners[1], nb)] = na
+            elif owners[1] == "self" and da == "output":
+                alias[(owners[0], na)] = nb
+    declared = set()
+    for c, ends, owners in resolved:
         for (da, na), (db, nb) in zip(*ends):
             if owners[0] == "self" or owners[1] == "self":
                 self_name = na if owners[0] == "self" else nb
                 inst, port = (owners[1], nb) if owners[0] == "self" else (owners[0], na)
                 nets[(inst, port)] = (self_name, c["id"])
             else:
-                # 출력 쪽 인스턴스 포트 이름으로 wire를 만든다.
+                # 출력 쪽 인스턴스 포트 이름으로 wire를 만든다 (부모 포트로도 나가면 그 포트 이름).
                 src_i, src_p = (owners[0], na) if da == "output" else (owners[1], nb)
-                net = f"{src_i}_{src_p}"
-                inst = next(i for i in m.instances if i["name"] == src_i)
-                child = library[inst["module"]]
-                wires.append((_parent_type(child.port(src_p).type, child, inst), net, c["id"]))
+                net = alias.get((src_i, src_p), f"{src_i}_{src_p}")
+                if (src_i, src_p) not in alias and net not in declared:
+                    declared.add(net)
+                    inst = next(i for i in m.instances if i["name"] == src_i)
+                    child = library[inst["module"]]
+                    wires.append((_parent_type(child.port(src_p).type, child, inst), net, c["id"]))
                 nets[(owners[0], na)] = (net, c["id"])
                 nets[(owners[1], nb)] = (net, c["id"])
     return nets, wires

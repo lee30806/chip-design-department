@@ -191,7 +191,7 @@ class Gateway:
                 full = next((x for x in self.pipeline.get(f"/runs/{r['run_id']}/pending") if x["id"] == p), {})
                 kind = full.get("kind", "expectation_change")
                 keys = ("group", "c", "mods", "chain", "claims", "first_failure", "spec") if kind == "repair_conflict" else \
-                    ("verifier", "group", "c", "reason", "proposal", "first_failure")
+                    ("verifier", "group", "c", "also", "reason", "proposal", "first_failure")
                 items.append({"kind": kind, "target": f"{r['run_id']}:{p}", "title": f"{r['block']} {p}",
                               "run_id": r["run_id"], "spec_sha": r.get("spec_sha256"), "reqs": full.get("reqs"),
                               "detail": {k: full.get(k) for k in keys}})
@@ -204,7 +204,7 @@ class Gateway:
             if r.get("form") == "spec_change" and r.get("status") == "pending_approval" and r["id"] not in decided:
                 items.append({"kind": "spec_change", "target": r["id"], "title": f"SPEC 변경 요청 {r['id']}", "run_id": r.get("run_id"),
                               "spec_sha": r.get("spec_sha256"), "reqs": r.get("reqs"),
-                              "detail": {k: r.get(k) for k in ("reason", "source", "by", "spec_diff")}})
+                              "detail": {k: r.get(k) for k in ("reason", "source", "by", "spec_diff", "spec_check")}})
         return items
 
     def decide(self, user: dict, kind: str, target: str, decision: str, note: str = "", module: str | None = None) -> dict:

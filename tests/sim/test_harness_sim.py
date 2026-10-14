@@ -90,3 +90,14 @@ def test_hung_sim_is_stopped(tmp_path):
     (tmp_path / "pkt_parser.sv").write_text(emit(LIB["pkt_parser"], LIB).text)
     r = sim([tmp_path / "pkt_parser.sv"], "pkt_parser", "tb_hang", tb, tmp_path / "build", timeout_s=15)
     assert [(f.rule, f.test) for f in r.findings] == [("SIM_TIMEOUT", "never_ends")]
+
+
+def test_mid_test_reset_flushes_input_queue(tmp_path):
+    m = Module(LIB["pkt_parser"].raw)
+    (tmp_path / "pkt_parser.sv").write_text(emit(m, LIB).text)
+    (tmp_path / "pkt_parser_harness.py").write_text(harness_source(m))
+    (tmp_path / "verify_only").mkdir()
+    (tmp_path / "verify_only" / "pkt_parser_trace.json").write_text(json.dumps(trace_names(m)))
+    r = sim([tmp_path / "pkt_parser.sv"], "pkt_parser", "tb_pkt_parser_reset", HERE, tmp_path / "build", seeds=[1],
+            harness_dir=tmp_path, trace=tmp_path / "verify_only" / "pkt_parser_trace.json")
+    assert r.ok, r.findings

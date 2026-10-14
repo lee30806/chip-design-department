@@ -194,3 +194,46 @@ def test_http_writes_need_gateway_token(tmp_path):
             assert r.status == 200
     finally:
         httpd.shutdown()
+
+
+def test_long_run_alert_lineage_total_and_discard(tmp_path):
+    """2시간을 넘긴 실행은 한 번 알림 (멈추지 않음). 계보 합계를 보임. 툴 결함으로 버린 재실행은 상한 계산에서 뺌."""
+    from pipeline.api import store as store_mod
+
+    st = _store(tmp_path)
+    root = st.submit(SPEC.read_text(), "kim", "rtl-engineer", start=False)["run_id"]
+    kids = [st.submit(SPEC.read_text(), "kim", "rtl-engineer", start=False, _parent=root, _kind="spec_change_full")["run_id"]
+            for _ in range(store_mod.RERUN_LIMIT)]
+    for rid, n in [(root, 5), *[(k, 7) for k in kids]]:
+        (st.run_dir(rid) / "state.json").write_text(json.dumps({"status": "running", "review": [], "agent_runs": n}))
+    assert st.status(root)["lineage_agent_runs"] == 5 + 7 * len(kids)
+    with pytest.raises(ApiError):
+        st._rerun_allowed(root, "시험")   # 상한에 이름
+    with pytest.raises(ApiError):
+        st.discard(kids[0], "하니스 결함", "lee", "rtl-engineer")   # 권한 없음
+    with pytest.raises(ApiError):
+        st.discard(root, "하니스 결함", "lee", "design-lead")       # 처음 실행은 상한에 안 들어감
+    st.discard(kids[0], "하니스 리셋 표본 결함 (b60e)", "lee", "design-lead")
+    st._rerun_allowed(root, "시험")   # 버린 실행은 세지 않음
+    assert st.status(kids[0])["discarded"]["by"] == "lee"
+    meta = st.meta(root)
+    meta["started"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3 * 3600))
+    st._save_meta(root, meta)
+    out = [n for n in st.watchdog() if n["kind"] == "long_run"]
+    assert [n["run_id"] for n in out] == [root] and not st.status(root)["halted"]   # 알리기만 하고 멈추지 않음
+    assert not [n for n in st.watchdog() if n["kind"] == "long_run"]   # 한 번만
+
+
+def test_spec_change_request_carries_spec_check(tmp_path):
+    """SPEC 변경 요청에 SPEC 툴 검사를 붙인다. 이번 변경으로 새로 생긴 검토 항목만 보인다 (P8 회고: F0001의 REQ_MULTI)."""
+    from pipeline.api.store import _spec_check
+
+    text = SPEC.read_text()
+    line = next(ln for ln in text.splitlines() if ln.lstrip().startswith("- ADP-T01"))
+    old, new = tmp_path / "old.md", tmp_path / "new.md"
+    old.write_text(text)
+    new.write_text(text.replace(line, line + " 막힌 동안에는 출력하지 않는다.", 1))
+    sc = _spec_check(old, new)
+    assert sc["gate"] == "pass" and sc["errors"] == []
+    assert any("REQ_MULTI" in x and "ADP-T01" in x for x in sc["new_review"]), sc
+    assert _spec_check(old, old)["new_review"] == []

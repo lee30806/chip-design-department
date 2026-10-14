@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 import pyslang
 
@@ -78,17 +79,13 @@ def _comb_edges(m: Module, library: dict[str, Module]) -> dict[str, set[str]]:
 
 def _inst_nets(m: Module, inst: str, library: dict[str, Module]) -> dict[str, str]:
     """인스턴스 포트 → 부모 쪽 이름 (self 끝점만, 인스턴스끼리는 `<inst>_<port>`)."""
-    out: dict[str, str] = {}
-    for c in m.connections:
-        ends = [_endpoint_ports(m, c[k], library) for k in ("from", "to")]
-        owners = [c[k].split(".", 1)[0] for k in ("from", "to")]
-        if not all(ends) or inst not in owners:
-            continue
-        for (da, na), (db, nb) in zip(*ends):
-            mine, other, other_owner = (na, nb, owners[1]) if owners[0] == inst else (nb, na, owners[0])
-            mine_dir = da if owners[0] == inst else db
-            out[mine] = other if other_owner == "self" else (f"{inst}_{mine}" if mine_dir == "output" else f"{other_owner}_{other}")
-    return out
+    from pipeline.emitter.sv import _instance_nets   # 방출기와 같은 넷 이름 (인스턴스 출력이 부모 포트로도 나가는 경우 포함)
+
+    try:
+        nets, _ = _instance_nets(m, library)
+    except Exception:  # noqa: BLE001  끝점을 해석할 수 없으면 V2가 보고한다
+        return {}
+    return {port: net for (i, port), (net, _) in nets.items() if i == inst}
 
 
 _PATH_CACHE: dict[tuple[str, int], set[tuple[str, str]]] = {}
@@ -118,6 +115,28 @@ def comb_paths(m: Module, library: dict[str, Module]) -> set[tuple[str, str]]:
             res |= {(i, o) for o in seen & outs}
     _PATH_CACHE[key] = res
     return res
+
+
+_FEED_GENERIC = re.compile(r"feedthrough|조합 통과 경로|Registered Output|출력 레지스터|레지스터 출력", re.I)
+_FEED_PAIR = re.compile(r"(\w+?)_?\*\s*포트에서\s*(\w+?)_?\*\s*포트로")
+
+
+def feedthrough_rule(spec_text: str) -> list[tuple[str, str]] | None:
+    """SPEC 9절(구현 제약)의 입력→출력 조합 경로 금지. None이면 제약 없음, [("", "")]이면 모든 입력→출력
+    (출력 레지스터, feedthrough 차단 같은 일반 문장), 아니면 (입력 접두사, 출력 접두사) 목록
+    (예: "s_axis_* 포트에서 m_axis_* 포트로의 순수 조합 통과 경로"만 있을 때)."""
+    m = re.search(r"^##\s*9\..*?(?=^##\s*\d+\.|\Z)", spec_text, re.S | re.M)
+    sec = m.group(0) if m else ""
+    general = "\n".join(ln for ln in sec.splitlines() if not _FEED_PAIR.search(ln))   # 접두사를 정한 문장은 빼고 본다
+    if _FEED_GENERIC.search(general):   # 입출력 전체 (P8 첫 실행의 fail에는 m_axis_tready → s_axis_tready도 있었음)
+        return [("", "")]
+    pairs = [(a.rstrip("_") + "_", b.rstrip("_") + "_") for a, b in _FEED_PAIR.findall(sec)]
+    return pairs or None
+
+
+def feedthrough_paths(m: Module, library: dict[str, Module], rule: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """규칙에 걸리는 (입력 포트, 출력 포트) 조합 경로 (P8: pi.lead가 RTL을 읽어 찾은 위반을 E1에서 찾음)."""
+    return sorted((i, o) for i, o in comb_paths(m, library) if any(i.startswith(a) and o.startswith(b) for a, b in rule))
 
 
 # ---------------------------------------------------------------- V6

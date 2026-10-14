@@ -102,3 +102,24 @@ def test_wire_between_instances_uses_parent_names(tmp_path):
     text = files[0].read_text()
     assert "logic [(W)-1:0] u_a_rdata;" in text and "[DW" not in text
     assert check("ram2", lib, files, tmp_path / "b", cycles=1000)["ok"]
+
+
+def test_instance_output_to_parent_port_and_sibling(tmp_path):
+    """인스턴스 출력이 부모 포트와 다른 인스턴스로 함께 나가면 둘 다 같은 넷을 읽는다 (전에는 형제 쪽이 구동 없는 wire)."""
+    dom = [{"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst", "active": "high", "async": False}}]
+    thru = Module({"module": "thru", "role": "module", "lang": "py", "params": [], "domains": dom,
+                   "ports": [{"name": "i", "dir": "input", "type": "logic [3:0]", "domain": "sys"},
+                             {"name": "o", "dir": "output", "type": "logic [3:0]", "domain": "sys", "kind": "wire"}],
+                   "blocks": [{"id": "k", "kind": "comb", "body": "o = i + 1"}]})
+    top = Module({"module": "fan", "role": "block_top", "params": [], "domains": dom,
+                  "ports": [{"name": "x", "dir": "input", "type": "logic [3:0]", "domain": "sys"},
+                            {"name": "y", "dir": "output", "type": "logic [3:0]", "domain": "sys"},
+                            {"name": "z", "dir": "output", "type": "logic [3:0]", "domain": "sys"}],
+                  "instances": [{"name": "u_a", "module": "thru", "domain_map": {"sys": "sys"}},
+                                {"name": "u_b", "module": "thru", "domain_map": {"sys": "sys"}}],
+                  "connections": [{"id": "c0", "from": "self.x", "to": "u_a.i"}, {"id": "c1", "from": "u_a.o", "to": "self.y"},
+                                  {"id": "c2", "from": "u_a.o", "to": "u_b.i"}, {"id": "c3", "from": "u_b.o", "to": "self.z"}]})
+    lib = {"fan": top, "thru": thru}
+    files = [_emit(tmp_path, top, lib=lib), _emit(tmp_path, thru)]
+    assert "u_a_o" not in files[0].read_text()
+    assert check("fan", lib, files, tmp_path / "b", cycles=200)["ok"]

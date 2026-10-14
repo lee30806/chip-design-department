@@ -40,7 +40,10 @@ TASK = """\
 3. Block Top IR을 `out/ir/{top}.ir.json`에 쓴다. `block_top.json`의 L1을 그대로 두고 `instances`(파라미터 바인딩, domain_map)와
    `connections`를 더한다. 번들은 프로토콜이 같으면 번들 이름으로 한 번에 잇는다 (예: `self.s_axis` → `u_core.s_axis`).
 4. SPEC에서 정하지 않아 네가 정한 것(모듈 경계, 하위 모듈 사이 프로토콜, 지연 배분 등)을 `out/assumptions.json`에
-   `{{"assumptions": ["...", ...]}}`로 쓴다.
+   `{{"assumptions": [{{"text": "...", "affects": [...]}}, ...]}}`로 쓴다. `affects`는 그 가정이 건드리는 것이다:
+   `l1`(Block Top의 포트, 파라미터, 프로토콜의 해석), `timing`(지연, 처리율, 사이클 시점), `reset`(리셋 동작),
+   `spec_gap`(SPEC이 정하지 않거나 미정의로 둔 동작을 정함). 모듈 안의 배분만 정한 것(모듈 경계, 하위 모듈 사이 포트)은 `[]`.
+   `affects`가 비지 않은 가정은 사람이 검토한다.
 5. `python3 tools/pl.py validate out/ir/{top}.ir.json --lib out/ir`가 `"ok": true`가 될 때까지 고친다.
    하위 모듈은 아직 동작이 없으므로 `validate`로 검사하지 않는다.
 
@@ -90,9 +93,19 @@ def read_tree(work: Path, top: str) -> tuple[dict, dict[str, dict], list[str]]:
     for p in sorted((work / "out" / "ir").glob("*.ir.json")):
         raw = json.loads(p.read_text(encoding="utf-8"))
         irs[raw.get("module", p.stem.removesuffix(".ir"))] = raw
-    assumptions = json.loads((work / "out" / "assumptions.json").read_text(encoding="utf-8")).get("assumptions", [])
+    raw = json.loads((work / "out" / "assumptions.json").read_text(encoding="utf-8")).get("assumptions", [])
+    # 문자열만 쓴 가정은 무엇을 건드리는지 모르므로 affects=None (사람이 검토)
+    assumptions = [a if isinstance(a, dict) else {"text": str(a), "affects": None} for a in raw]
     top_ir = irs.pop(top)
     return top_ir, irs, assumptions
+
+
+AFFECTS = {"l1", "timing", "reset", "spec_gap"}
+
+
+def needs_review(a: dict) -> bool:
+    """사람이 검토할 가정: L1, 타이밍, 리셋을 건드리거나 SPEC의 빈 곳을 정한 것, 또는 표시가 없는 것 (P8 회고)."""
+    return a.get("affects") is None or bool(set(a["affects"]) & AFFECTS)
 
 
 def packed_ports(top_ir: dict, children: dict[str, dict]) -> list[str]:
@@ -150,5 +163,10 @@ def check(block_top_l1: dict):
         errs += packed_ports(top_ir, children)
         if not assumptions:
             errs.append("가정 목록이 비어 있음 (SPEC이 정하지 않아 정한 것을 적음)")
+        for a in assumptions:
+            if not str(a.get("text", "")).strip():
+                errs.append("가정에 text가 없음")
+            if a.get("affects") is not None and (not isinstance(a["affects"], list) or set(a["affects"]) - AFFECTS):
+                errs.append(f'가정의 affects는 {sorted(AFFECTS)} 중에서 고른 목록: {a.get("affects")!r}')
         return errs
     return _check

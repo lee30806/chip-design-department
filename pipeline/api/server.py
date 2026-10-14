@@ -91,6 +91,8 @@ def make_handler(store: Store, token: str | None = None):
                 rid, sub = m.groups()
                 if sub == "resume":
                     return store.start(rid)
+                if sub == "discard":
+                    return store.discard(rid, body.get("reason", ""), body.get("by", ""), role)
                 if sub == "decisions":
                     return store.decide(rid, body.get("ids") or [], body.get("decision", ""), body.get("by", ""), role,
                                         body.get("note", ""), module=body.get("module"))

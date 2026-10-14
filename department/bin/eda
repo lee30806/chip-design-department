@@ -7,6 +7,9 @@
                                        이름 대조로 증명 못한 점이 남으면 리셋부터 --bmc 사이클 순차 등가 (--reset 포트)
     eda sta   <rtl 디렉터리> --top T     일반 셀 라이브러리로 매핑 뒤 최악 경로 지연 대 SDC 클럭 주기 (STA)
     eda sdc   <rtl 디렉터리> --top T     SDC 골격과 RTL 포트 대조                    (SDC Lint)
+    eda comb  <rtl 디렉터리> --top T     입력 포트→출력 포트 조합 경로 (플립플롭을 거치지 않는 경로)와 조합 루프 (STA 보완)
+                                       SPEC 9절이 출력 레지스터나 조합 통과 금지를 요구할 때 본다. STA는 레지스터 사이만 봄.
+                                       조합 루프는 늘 금지라 ERROR로 낸다
 
 <rtl 디렉터리>에는 `deptctl export`로 받은 `*.sv`와 `<top>.sdc`가 있다. 결과는 `--out`(기본 ./eda/<검사>/)에 남고,
 리포트 줄은 모두 같은 형식이다 (`config/report_formats/eda.json`). 리포트는 고치지 말고 그대로 Design-lead에게 넘긴다.
@@ -173,10 +176,98 @@ def _ln(text: str, needle: str) -> int:
     return next((i + 1 for i, ln in enumerate(text.splitlines()) if needle in ln), 1)
 
 
+SEQ = re.compile(r"DFF|DLATCH|SR_|\$mem|\$dff|\$adff|\$sdff|\$dlatch|\$fsm")   # 경로를 끊는 순차 셀
+
+
+def comb(rtl: Path, top: str, out: Path) -> list[str]:
+    """평탄화한 합성 넷리스트에서 입력 포트 비트부터 순차 셀을 거치지 않고 닿는 출력 포트 (P8: pi.lead가 RTL을 읽고 찾음)."""
+    import json
+
+    rc, log = yosys(f"read_verilog -sv {' '.join(svs(rtl))}; synth -flatten -top {top}; write_json {out}/comb.json",
+                    out / "comb.log")
+    if rc != 0 or not (out / "comb.json").exists():
+        return [line("COMB", "ERROR", "-", f"합성 실패 (종료 코드 {rc}). comb.log를 봄")]
+    mod = json.loads((out / "comb.json").read_text())["modules"][top]
+    succ: dict[int, set[int]] = {}
+    for c in mod["cells"].values():
+        if SEQ.search(c["type"]):
+            continue
+        dirs = c.get("port_directions", {})
+        ins = [b for p, bs in c["connections"].items() if dirs.get(p) == "input" for b in bs if isinstance(b, int)]
+        outs = [b for p, bs in c["connections"].items() if dirs.get(p) == "output" for b in bs if isinstance(b, int)]
+        for i in ins:
+            succ.setdefault(i, set()).update(outs)
+    out_bits = {b: n for n, p in mod["ports"].items() if p["direction"] == "output" for b in p["bits"] if isinstance(b, int)}
+    pairs = set()
+    for n, p in mod["ports"].items():
+        if p["direction"] != "input":
+            continue
+        seen, stack = set(), [b for b in p["bits"] if isinstance(b, int)]
+        while stack:
+            b = stack.pop()
+            if b in out_bits:
+                pairs.add((n, out_bits[b]))
+            for nb in succ.get(b, ()):
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    rep = [line("COMB", "WARNING", "-", f"입력 {i} → 출력 {o} 조합 경로") for i, o in sorted(pairs)]
+    loops = comb_loops(succ, mod.get("netnames", {}))
+    rep += [line("COMB", "ERROR", "-", f"조합 루프: {' → '.join(lp)}") for lp in loops]
+    rep.append(line("COMB", "INFO", "-", f"입력→출력 조합 경로 {len(pairs)}개, 조합 루프 {len(loops)}개"))
+    return rep
+
+
+def comb_loops(succ: dict[int, set[int]], netnames: dict) -> list[list[str]]:
+    """조합 그래프(비트 단위)의 강연결 요소 중 크기가 2 이상이거나 자기 자신으로 돌아오는 것. 루프마다 신호 이름 목록."""
+    names: dict[int, str] = {}
+    for n, v in sorted(netnames.items(), key=lambda kv: (kv[0].startswith("$"), kv[0])):   # 사람이 쓴 이름을 먼저
+        for k, b in enumerate(v["bits"]):
+            if isinstance(b, int):
+                names.setdefault(b, n if len(v["bits"]) == 1 else f"{n}[{k}]")
+    index, low, on, stack, out = {}, {}, set(), [], []
+    counter = [0]
+    for root in list(succ):
+        if root in index:
+            continue
+        work = [(root, iter(sorted(succ.get(root, ()))))]
+        index[root] = low[root] = counter[0]
+        counter[0] += 1
+        stack.append(root)
+        on.add(root)
+        while work:   # Tarjan을 되부름 없이 (넷리스트가 깊을 수 있음)
+            v, it = work[-1]
+            nxt = next(it, None)
+            if nxt is not None:
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter[0]
+                    counter[0] += 1
+                    stack.append(nxt)
+                    on.add(nxt)
+                    work.append((nxt, iter(sorted(succ.get(nxt, ())))))
+                elif nxt in on:
+                    low[v] = min(low[v], index[nxt])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[v])
+            if low[v] == index[v]:
+                comp = []
+                while True:
+                    w = stack.pop()
+                    on.discard(w)
+                    comp.append(w)
+                    if w == v:
+                        break
+                if len(comp) > 1 or v in succ.get(v, ()):
+                    out.append(sorted({names.get(b, f"bit{b}") for b in comp}, key=lambda n: (n.startswith("$"), n))[:8])
+    return out
+
+
 def main() -> int:
     global BMC_DEPTH
     ap = argparse.ArgumentParser(prog="eda", description="Sanity와 PI 검사 (오픈소스 대체)")
-    ap.add_argument("check", choices=["lint", "synth", "lec", "sta", "sdc"])
+    ap.add_argument("check", choices=["lint", "synth", "lec", "sta", "sdc", "comb"])
     ap.add_argument("rtl", type=Path)
     ap.add_argument("--top", required=True)
     ap.add_argument("--out", type=Path)
@@ -190,7 +281,7 @@ def main() -> int:
             sys.exit(f"{t}가 없음")
     out = a.out or Path("eda") / a.check
     out.mkdir(parents=True, exist_ok=True)
-    rep = {"lint": lint, "synth": synth, "lec": lec, "sta": sta, "sdc": sdc}[a.check](a.rtl, a.top, out)
+    rep = {"lint": lint, "synth": synth, "lec": lec, "sta": sta, "sdc": sdc, "comb": comb}[a.check](a.rtl, a.top, out)
     (out / "report.txt").write_text("\n".join(rep) + "\n")
     print("\n".join(rep))
     print(f"(리포트: {out / 'report.txt'})", file=sys.stderr)

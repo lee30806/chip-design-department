@@ -145,7 +145,7 @@ def test_roles_language_per_candidate(tmp_path):
     p.write_text(json.dumps(cfg))
     r = roles.load(p)
     assert [r.lang_of(c) for c in range(3)] == ["sv", "py", "sv"]
-    assert roles.load(ROOT / "config" / "roles.json").lang_of(1) == "sv"
+    assert roles.load(ROOT / "config" / "roles.json").lang_of(1) == "py"   # 2026-10-14 사용자 결정: 후보 하나만 Python
 
 
 def test_memory_word_access():

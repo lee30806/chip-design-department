@@ -411,6 +411,8 @@ IR 구조는 JSON 그대로 두고, 동작 조각을 SV 대신 Python(사이클 
 - 스케줄러에서 Python 후보가 번역기 검사를 거쳐 SV 후보와 함께 통과합니다 (가짜 에이전트 시험).
 - 작업 9의 비교 결과로 Python 조각의 범위(기본 언어로 할지, 후보 하나만 둘지)를 정합니다.
 
+**결정 (2026-10-14, 사용자):** 후보 하나만 Python으로 둡니다 (`roles.author.langs` = `["sv", "py"]`). 비교한 4블록(adapter, cobs_decode, crc_append, async_fifo) 모두 두 언어 후보가 통과했고, Python 후보는 Repair가 같거나 조금 많았습니다.
+
 ---
 
 ## P9. 운영 안정화

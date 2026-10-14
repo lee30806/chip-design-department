@@ -30,12 +30,15 @@ from pipeline.agents.runner import load_agents
 from pipeline.classifier.classify import classify_findings
 from pipeline.feedback import reports, spec_diff
 from pipeline.scheduler import approve
+from pipeline.spec import check as spec_check
+from pipeline.spec.parse import load as load_spec
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STORE = Path(os.environ.get("CHIPDEPT_STORE", ROOT / "build" / "store"))
 FEEDBACK_SCHEMA = json.loads((ROOT / "schema" / "feedback.schema.json").read_text(encoding="utf-8"))
 RERUN_LIMIT = 3            # 같은 Block Top에서 환류에 따른 재실행이 이만큼 되면 멈추고 알린다
 STALL_HOURS = 24.0         # 이 시간 동안 진행(상태 파일 갱신)이 없으면 멈추고 알린다
+LONG_RUN_HOURS = 2.0       # 실행 하나가 이 시간을 넘으면 운영에게 한 번 알린다 (멈추지는 않음. P8 회고: 실측 약 32분)
 
 # 역할별 권한 (P7 게이트웨이에서 인증을 붙이기 전까지 요청이 밝힌 역할로 판단)
 ROLES_SUBMIT = {"rtl-engineer", "chip-lead"}
@@ -43,12 +46,27 @@ ROLES_FEEDBACK = {"design-lead"}
 ROLES_DECIDE = {"rtl-engineer", "chip-lead", "design-lead"}
 ROLES_LEAD_DECIDE = {"design-lead"}          # Repair 충돌: 고칠 모듈 지정 또는 Architect 재구성
 ROLES_SPEC_APPROVE = {"chip-lead", "rtl-engineer"}
+ROLES_DISCARD = {"chip-lead", "design-lead"}  # 툴 결함으로 버린 실행을 재실행 상한 계산에서 뺌
 
 
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
+
+
+def _spec_check(old: Path, new: Path) -> dict:
+    """SPEC 변경 요청에 붙일 SPEC 툴 검사: 새 SPEC의 게이트와 오류, 그리고 이번 변경으로 새로 생긴 검토 항목.
+    P8 회고: F0001이 새로 만든 REQ_MULTI가 승인 뒤 실행에서야 드러났다."""
+    try:
+        before = spec_check.run(load_spec(old))
+        after = spec_check.run(load_spec(new))
+    except Exception as e:  # noqa: BLE001  검사가 실패해도 요청은 받되 사람이 보게 남긴다
+        return {"gate": "error", "errors": [f"SPEC 검사를 돌릴 수 없음: {e}"], "new_review": []}
+    seen = {(i["code"], i["message"]) for i in before["review"]}
+    return {"gate": after["gate"],
+            "errors": [f'[{i["code"]}] {i["message"]}' for i in after["issues"] if i["severity"] == "error"],
+            "new_review": [f'[{i["code"]}] {i["message"]}' for i in after["review"] if (i["code"], i["message"]) not in seen]}
 
 
 def _now() -> str:
@@ -220,7 +238,8 @@ class Store:
         return {"run_id": run_id, "block": meta["block"], "status": status, "process": "running" if alive else "stopped",
                 "kind": meta["kind"], "lineage": meta["lineage"], "created": meta["created"], "by": meta["by"],
                 "spec_sha256": meta["spec_sha256"], "agent_runs": st.get("agent_runs", 0), "chosen": st.get("chosen"),
-                "halted": meta.get("halted"),
+                "lineage_agent_runs": self._lineage_agent_runs(meta["lineage"]["root"]),
+                "halted": meta.get("halted"), "discarded": meta.get("discarded"),
                 "pending": [p["id"] for p in approve.pending(self.run_dir(run_id))] if st else []}
 
     def runs(self) -> list[dict]:
@@ -291,8 +310,30 @@ class Store:
         ids = {r["run_id"] for r in self.runs() if r["lineage"]["root"] == root}
         return [r for r in recs if r.get("run_id") in ids or r.get("new_run") in ids]
 
+    def _lineage_metas(self, root: str) -> list[dict]:
+        return [m for p in sorted((self.root / "runs").iterdir()) if (p / "meta.json").exists()
+                and (m := json.loads((p / "meta.json").read_text(encoding="utf-8")))["lineage"]["root"] == root]
+
+    def _lineage_agent_runs(self, root: str) -> int:
+        """같은 Block Top 계보(처음 실행과 환류 재실행)의 에이전트 실행 합계 (P8 회고: 예산은 실행마다, 합계는 따로 보임)."""
+        return sum(self._state(m["run_id"]).get("agent_runs", 0) for m in self._lineage_metas(root))
+
     def _reruns(self, root: str) -> int:
-        return sum(1 for r in self.runs() if r["lineage"]["root"] == root and r["kind"] != "initial")
+        """환류 재실행 수. 사람이 툴 결함으로 버린 실행(discarded)은 세지 않는다."""
+        return sum(1 for m in self._lineage_metas(root) if m["kind"] != "initial" and not m.get("discarded"))
+
+    def discard(self, run_id: str, reason: str, by: str, role: str | None) -> dict:
+        """툴 결함으로 버린 실행을 사유와 함께 기록하고 재실행 상한 계산에서 뺀다 (P8 회고: b60e). 사람만 정한다."""
+        _require(role, ROLES_DISCARD, "실행 버림 표시")
+        if not reason.strip() or not by.strip():
+            raise ApiError(400, "사유(reason)와 결정한 사람(by)이 필요함")
+        meta = self.meta(run_id)
+        if meta["kind"] == "initial":
+            raise ApiError(409, "처음 실행은 재실행 상한에 들어가지 않음")
+        meta["discarded"] = {"reason": reason, "by": by, "at": _now()}
+        self._save_meta(run_id, meta)
+        self.notify("run_discarded", f"{meta['block']}: 실행 {run_id}을 툴 결함으로 버림 ({by}: {reason})", run_id)
+        return self.status(run_id)
 
     def _rerun_allowed(self, run_id: str, why: str) -> None:
         """교착 방지: 같은 Block Top에서 환류에 따른 재실행이 RERUN_LIMIT회에 이르면 멈추고 알린다."""
@@ -353,7 +394,8 @@ class Store:
         except Exception as e:
             raise ApiError(400, f"새 SPEC을 읽을 수 없음: {e}")
         return {"status": "pending_approval", "reason": body["reason"], "source": body.get("source"),
-                "reqs": spec_diff.affected_reqs(sd), "spec_diff": sd, "spec_sha256": _sha(pend / "spec.md")}
+                "reqs": spec_diff.affected_reqs(sd), "spec_diff": sd, "spec_sha256": _sha(pend / "spec.md"),
+                "spec_check": _spec_check(d / "spec.md", pend / "spec.md")}
 
     def decide_spec_change(self, fid: str, decision: str, by: str, role: str | None, note: str = "") -> dict:
         """SPEC 변경 요청 승인. 승인하면 L1이 같으면 영향 모듈만 다시, 다르면 처음부터 다시 실행한다."""
@@ -404,12 +446,20 @@ class Store:
 
     # -- 교착 방지 --
     def watchdog(self, stall_hours: float = STALL_HOURS, now: float | None = None) -> list[dict]:
-        """진행(상태 파일 갱신)이 stall_hours 동안 없는 실행을 멈추고 알린다."""
+        """진행(상태 파일 갱신)이 stall_hours 동안 없는 실행을 멈추고 알린다. LONG_RUN_HOURS를 넘긴 실행은 한 번 알린다."""
         now = now or time.time()
         out = []
         for r in self.runs():
             if r["status"] in ("pass", "failed", "halted", "spec_rejected"):
                 continue
+            meta = self.meta(r["run_id"])
+            started = meta.get("started")
+            if started and not meta.get("long_notified") and \
+                    now - time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S")) >= LONG_RUN_HOURS * 3600:
+                meta["long_notified"] = _now()
+                self._save_meta(r["run_id"], meta)
+                out.append(self.notify("long_run", f"{meta['block']}: 실행이 {LONG_RUN_HOURS:g}시간을 넘김 (상태 {r['status']}, "
+                                                    f"에이전트 {r['agent_runs']}회)", r["run_id"]))
             d = self.run_dir(r["run_id"])
             last = max((p.stat().st_mtime for p in [d / "state.json", d / "meta.json"] if p.exists()), default=now)
             if now - last < stall_hours * 3600:

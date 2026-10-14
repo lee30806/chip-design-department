@@ -194,7 +194,8 @@ def test_approved_expectation_change_revises_test_and_resumes(tmp_path):
     rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, files), isolate=False).execute()
     assert rep["status"] == "waiting_approval"
     items = approve.pending(tmp_path / "run")
-    assert sorted((p["verifier"], p["c"]) for p in items) == [(1, 0), (1, 1)]
+    # 두 후보가 같은 Verifier의 같은 테스트에서 같은 이유로 실패: 항목 하나로 묶인다 (P8 회고)
+    assert [(p["verifier"], sorted([p["c"]] + [x["c"] for x in p.get("also", [])])) for p in items] == [(1, [0, 1])]
     first = items[0]["id"]
     with pytest.raises(ValueError):
         approve.decide(tmp_path / "run", [first], "approved", by="")   # 결정한 사람이 필요
@@ -206,7 +207,9 @@ def test_approved_expectation_change_revises_test_and_resumes(tmp_path):
     calls = _calls(tmp_path)
     assert calls.count("Verifier|기댓값_수정") == 1 and calls.count("Arbiter") == 2   # 수정 한 번, 다시 판정하지 않음
     decisions = {p["id"]: p["decision"]["decision"] for p in rep["pending"]}
-    assert sorted(decisions.values()) == ["approved", "superseded"]   # 같은 Verifier를 기다리던 다른 후보도 풀림
+    assert list(decisions.values()) == ["approved"]   # 한 번 결정으로 두 후보가 함께 풀림
+    exp = [r for r in rep["review"] if r["code"] == "EXPECTATION_CHANGE"]
+    assert all(r["decided"]["by"] == "design-lead" and "승인 대기" not in r["message"] for r in exp)   # 결정 결과로 바뀜
     st = json.loads((tmp_path / "run" / "state.json").read_text())
     assert len(st["tb_history"]) == 1 and st["tb_history"][0]["verifier"] == 1
     d = json.loads((tmp_path / "run" / "decisions.json").read_text())[0]
@@ -416,13 +419,14 @@ def test_interface_change_request_goes_to_arbiter_first(tmp_path):
     rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
     assert rep["status"] == "waiting_approval", json.dumps(rep, ensure_ascii=False)[:3000]
     items = approve.pending(run)
-    assert sorted((p["verifier"], p["c"]) for p in items) == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    # Verifier마다 항목 하나, 두 후보가 같은 이유로 실패해 묶임
+    assert sorted((p["verifier"], sorted([p["c"]] + [x["c"] for x in p.get("also", [])])) for p in items) == [(0, [0, 1]), (1, [0, 1])]
     assert all(p["repair_claim"]["reason"] == "리셋 포트를 읽어야 함" for p in items)
     mm = json.loads((run / "work" / "arbiter__axis_adapter_core__c0__r0__ic__v0" / "mismatch.json").read_text())
     assert mm["repair_claim"]["module"] == "axis_adapter_core"
     assert "INTERFACE_CHANGE" not in {r["code"] for r in rep["review"]}
-    # 한 후보가 기다리는 항목 중 일부만 결정하면 아직 다시 돌리지 않는다
-    approve.decide(run, [p["id"] for p in items if p["verifier"] == 0 and p["c"] == 0], "approved", by="design-lead")
+    # 후보가 기다리는 항목 중 일부만 결정하면 아직 다시 돌리지 않는다
+    approve.decide(run, [p["id"] for p in items if p["verifier"] == 0], "approved", by="design-lead")
     rep = Run(run, SPEC, _roles(tmp_path, files), isolate=False).execute()
     assert rep["status"] == "waiting_approval"
     assert _calls(tmp_path).count("Verifier|기댓값_수정") == 1
@@ -545,3 +549,36 @@ def test_failure_without_harness_result_still_reports_test_and_message(tmp_path)
     rep = run.failure_report({}, "t", v)
     assert rep["report"]["first_failure"] == {"check": "assertion", "test": "sc02_reset", "message": "tlast too early"}
     assert rep["classified"][0]["type"] == "sim_mismatch"
+
+
+def test_review_noise_assumptions_and_model_family(tmp_path):
+    """가정은 L1, 타이밍, 리셋, SPEC의 빈 곳을 건드리는 것만 검토 항목. MODEL_FAMILY는 처음 보는 역할 설정에서만."""
+    files = _files(tmp_path)
+    files["Architect"]["out/assumptions.json"] = json.dumps({"assumptions": [
+        {"text": "동작은 하위 모듈 하나에 둠", "affects": []},
+        {"text": "출력은 입력 다음 클럭", "affects": ["timing"]},
+        "표시 없는 가정"]})
+    rep = Run(tmp_path / "a", SPEC, _roles(tmp_path, files), isolate=False).execute()
+    msgs = sorted(r["message"] for r in rep["review"] if r["code"] == "ASSUMPTION")
+    assert msgs == ["[timing] 출력은 입력 다음 클럭", "표시 없는 가정"]
+    assert "MODEL_FAMILY" in {r["code"] for r in rep["review"]}
+    rep = Run(tmp_path / "b", SPEC, _roles(tmp_path, files), isolate=False).execute()   # 같은 역할 설정으로 새 실행
+    assert "MODEL_FAMILY" not in {r["code"] for r in rep["review"]}
+
+
+def test_comb_path_constraint_is_reviewed(tmp_path, monkeypatch):
+    """SPEC 9절이 입력→출력 조합 경로를 막으면 통과한 후보의 경로를 검토 항목으로 낸다 (실패로 만들지는 않음)."""
+    from pipeline.scheduler import run as run_mod
+
+    spec = tmp_path / "spec.md"
+    spec.write_text(SPEC.read_text().replace("### 금지 사항\n", "### 금지 사항\n- 입출력 사이의 조합 통과 경로(feedthrough)\n", 1))
+    seen = []
+
+    def fake(m, lib, rule):
+        seen.append(rule)
+        return [("s_axis_tdata", "m_axis_tdata")]
+    monkeypatch.setattr(run_mod, "feedthrough_paths", fake)
+    rep = Run(tmp_path / "run", spec, _roles(tmp_path, _files(tmp_path)), isolate=False).execute()
+    assert rep["status"] == "pass" and seen and seen[0] == [("", "")]
+    comb = [r for r in rep["review"] if r["code"] == "COMB_PATH"]
+    assert comb and "s_axis_tdata→m_axis_tdata" in comb[0]["message"]
