@@ -39,6 +39,7 @@ def env(mode: str | None = None, api_args: str | None = None) -> dict:
     e = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")}
     e.update(HOME=str(OPENRIG / "home"), OPENRIG_HOME=str(OPENRIG / "orhome"), TMUX_TMPDIR=TMUX_TMPDIR,
              OPENRIG_PORT=os.environ.get("OPENRIG_PORT", "7533"), DISABLE_AUTOUPDATER="1",
+             OPENRIG_UI_ENABLED="1",   # 데몬의 터미널 WebSocket은 웹 UI가 켜져 있을 때만 있음 (게이트웨이 Seat 터미널 보기)
              CHIPDEPT_REAL_HOME=real_home, CHIPDEPT_DEPT_HOME=str(seatlib.dept_home()), CHIPDEPT_STORE=str(seatlib.store()),
              CHIPDEPT_RUNS=str(seatlib.runs()), CHIPDEPT_API_PORT=os.environ.get("CHIPDEPT_API_PORT", "8740"),
              CHIPDEPT_GATEWAY_HOME=str(seatlib.gateway_home()),

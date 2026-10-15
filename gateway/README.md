@@ -10,6 +10,7 @@
 | `auth.py` | 인증 제공자 인터페이스(`AuthProvider`)와 자체 계정(`LocalAuth`, PBKDF2-SHA256). 세션(12시간)과 API 키는 해시만 저장. SSO로 바꿀 때는 제공자 하나를 더함 |
 | `perms.py` | 역할 5개와 권한, `design_lead` 능력 |
 | `db.py` | SQLite: 사용자, 세션, API 키, 승인 기록, SPEC 작업 공간과 판, 질문 답, 실행 대응, 판정, 감사 기록 |
+| `termws.py` | Seat 터미널 중계. Web UI의 WebSocket(`/api/seats/<id>/terminal`)을 데몬의 터미널 WebSocket(`/api/terminal/<세션>`)에 잇는다. 스크롤만 넘기고 키 입력은 버림 |
 | `clients.py` | 파이프라인 API(게이트웨이 토큰과 역할을 붙임), OpenRig 데몬 API(Seat 상태 조회) |
 | `specws.py` | SPEC 작업대 |
 | `service.py` | 승인함과 승인 기록, 실행 제출과 상세, 판정, 환류 |
@@ -51,7 +52,11 @@ Repair 충돌은 승인이 아니라 Design-lead의 결정입니다 (design_lead
 | SPEC 작업대 | 원본(PDF 쪽 그림 또는 Markdown)과 변환 결과 대조와 고치기(판 관리), 원본 그림과 WaveJSON 렌더링 대조, 검사 질문 답하기, 고정 요청, 고정된 SPEC으로 실행 제출 |
 | 승인함 | 대기 항목(승인자만 승인과 반려 가능)과 승인 기록 |
 | 환류 | 네 가지 양식(검사 실패 리포트, SPEC 변경 요청, 생성기 버그, 설정 변경)과 이력. 자유 텍스트로 수정을 요청하는 경로는 없음 |
-| Seat | OpenRig 데몬에서 읽은 Seat 상태 |
+| Seat | OpenRig 데몬에서 읽은 Seat 상태, Seat 터미널 보기(읽기 전용), Seat 대화 |
+
+Seat 터미널 보기는 사람 계정만 쓰고, 요청의 Origin이 게이트웨이 주소와 같아야 하며, 열 때마다 감사 기록(`seat_terminal_view`)을 남깁니다.
+데몬의 터미널 WebSocket은 데몬의 웹 UI가 켜져 있을 때만 있으므로 `dept.py`는 데몬을 `OPENRIG_UI_ENABLED=1`로 띄웁니다. 그러면 데몬의 자체 웹 UI도 `127.0.0.1:7533`에서 열립니다.
+데몬은 터미널을 처음 열 때 Seat의 tmux 창을 90x27로 고정합니다 (보는 사람마다 크기가 바뀌지 않게). 그 뒤 Seat 대화가 읽는 화면도 이 폭에서 줄이 바뀝니다.
 
 transcript는 에이전트 실행기가 남긴 시도별 표준 출력 끝부분(1500자)입니다.
 
@@ -77,6 +82,7 @@ python3 -m gateway serve --port 8750
 | `CHIPDEPT_API` | `http://127.0.0.1:8740` |
 | `CHIPDEPT_STORE` | `~/.cache/chip-design-department/dept/store` (실행 상세를 읽음) |
 | `OPENRIG_URL` | `http://127.0.0.1:7533` |
+| `OPENRIG_TERMINAL_BEARER_TOKEN` | 없음. 데몬이 이 토큰을 요구할 때 (전송과 터미널 API) |
 
 부서 계층(`department/dept.py up`)은 게이트웨이를 infra Pod의 노드로 띄우고, 올리기 전에 `seats`를 실행합니다.
 

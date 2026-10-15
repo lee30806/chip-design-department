@@ -13,9 +13,11 @@ import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
+from gateway import termws
 from gateway.auth import SESSION_S
+from gateway.chat import session_of
 from gateway.perms import Forbidden, require
 from gateway.service import Conflict, Gateway, SpecError, UpstreamError
 
@@ -206,6 +208,32 @@ def make_handler(gw: Gateway, ui_dist: Path = UI_DIST, secure_cookie: bool = Fal
                 return 200, {"username": r[1], "api_key": key}
             raise HttpError(404, "없는 경로")
 
+        def _terminal(self, seat_id: str) -> None:
+            """Seat 터미널 보기 (WebSocket, 읽기 전용). 사람 계정만. 다른 사이트의 페이지가 붙지 못하게 Origin이 Host와 같아야 한다."""
+            if (self.headers.get("Upgrade") or "").lower() != "websocket" or not self.headers.get("Sec-WebSocket-Key"):
+                raise HttpError(400, "WebSocket 요청이 아님")
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != (self.headers.get("Host") or ""):
+                raise HttpError(403, "다른 출처에서 온 터미널 요청")
+            u = self._user(False)
+            require(u, "view")
+            if u.get("kind") != "human":
+                raise Forbidden("Seat 계정은 Web UI 터미널을 쓰지 않음")
+            seat = gw.chat._seat(seat_id)
+            try:
+                daemon = termws.connect(gw.openrig.base, session_of(seat), gw.openrig.token)
+            except (termws.WsError, OSError) as e:
+                raise HttpError(502, str(e))
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", termws.accept_key(self.headers["Sec-WebSocket-Key"]))
+            self.end_headers()
+            self.wfile.flush()
+            self.close_connection = True
+            gw.db.audit(u["username"], "seat_terminal_view", {"seat": seat_id})
+            termws.relay(termws.Peer(self.rfile, self.wfile, masked=False), daemon)
+
         def _static(self, path: str) -> None:
             if not ui_dist.exists():
                 return self._send(200, "Web UI가 빌드되지 않음: cd gateway/ui && npm ci && npm run build".encode(),
@@ -223,6 +251,8 @@ def make_handler(gw: Gateway, ui_dist: Path = UI_DIST, secure_cookie: bool = Fal
             if not path.startswith("/api/"):
                 return self._static(path)
             try:
+                if method == "GET" and (r := re.fullmatch(r"/api/seats/([\w.]+)/terminal", path)):
+                    return self._terminal(r[1])
                 res = self._api(method, path.rstrip("/"))
                 status, body = res[0], res[1]
                 headers = res[2] if len(res) > 2 else None

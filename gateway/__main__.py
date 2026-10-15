@@ -11,6 +11,7 @@
     CHIPDEPT_API            파이프라인 API (기본 http://127.0.0.1:8740). 토큰은 <home>/api_token
     CHIPDEPT_STORE          파이프라인 저장소 (실행 상세를 읽음. 기본 ~/.cache/chip-design-department/dept/store)
     OPENRIG_URL             OpenRig 데몬 (기본 http://127.0.0.1:7533)
+    OPENRIG_TERMINAL_BEARER_TOKEN   데몬이 이 토큰을 요구할 때 (전송과 터미널 API)
 """
 from __future__ import annotations
 
@@ -44,7 +45,8 @@ def make_gateway() -> Gateway:
     tok = token_path().read_text(encoding="utf-8").strip() if token_path().exists() else None
     store = Path(os.environ.get("CHIPDEPT_STORE", CACHE / "dept" / "store"))
     return Gateway(home(), Pipeline(os.environ.get("CHIPDEPT_API", "http://127.0.0.1:8740"), tok),
-                   OpenRig(os.environ.get("OPENRIG_URL", "http://127.0.0.1:7533")), store)
+                   OpenRig(os.environ.get("OPENRIG_URL", "http://127.0.0.1:7533"),
+                           token=os.environ.get("OPENRIG_TERMINAL_BEARER_TOKEN") or None), store)
 
 
 def _password(prompt: str) -> str:

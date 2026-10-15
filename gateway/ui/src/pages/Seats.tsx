@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 import { api } from "../api";
 import { Err, useAction, useGet, useUser } from "../common";
 
@@ -61,16 +63,68 @@ function Chat({ seat }: { seat: string }) {
   );
 }
 
+// 데몬이 Seat 화면을 고정 크기(90x27)로 맞추므로 xterm도 같은 크기로 둔다
+const COLS = 90, ROWS = 27;
+
+function SeatTerminal({ seat }: { seat: string }) {
+  const user = useUser();
+  const box = useRef<HTMLDivElement>(null);
+  const sock = useRef<WebSocket | null>(null);
+  const [state, setState] = useState("연결 중");
+  const [offset, setOffset] = useState(0);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!box.current || user.kind !== "human") return;
+    const term = new Terminal({ cols: COLS, rows: ROWS, disableStdin: true, scrollback: 0, cursorBlink: false, fontSize: 12,
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono") || "monospace" });
+    term.open(box.current);
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/seats/${encodeURIComponent(seat)}/terminal`);
+    sock.current = ws;
+    let off = 0;
+    const scroll = (n: number) => {
+      off = n;
+      setOffset(n);
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "scroll", offset: n }));
+    };
+    term.attachCustomWheelEventHandler((ev) => {   // 휠은 xterm이 아니라 데몬의 화면 기록을 넘긴다
+      const next = Math.max(0, off + (ev.deltaY < 0 ? 3 : -3));
+      if (next !== off) scroll(next);
+      ev.preventDefault();
+      return false;
+    });
+    setState("연결 중");
+    setOffset(0);
+    ws.onopen = () => setState("실시간");
+    ws.onmessage = (e) => { if (typeof e.data === "string") term.write(e.data); };
+    ws.onclose = (e) => setState(e.reason ? `끊김: ${e.reason}` : e.code === 1006 ? "연결할 수 없음 (OpenRig 데몬의 웹 UI가 꺼져 있거나 Seat 세션이 없음)" : "끊김");
+    return () => { ws.close(); term.dispose(); sock.current = null; };
+  }, [seat, attempt, user.kind]);
+  if (user.kind !== "human") return <p className="small muted">Seat 계정은 Web UI 터미널을 쓰지 않습니다.</p>;
+  return (
+    <section className="panel stack">
+      <h2>{seat} 터미널</h2>
+      <p className="small muted">OpenRig 데몬이 보내는 Seat 화면을 그대로 보여 줍니다. 읽기 전용이라 키 입력은 Seat에 가지 않습니다. 휠로 이전 화면을 봅니다.</p>
+      <div className="row small">
+        <span className="pill">{offset > 0 ? `${offset}줄 위` : state}</span>
+        {offset > 0 && <button onClick={() => { setOffset(0); sock.current?.send(JSON.stringify({ type: "scroll", offset: 0 })); }}>실시간으로</button>}
+        <button onClick={() => setAttempt((a) => a + 1)}>다시 연결</button>
+      </div>
+      <div className="term" ref={box} />
+    </section>
+  );
+}
+
 export default function Seats() {
   const seats = useGet<SeatsInfo>("/api/seats");
   const [sel, setSel] = useState<string | null>(null);
+  const [view, setView] = useState<"chat" | "term">("chat");
   const d = seats.data;
   const seatNodes = (d?.nodes ?? []).filter((n) => !pick(n, "logicalId", "logical_id", "id").startsWith("infra."));
   return (
     <main className="page">
       <div className="page-head">
         <h1>Seat</h1>
-        <span className="sub">OpenRig 데몬에서 읽은 부서 계층의 Seat 상태와 대화. 작업 지시는 lead Seat에만 보냅니다.</span>
+        <span className="sub">OpenRig 데몬에서 읽은 부서 계층의 Seat 상태, 터미널(읽기 전용)과 대화. 작업 지시는 lead Seat에만 보냅니다.</span>
         <button onClick={seats.reload}>새로 읽기</button>
       </div>
       <Err msg={seats.error} />
@@ -88,7 +142,10 @@ export default function Seats() {
                     <td className="mono">{id}{isLead(id) && <span className="pill">lead</span>}</td>
                     <td className="small">{pick(n, "runtime")}</td>
                     <td className="small">{activity(n)}</td>
-                    <td><button onClick={() => setSel(id)}>대화</button></td>
+                    <td><div className="row">
+                      <button onClick={() => { setSel(id); setView("term"); }}>터미널</button>
+                      <button onClick={() => { setSel(id); setView("chat"); }}>대화</button>
+                    </div></td>
                   </tr>
                 );
               })}
@@ -96,7 +153,8 @@ export default function Seats() {
           </table>
         </div>
       )}
-      {sel && <Chat key={sel} seat={sel} />}
+      {sel && view === "term" && <SeatTerminal key={sel} seat={sel} />}
+      {sel && view === "chat" && <Chat key={sel} seat={sel} />}
     </main>
   );
 }
