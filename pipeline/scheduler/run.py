@@ -51,7 +51,7 @@ from pipeline.validator.structure import feedthrough_paths, feedthrough_rule, fr
 from pipeline.verify import pyequiv
 from pipeline.verify.run import lint, sim
 
-STUB_CELLS = [ROOT / "pipeline" / "emitter" / "stubs" / "sync_2ff.sv"]
+STUB_CELLS = sorted((ROOT / "pipeline" / "emitter" / "stubs").glob("*.sv"))   # 임시 표준 셀 (동기화, 리셋 동기화, 비동기 FIFO)
 
 
 class BudgetExceeded(RuntimeError):

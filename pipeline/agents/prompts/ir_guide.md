@@ -18,14 +18,23 @@
 
 ## 이름
 
-- 클럭과 리셋 포트는 `domains`에서 나온다. `ports`에 쓰지 않고, 조각에서도 읽지 않는다.
+- 클럭과 리셋 포트(주 리셋, `reset.extra`의 추가 동기 리셋)는 `domains`에서 나온다. `ports`에 쓰지 않는다.
+- 조각에서 클럭은 읽지 않는다. 리셋 포트는 `comb` 블록만 읽을 수 있다 (예: 리셋 중 ready를 0으로). `seq`와 `fsm`의 리셋 분기는 Emitter가 씌운다.
 - 번들 포트의 신호는 각자 이름으로 읽고 쓴다 (예: `s_axis_tvalid`).
 - `fsm` 블록의 상태 레지스터는 `<state_name>_q`이다. 다른 블록이 읽을 수 있다.
 
 ## signals
 
 - `{"name", "kind": "reg", "type", "domain", "reset"}`: `seq` 블록 하나가 쓰는 레지스터. 리셋이 없으면 `reset`을 뺀다.
-- `{"name", "kind": "wire", "type"}`: `comb` 블록 하나, 또는 `cdc_sync`의 `dst`가 구동한다.
+- `{"name", "kind": "wire", "type"}`: `comb` 블록 하나, `cdc_sync`의 `dst`, 또는 `cdc_fifo`의 `src.ready`·`dst.valid`·`dst.data`가 구동한다.
+
+## 도메인과 리셋
+
+- `sync_to: {"domain", "div"}`: 같은 원천의 분주 클럭 (이 클럭 = 기준 / div, 상승 에지 정렬). 기준 도메인과 그 분주 도메인은 한 클럭 그룹이다. 그룹 안에서는 동기화 셀 없이 서로의 신호를 읽고 연결한다. 분주의 분주(사슬)는 쓰지 않는다. 클럭 포트가 같은 도메인은 `div: 1`로 묶는다 (리셋만 다른 같은 클럭).
+- `reset.extra: [{"port", "active"}]`: 추가 동기 리셋 (예: 소프트 리셋). Emitter가 주 리셋 다음 우선순위로 같은 리셋값을 넣는다. 비동기 리셋은 주 리셋 하나뿐이다.
+- `reset.synchronize: true`: Block Top이 비동기 리셋을 블록 안에서 동기화한다 (`rst_sync` 셀). 하위 모듈과 셀은 동기화한 리셋을 받는다. `top`과 `block_top`에만 둔다.
+- 같은 클럭 그룹에서 비동기 리셋이 다른 도메인의 레지스터를 읽으면 Validator가 리셋 도메인 교차 경고를 낸다.
+- 하위 모듈의 도메인 관계(`sync_to`)는 `domain_map`으로 연결한 부모 도메인에서도 같아야 한다. 하위 모듈의 두 도메인이 클럭이나 리셋 포트를 함께 쓰면 부모도 같은 클럭·리셋을 줘야 한다.
 
 ## blocks
 
@@ -34,7 +43,8 @@
 | `comb` | `reads`, `writes`, `body` | blocking(`=`)만. `writes`의 신호마다 body 첫머리에 조건 없는 기본 대입을 둔다 (래치 금지) |
 | `seq` | `domain`, `reads`, `writes`, `body` | non-blocking(`<=`)만. 클럭, sensitivity, 리셋 분기는 쓰지 않는다. Emitter가 `always_ff`와 리셋 분기를 씌우고, 리셋값은 신호 선언의 `reset`에서 가져온다. 한 블록의 `writes`는 모두 리셋이 있거나 모두 없어야 한다 |
 | `fsm` | `domain`, `state_type`(enum), `state_name`, `reset_state`, `reads`, `transitions` | 전이는 `{"id", "from", "to", "cond"}`. 같은 상태의 전이는 배열 순서가 우선순위이고, 맞는 전이가 없으면 현재 상태를 유지한다. 출력은 `comb`/`seq` 블록이 `<state_name>_q`를 읽어 만든다 |
-| `cdc_sync` | `src`, `src_domain`, `dst`, `dst_domain`, `style` | 다른 도메인의 값을 읽는 유일한 방법이다. `style`은 1비트에 `2ff`, gray 코드로 만든 여러 비트 값에 `gray`를 쓴다. `dst`는 wire이고, 리셋 때 0이다 |
+| `cdc_sync` | `src`, `src_domain`, `dst`, `dst_domain`, `style` | 다른 클럭 그룹의 값을 읽는 방법이다. `style`은 1비트 수준 신호에 `2ff`, gray 코드로 만든 여러 비트 값에 `gray`, 보내는 쪽의 1사이클 펄스를 받는 쪽 1사이클 펄스로 옮길 때 `pulse`(펄스 간격은 느린 쪽 클럭 3주기 이상, `src_domain` 필요)를 쓴다. `dst`는 wire이고, 리셋 때 0이다 |
+| `cdc_fifo` | `src_domain`, `dst_domain`, `depth`(2~256의 2의 거듭제곱), `src: {valid, ready, data}`, `dst: {valid, ready, data}` | 여러 비트 값을 valid/ready로 다른 클럭 그룹에 넘기는 비동기 FIFO. `src.valid`·`src.data`는 보내는 쪽 신호, `dst.ready`는 받는 쪽 신호이고, `src.ready`·`dst.valid`·`dst.data`는 셀이 구동하는 wire다. 폭은 `data` 타입에서 정한다. 깊이 2면 핸드셰이크 동기화로 쓴다 |
 | `memory` | `name`, `word_type`, `depth`, `impl: "inferred"`, `ports` | 배열 `name[addr]`. 쓰기 포트 도메인의 `seq`만 쓰고, 읽기 포트 도메인의 `seq`만 읽는다 |
 
 ## 자주 틀리는 것

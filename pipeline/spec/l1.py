@@ -5,6 +5,13 @@
     4. 파라미터         → params
 
 클럭과 리셋 포트는 domains에서 유도되므로 ports에 넣지 않는다. 도메인이 "비동기"인 포트는 domain null.
+
+2번 섹션 표의 칸:
+- 리셋 포트와 리셋 극성: 쉼표로 여럿을 쓰면 첫째가 주 리셋, 나머지는 추가 동기 리셋(`reset.extra`).
+- 리셋 동기: "비동기"가 있으면 비동기 리셋. "블록 안에서 동기화"가 있으면 `reset.synchronize`.
+- 도메인 간 관계: "<도메인>과 비동기"는 `async_to`, "<도메인>에서 N분주"는 `sync_to`.
+  클럭 포트가 앞 도메인과 같으면 그 도메인과 같은 클럭(`sync_to`, 분주비는 앞 도메인과 같음)으로 본다.
+- 클럭 에지는 상승 에지로 고정한다 (하강 에지 도메인은 쓰지 않음).
 만든 IR의 각 노드가 어느 SPEC 줄에서 왔는지 `provenance`로 함께 돌려준다.
 
     python3 -m pipeline.spec.l1 <spec.md> -o <block_top.ir.json>
@@ -50,9 +57,17 @@ def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
     names = [r["도메인"] for r in t.dicts()]
     doms, pds, prov = [], {}, {}
     for r, line in zip(t.dicts(), t.row_lines):
+        rports = [x.strip() for x in r["리셋 포트"].split(",")]
+        actives = ["low" if "low" in x.lower() else "high" for x in r["리셋 극성"].split(",")]
+        actives += actives[-1:] * (len(rports) - len(actives))   # 극성을 하나만 쓰면 모두 같은 극성
+        sync_col = r.get("리셋 동기", "")
         d = {"name": r["도메인"], "clock": r["클럭 포트"], "edge": "pos",
-             "reset": {"port": r["리셋 포트"], "active": "low" if "low" in r["리셋 극성"].lower() else "high",
-                       "async": "비동기" in r.get("리셋 동기", "") or "async" in r.get("리셋 동기", "").lower()}}
+             "reset": {"port": rports[0], "active": actives[0],
+                       "async": "비동기" in sync_col or "async" in sync_col.lower()}}
+        if len(rports) > 1:
+            d["reset"]["extra"] = [{"port": p, "active": a} for p, a in zip(rports[1:], actives[1:])]
+        if "블록 안에서 동기화" in sync_col:
+            d["reset"]["synchronize"] = True
         f = _freq_mhz(r.get("주파수", ""))
         if f:
             d["freq_mhz"] = f
@@ -61,6 +76,13 @@ def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
         others = [n for n in names if n != d["name"] and re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])", rel)]
         if others and ("비동기" in rel or "async" in rel.lower()):
             d["async_to"] = others
+        m = re.search(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*에서\s*(\d+)\s*분주", rel)
+        if m:
+            d["sync_to"] = {"domain": m.group(1), "div": int(m.group(2))}
+        else:
+            same = next((x for x in doms if x["clock"] == d["clock"]), None)
+            if same is not None:   # 클럭 포트가 같은 앞 도메인: 같은 클럭
+                d["sync_to"] = dict(same["sync_to"]) if same.get("sync_to") else {"domain": same["name"], "div": 1}
         pd = r.get("전력 도메인", "")
         if pd not in NONE_WORDS:
             d["power_domain"] = pd
@@ -77,7 +99,7 @@ def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
 
 def ports(spec: Spec, doms: list[dict]) -> tuple[list[dict], dict]:
     t = _table(spec, 3, ("포트 또는 번들", "방향", "타입", "도메인"))
-    derived = {d["clock"] for d in doms} | {d["reset"]["port"] for d in doms}
+    derived = {d["clock"] for d in doms} | {x["port"] for d in doms for x in [d["reset"], *d["reset"].get("extra", [])]}
     out, prov, bundle = [], {}, None
     for r, line in zip(t.dicts(), t.row_lines):
         name = r["포트 또는 번들"]

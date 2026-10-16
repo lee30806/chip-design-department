@@ -5,6 +5,9 @@
 - `cdc_sync`는 프로젝트 표준 동기화 셀 인스턴스로 방출한다. 셀 이름과 포트는 사내 자료로 확정할 때까지
   임시 표준 `sync_2ff #(WIDTH) (clk, rst_n, d, q)`를 쓴다 (`stubs/sync_2ff.sv`). `gray`는 같은 셀에 폭만 준다.
   셀의 리셋은 active-low이므로, 도착 도메인의 리셋이 active-high면 반전해 연결한다.
+  `pulse`는 `sync_pulse`, `cdc_fifo` 블록은 `cdc_fifo` 셀이다 (`stubs/`). 모두 임시 표준 셀이고 사내 셀을 받으면 바꾼다.
+- 도메인의 추가 동기 리셋(`reset.extra`)은 `if (주 리셋) ... else if (추가 리셋) ... else 본문`으로 씌운다.
+- `reset.synchronize` 도메인은 `rst_sync` 셀로 리셋을 동기화하고, 그 도메인의 셀과 인스턴스에는 동기화한 리셋을 연결한다.
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
 - 노드마다 `// @ir <노드>` 주석을 달고, 소스맵(노드 → 줄 범위)을 함께 낸다.
   `lang: py` 모듈의 조각은 문장마다 `py_line`(조각 안의 Python 줄)을 단 세부 항목을 더 낸다.
@@ -29,6 +32,9 @@ from pathlib import Path
 from pipeline.ir.model import Module, load_library
 
 SYNC_CELL = {"module": "sync_2ff", "clk": "clk", "rst": "rst_n", "d": "d", "q": "q"}
+PULSE_CELL = "sync_pulse"   # (src_clk, src_rst_n, dst_clk, dst_rst_n, d, q)
+FIFO_CELL = "cdc_fifo"      # #(WIDTH, DEPTH) (src_clk, src_rst_n, src_valid, src_ready, src_data, dst_clk, dst_rst_n, dst_valid, dst_ready, dst_data)
+RST_CELL = "rst_sync"       # (clk, rst_n, rst_n_sync)
 
 
 class EmitError(Exception):
@@ -81,6 +87,20 @@ def _reset_cond(dom: dict) -> str:
     return f'!{r["port"]}' if r["active"] == "low" else r["port"]
 
 
+def _extra_cond(dom: dict) -> str | None:
+    """추가 동기 리셋 조건 (없으면 None)."""
+    xs = dom["reset"].get("extra", [])
+    return " || ".join(f'!{x["port"]}' if x["active"] == "low" else x["port"] for x in xs) or None
+
+
+def _rst_n(m: Module, dom: dict) -> str:
+    """이 모듈 안에서 도메인 리셋을 active-low로 쓴 식. 블록 안에서 동기화하는 도메인은 동기화한 넷."""
+    if dom["reset"].get("synchronize"):
+        return m.synced_reset(dom["name"])
+    r = dom["reset"]
+    return r["port"] if r["active"] == "low" else f'!{r["port"]}'
+
+
 def _sensitivity(dom: dict) -> str:
     edge = "posedge" if dom["edge"] == "pos" else "negedge"
     s = f'{edge} {dom["clock"]}'
@@ -99,10 +119,13 @@ def _seq(w: _Writer, m: Module, dom: dict, resets: list[tuple[str, str, str]], b
     """resets: (이름, 리셋값, 리셋값이 온 노드)."""
     w.line(f"  always_ff @({_sensitivity(dom)}) begin")
     if resets:
-        w.line(f"    if ({_reset_cond(dom)}) begin")
         width = max(len(n) for n, _, _ in resets)
-        for name, val, src in resets:
-            w.line(f"      {name.ljust(width)} <= {val};", frag=src)
+        for kw, cond in (("if", _reset_cond(dom)), ("end else if", _extra_cond(dom))):
+            if cond is None:
+                continue
+            w.line(f"    {kw} ({cond}) begin")
+            for name, val, src in resets:
+                w.line(f"      {name.ljust(width)} <= {val};", frag=src)
         w.line("    end else begin")
         w.line(_indent(body, 6), frag=body_node, py=m.py_lines.get(body_node))
         w.line("    end")
@@ -231,6 +254,15 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
         w.line(f"  {_decl(type_, name)}", frag=f"connections/{cid}")
     w.line()
 
+    for d in m.domains.values():
+        if d["reset"].get("synchronize"):
+            with w.node(f'domains/{d["name"]}/reset'):
+                r = d["reset"]
+                src = r["port"] if r["active"] == "low" else f'!{r["port"]}'
+                w.line(f"  logic {m.synced_reset(d['name'])};")
+                w.line(f'  {RST_CELL} u_rst_sync_{d["name"]} (.clk({d["clock"]}), .rst_n({src}), .rst_n_sync({m.synced_reset(d["name"])}));')
+            w.line()
+
     storage = m.storage()
     for b in m.blocks:
         if b["kind"] == "memory":
@@ -247,13 +279,23 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
                 _seq(w, m, m.domains[b["domain"]], resets, b["body"], f"{node}/body")
             elif b["kind"] == "fsm":
                 _fsm(w, m, b)
+            elif b["kind"] == "cdc_sync" and b["style"] == "pulse":
+                s, d = m.domains[b["src_domain"]], m.domains[b["dst_domain"]]
+                w.line(f'  {PULSE_CELL} u_{b["id"]} (.src_clk({s["clock"]}), .src_rst_n({_rst_n(m, s)}), '
+                       f'.dst_clk({d["clock"]}), .dst_rst_n({_rst_n(m, d)}), .d({b["src"]}), .q({b["dst"]}));')
             elif b["kind"] == "cdc_sync":
                 dom = m.domains[b["dst_domain"]]
                 c = SYNC_CELL
-                rst = dom["reset"]["port"] if dom["reset"]["active"] == "low" else f'!{dom["reset"]["port"]}'
                 prm = f' #(.WIDTH($bits({b["dst"]})))' if b["style"] == "gray" else ""
-                w.line(f'  {c["module"]}{prm} u_{b["id"]} (.{c["clk"]}({dom["clock"]}), .{c["rst"]}({rst}), '
+                w.line(f'  {c["module"]}{prm} u_{b["id"]} (.{c["clk"]}({dom["clock"]}), .{c["rst"]}({_rst_n(m, dom)}), '
                        f'.{c["d"]}({b["src"]}), .{c["q"]}({b["dst"]}));')
+            elif b["kind"] == "cdc_fifo":
+                s, d, a, z = m.domains[b["src_domain"]], m.domains[b["dst_domain"]], b["src"], b["dst"]
+                w.line(f'  {FIFO_CELL} #(.WIDTH($bits({z["data"]})), .DEPTH({b["depth"]})) u_{b["id"]} (')
+                w.line(f'    .src_clk({s["clock"]}), .src_rst_n({_rst_n(m, s)}), .src_valid({a["valid"]}), '
+                       f'.src_ready({a["ready"]}), .src_data({a["data"]}),')
+                w.line(f'    .dst_clk({d["clock"]}), .dst_rst_n({_rst_n(m, d)}), .dst_valid({z["valid"]}), '
+                       f'.dst_ready({z["ready"]}), .dst_data({z["data"]}));')
             else:
                 raise EmitError(f"{node}: v0 Emitter는 {b['kind']} 블록을 방출하지 않음")
         w.line()
@@ -261,10 +303,18 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     for inst in m.instances:
         child = library[inst["module"]]
         conns: list[tuple[str, str | None]] = []  # (핀 연결, 그 줄을 정한 노드)
+        pins: set[str] = set()   # 자식 도메인끼리 함께 쓰는 클럭·리셋 포트는 한 번만 (같은 넷인지는 V2가 봄)
         for cd, dom in child.domains.items():
             pd = m.domains[inst["domain_map"][cd]]
-            conns.append((f'.{dom["clock"]}({pd["clock"]})', None))
-            conns.append((f'.{dom["reset"]["port"]}({pd["reset"]["port"]})', None))
+            prst = pd["reset"]["port"]
+            if pd["reset"].get("synchronize"):   # 동기화한 리셋 (active-low)을 자식 극성으로
+                prst = m.synced_reset(pd["name"]) if dom["reset"]["active"] == "low" else f'!{m.synced_reset(pd["name"])}'
+            # 추가 리셋의 개수와 극성은 V2가 봄
+            for cport, net in [(dom["clock"], pd["clock"]), (dom["reset"]["port"], prst),
+                               *((cx["port"], px["port"]) for cx, px in zip(dom["reset"].get("extra", []), pd["reset"].get("extra", [])))]:
+                if cport not in pins:
+                    pins.add(cport)
+                    conns.append((f".{cport}({net})", None))
         for p in child.ports:
             if not p.derived:
                 net, cid = nets.get((inst["name"], p.name), ("", None))

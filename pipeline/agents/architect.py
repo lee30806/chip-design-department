@@ -34,7 +34,7 @@ TASK = """\
 - `examples/`: Block Top(`pkt_rx_top`)과 하위 모듈(`pkt_parser`) IR 예시
 
 ## 할 일
-1. 모듈 트리를 정한다. Block Top(role `block_top`)은 동작 블록을 가질 수 없고(동기화 셀 `cdc_sync`만 가능), 인스턴스와 연결만 가진다.
+1. 모듈 트리를 정한다. Block Top(role `block_top`)은 동작 블록을 가질 수 없고(동기화 셀 `cdc_sync`, `cdc_fifo`만 가능), 인스턴스와 연결만 가진다.
    그래서 동작은 모두 하위 모듈(role `module`)에 둔다. 모듈은 Author가 하나씩 따로 쓰므로 너무 크지도 잘게 쪼개지도 않게 나눈다.
 2. 하위 모듈마다 L1(module, role, params, domains, ports)만 있는 IR을 `out/ir/<모듈>.ir.json`에 쓴다.
 3. Block Top IR을 `out/ir/{top}.ir.json`에 쓴다. `block_top.json`의 L1을 그대로 두고 `instances`(파라미터 바인딩, domain_map)와
@@ -54,6 +54,10 @@ TASK = """\
   어긋난다. 필드마다 포트를 둔다. 메모리에 워드로 저장해야 하면 묶기와 풀기를 모두 그 메모리를 가진 모듈 안에 둔다.
 - 도메인을 넘는 상태 플래그는 0이 안전한 뜻으로 정한다 (`cdc_sync`의 `dst`는 리셋 직후 0이고 늦게 바뀐다). 예: "상대가 준비됨"(1이면 진행).
   포트 이름과 가정 목록에 그 뜻을 적는다.
+- 클럭 그룹(기준 도메인과 그 분주 도메인, `sync_to`)이 다른 도메인 사이는 동기화 셀로만 넘긴다. 1비트 수준 신호는 `cdc_sync` `2ff`,
+  펄스는 `pulse`, 여러 비트 값은 `cdc_fifo`(valid/ready)를 쓴다. 같은 클럭 그룹 안에서는 셀 없이 잇는다.
+- 하위 모듈의 도메인마다 클럭과 리셋 포트를 따로 둔다. Block Top이 리셋을 블록 안에서 동기화하면(`reset.synchronize`)
+  도메인마다 동기화한 리셋이 따로 나오므로, 두 도메인이 리셋 포트 하나를 함께 쓰면 연결할 수 없다.
 """
 
 

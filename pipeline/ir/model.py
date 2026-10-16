@@ -5,7 +5,9 @@ IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 
 `py` 모듈은 읽을 때 SV 조각으로 낮춘다. 검사, 방출, 하니스는 낮춘 IR(`raw`)을 보고, 원문은 `source_raw`에 남는다.
 이 모듈은 검사와 방출이 공통으로 쓰는 이름 해석만 맡는다.
 - 번들 포트를 개별 포트로 펼친다.
-- 클럭과 리셋 포트는 `domains`에서 유도한다. IR의 `ports`에는 적지 않는다.
+- 클럭과 리셋 포트(주 리셋, 추가 동기 리셋)는 `domains`에서 유도한다. IR의 `ports`에는 적지 않는다.
+- 리셋 포트는 `comb` 조각에서만 읽을 수 있다 (예: 리셋 중 ready를 0으로). 클럭 포트는 읽지 않는다.
+- 클럭 그룹: 기준 도메인과 그 분주 도메인(`sync_to`)은 같은 원천의 동기 클럭이라, 그룹 안에서는 동기화 셀 없이 읽고 연결한다.
 - `fsm` 블록은 `<state_name>_q` 레지스터를 노출한다.
 - `memory` 블록은 배열 `name`을 노출한다. 쓰기 포트 도메인의 seq 블록이 쓰고, 읽기 포트 도메인의 블록이 읽는다.
 """
@@ -74,7 +76,7 @@ class Module:
         out: list[Port] = []
         seen: set[str] = set()
         for d in self.raw.get("domains", []):
-            for name in (d["clock"], d["reset"]["port"]):
+            for name in (d["clock"], d["reset"]["port"], *(x["port"] for x in d["reset"].get("extra", []))):
                 if name not in seen:
                     out.append(Port(name, "input", "logic", d["name"], derived=True))
                     seen.add(name)
@@ -89,6 +91,33 @@ class Module:
 
     def port(self, name: str) -> Port | None:
         return next((p for p in self.ports if p.name == name), None)
+
+    # -- 클럭 그룹과 리셋 --
+    def clock_root(self, dom: str) -> tuple[str, int]:
+        """(기준 도메인, 분주비). 기준 도메인은 (자기, 1). 사슬(분주의 분주)은 V2가 막으므로 한 번만 따라간다."""
+        s = self.domains[dom].get("sync_to")
+        return (s["domain"], s["div"]) if s and s["domain"] in self.domains else (dom, 1)
+
+    def same_clock(self, a: str | None, b: str | None) -> bool:
+        """같은 클럭 그룹인지 (같은 도메인 포함)."""
+        if a == b:
+            return True
+        if a not in self.domains or b not in self.domains:
+            return False
+        return self.clock_root(a)[0] == self.clock_root(b)[0]
+
+    def reset_ports(self, dom: str) -> list[str]:
+        """도메인의 리셋 포트: 주 리셋, 추가 동기 리셋 순."""
+        r = self.domains[dom]["reset"]
+        return [r["port"], *(x["port"] for x in r.get("extra", []))]
+
+    def all_reset_ports(self) -> set[str]:
+        return {p for d in self.domains for p in self.reset_ports(d)}
+
+    @staticmethod
+    def synced_reset(dom: str) -> str:
+        """`reset.synchronize` 도메인에서 rst_sync 셀이 내는 동기화한 리셋 (active-low) 넷 이름."""
+        return f"{dom}_rst_sync_n"
 
     # -- 이름 공간 --
     def state_regs(self) -> list[Signal]:
@@ -114,8 +143,8 @@ class Module:
         return out
 
     def readable(self) -> set[str]:
-        """조각에서 읽을 수 있는 신호 이름 (상수 제외)."""
-        return {p.name for p in self.ports if not p.derived} | set(self.storage())
+        """조각에서 읽을 수 있는 신호 이름 (상수 제외). 리셋 포트는 comb만 읽는다 (V8)."""
+        return {p.name for p in self.ports if not p.derived} | set(self.storage()) | self.all_reset_ports()
 
     def constants(self) -> set[str]:
         """파라미터와 enum 멤버. 조각의 reads 목록에 적지 않아도 된다."""

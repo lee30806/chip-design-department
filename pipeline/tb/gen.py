@@ -69,6 +69,10 @@ def harness_config(m: Module) -> dict:
     clocks = {d["name"]: (d["clock"], round(1000.0 / d["freq_mhz"], 3) if d.get("freq_mhz") else DEFAULT_PERIOD_NS)
               for d in m.domains.values()}
     resets = {d["name"]: (d["reset"]["port"], 0 if d["reset"]["active"] == "low" else 1) for d in m.domains.values()}
+    # 분주 도메인: 하니스가 기준 클럭 주기(ps) × 분주비로 맞춰 상승 에지를 정렬한다
+    clock_sync = {d["name"]: (d["sync_to"]["domain"], d["sync_to"]["div"]) for d in m.domains.values() if d.get("sync_to")}
+    extra_resets = {d["name"]: [(x["port"], 0 if x["active"] == "low" else 1) for x in d["reset"]["extra"]]
+                    for d in m.domains.values() if d["reset"].get("extra")}
     bundles, outputs, inputs = [], [], []
     for p in m.raw["ports"]:
         if "bundle" in p:
@@ -78,8 +82,13 @@ def harness_config(m: Module) -> dict:
         else:
             inputs.append(p["name"])
     port_domains = {p.name: p.domain for p in m.ports if not p.derived}
-    return {"module": m.name, "clocks": clocks, "resets": resets, "bundles": bundles, "outputs": outputs,
-            "inputs": inputs, "port_domains": port_domains}
+    cfg = {"module": m.name, "clocks": clocks, "resets": resets, "bundles": bundles, "outputs": outputs,
+           "inputs": inputs, "port_domains": port_domains}
+    if clock_sync:   # 단일 클럭 블록의 하니스는 예전과 같게 둔다
+        cfg["clock_sync"] = clock_sync
+    if extra_resets:
+        cfg["extra_resets"] = extra_resets
+    return cfg
 
 
 def trace_names(m: Module, library: dict[str, Module] | None = None) -> dict:

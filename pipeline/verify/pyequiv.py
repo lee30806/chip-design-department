@@ -1,5 +1,8 @@
 """번역기 검사: `lang: py` 모듈의 설계 모델(`pysim`)과 방출한 RTL을 같은 무작위 자극으로 비교한다.
 
+클럭 그룹(기준 도메인과 그 분주 도메인)이 여럿이면 그룹마다 서로소인 반주기를 주고, 조합을 세 번 바꿔 가며
+도메인 사이 위상을 바꾼다 (`phases`). 사이클 수는 조합들이 나눠 쓴다.
+
 이 검사가 보는 것은 Python 조각 → SV 번역(과 실행기)이 같은 의미인지다. SPEC 해석이 맞는지는 보지 않는다
 (그것은 Verifier 테스트와 DV Pod의 독립 TB가 본다). 그래서 불일치는 Repair로 보내지 않고 생성기 버그로 기록한다.
 
@@ -20,6 +23,16 @@ TB_DIR = Path(__file__).resolve().parent
 CYCLES = 2000
 RESET_CYCLES = 3
 RESET_PROB = 0.01
+HALF_NS = [5, 7, 11, 13, 17, 19, 23]   # 그룹 기준 클럭의 반주기 후보 (홀수, 서로소)
+PHASES = 3
+
+
+def phases(top: Module, n: int = PHASES) -> list[dict[str, int]]:
+    """그룹 기준 도메인 → 반주기(ns) 조합. 그룹이 하나면 한 가지(10ns 주기)."""
+    roots = list(dict.fromkeys(top.clock_root(d)[0] for d in top.domains))
+    if len(roots) <= 1:
+        return [{r: HALF_NS[0] for r in roots}]
+    return [{r: HALF_NS[(i * 2 + j) % len(HALF_NS)] for j, r in enumerate(roots)} for i in range(n)]
 
 
 def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Path, cycles: int = CYCLES,
@@ -32,8 +45,9 @@ def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Pa
     out = build_dir / "pyequiv_result.json"
     out.unlink(missing_ok=True)
     cfg = build_dir / "pyequiv.json"
-    cfg.write_text(json.dumps({"top": top, "library": {n: m.source_raw for n, m in library.items()}, "cycles": cycles,
-                               "seed": seed, "reset_cycles": RESET_CYCLES, "reset_prob": RESET_PROB, "out": str(out.resolve())},
+    ph = phases(library[top])
+    cfg.write_text(json.dumps({"top": top, "library": {n: m.source_raw for n, m in library.items()},
+                               "cycles": max(1, cycles // len(ph)), "phases": ph, "seed": seed, "reset_cycles": RESET_CYCLES, "reset_prob": RESET_PROB, "out": str(out.resolve())},
                               ensure_ascii=False), encoding="utf-8")
     r = sim([Path(f) for f in files], top, "pyequiv_tb", TB_DIR, build_dir, env={"PYEQUIV_CFG": str(cfg.resolve())})
     if out.exists():

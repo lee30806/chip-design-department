@@ -15,6 +15,10 @@
 출력 stream은 출력 번들 이름이거나 단독 출력 이름이다. 1비트 단독 출력은 1인 사이클마다, 여러 비트 단독 출력은
 값이 바뀔 때마다 트랜잭션 하나가 된다.
 
+클럭: 분주 도메인(`clock_sync`)의 주기는 기준 클럭 주기(ps) × 분주비로 맞추고, 모든 클럭이 시각 0에 함께 올라가므로
+상승 에지가 정렬된다. 클럭 포트를 함께 쓰는 도메인은 클럭을 하나만 띄운다.
+추가 동기 리셋(`extra_resets`)은 시작할 때 풀어 두고, 테스트가 걸면 주 리셋처럼 그 도메인의 입력 큐를 비운다.
+
 Verify 툴은 환경 변수로 결과 위치를 준다.
   TB_OUT    결과 디렉터리. 첫 불일치(mismatch.json), 트레이스(trace.json)를 쓴다.
   TB_TRACE  트레이스할 내부 신호 목록(JSON). Verifier는 이 파일을 보지 못한다.
@@ -153,9 +157,11 @@ class ValidReadyChecker:
     """T2. DUT가 source인 번들: valid가 올라간 뒤 ready를 볼 때까지 valid와 data를 유지해야 한다.
     리셋은 예외다: 리셋이 걸린 표본과 그 다음 표본(동기 리셋이 반영되는 사이클)에서는 보지 않고 기다리던 전송을 버린다."""
 
-    def __init__(self, dut, b: dict, reset: tuple[str, int] | None = None):
+    def __init__(self, dut, b: dict, reset: tuple[str, int] | None = None, extra: list | tuple = ()):
+        """extra: 그 도메인의 추가 동기 리셋 [(포트, 활성 값)]. 주 리셋과 같이 다룬다."""
         self.name, self.domain = b["name"], b["domain"]
         self.rst, self.rst_active = (getattr(dut, reset[0]), reset[1]) if reset else (None, 1)
+        self.extra = [(getattr(dut, p), a) for p, a in extra]
         self.prev_rst = False
         self.valid, self.ready = getattr(dut, b["valid"]), getattr(dut, b["ready"])
         self.data = {n: getattr(dut, n) for n in b["data"]}
@@ -166,7 +172,7 @@ class ValidReadyChecker:
     def sample(self, cycle: int) -> None:
         v, r = _int(self.valid), _int(self.ready)
         d = {n: _int(h) for n, h in self.data.items()}
-        rst = self.rst is not None and _int(self.rst) == self.rst_active
+        rst = (self.rst is not None and _int(self.rst) == self.rst_active) or any(_int(h) == a for h, a in self.extra)
         if self.pending is not None and not (rst or self.prev_rst):
             if v != 1:
                 self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
@@ -280,7 +286,7 @@ class Harness:
         for b in outs:
             self.drivers[b["name"]] = ReadyDriver(dut, b)
         for b in outs:
-            c = ValidReadyChecker(dut, b, cfg["resets"].get(b["domain"]))
+            c = ValidReadyChecker(dut, b, cfg["resets"].get(b["domain"]), cfg.get("extra_resets", {}).get(b["domain"], ()))
             self.checkers.append(c)
             self.samplers[b["domain"]].append(c)
 
@@ -290,15 +296,27 @@ class Harness:
         return json.loads(Path(p).read_text())["names"] if p and Path(p).exists() else {}
 
     # -- 테스트가 쓰는 API --
+    def periods_ps(self) -> dict[str, int]:
+        """도메인별 클럭 주기 (ps). 반주기가 정수가 되도록 짝수로 맞추고(cocotb Clock), 분주 도메인은 기준 주기 × 분주비."""
+        out = {d: max(2, round(period * 1000 / 2) * 2) for d, (_, period) in self.cfg["clocks"].items()}
+        for d, (root, div) in self.cfg.get("clock_sync", {}).items():
+            out[d] = out[root] * div
+        return out
+
     async def start(self, reset_cycles: int = 3) -> None:
-        for d, (port, period) in self.cfg["clocks"].items():
-            # 주기는 ps 단위의 짝수로 맞춘다 (cocotb Clock은 반주기가 정수여야 함). 예: 90.9MHz → 11002ps
-            ps = max(2, round(period * 1000 / 2) * 2)
-            cocotb.start_soon(Clock(getattr(self.dut, port), ps, unit="ps").start())
+        started = set()
+        for d, ps in self.periods_ps().items():
+            port = self.cfg["clocks"][d][0]
+            if port not in started:   # 클럭 포트를 함께 쓰는 도메인 (같은 클럭)
+                started.add(port)
+                cocotb.start_soon(Clock(getattr(self.dut, port), ps, unit="ps").start())
         for drv in self.drivers.values():
             drv.reset()
         for name in self.cfg["inputs"]:
             getattr(self.dut, name).value = 0
+        for xs in self.cfg.get("extra_resets", {}).values():
+            for port, active in xs:
+                getattr(self.dut, port).value = 1 - active
         for d, (port, active) in self.cfg["resets"].items():
             getattr(self.dut, port).value = active
         for d, (clk, _) in self.cfg["clocks"].items():
@@ -379,7 +397,9 @@ class Harness:
         clk = getattr(self.dut, self.cfg["clocks"][domain][0])
         drivers = [d for n, d in self.drivers.items() if self._domain_of(n) == domain]
         # 속성 표본에는 그 도메인의 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 클럭은 넣지 않는다.
-        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + [self.cfg["resets"][domain][0]]
+        extra = self.cfg.get("extra_resets", {}).get(domain, [])
+        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + [self.cfg["resets"][domain][0]] \
+            + [p for p, _ in extra]
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
         first = True
         while True:
@@ -395,7 +415,7 @@ class Harness:
             # 테스트가 도중에 리셋을 걸면 그 도메인의 입력 큐를 비운다. 리셋 뒤에도 남은 전송이 들어가면
             # 테스트가 리셋 전 프레임의 나머지를 리셋 뒤 출력으로 오해한다 (P8a async_fifo sc02, 두 번)
             port, active = self.cfg["resets"][domain]
-            if _int(getattr(self.dut, port)) == active:
+            if any(_int(getattr(self.dut, p)) == a for p, a in [(port, active), *extra]):
                 for d in drivers:
                     if hasattr(d, "flush"):
                         d.flush()

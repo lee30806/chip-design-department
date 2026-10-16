@@ -229,6 +229,9 @@ def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set
     for b in m.blocks:
         if b["kind"] == "cdc_sync":
             dom[b["dst"]] = {b["dst_domain"]}
+        elif b["kind"] == "cdc_fifo":
+            dom[b["src"]["ready"]] = {b["src_domain"]}
+            dom[b["dst"]["valid"]] = dom[b["dst"]["data"]] = {b["dst_domain"]}
     for inst in m.instances:
         child = library.get(inst["module"])
         if not child:
@@ -253,17 +256,39 @@ def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set
     return dom, out
 
 
+def _one_group(m: Module, ds: set) -> bool:
+    """도메인 집합이 한 클럭 그룹 안에 있는지 (비동기 신호 제외)."""
+    ds = [d for d in ds if d is not None]
+    return ASYNC not in ds and all(m.same_clock(ds[0], d) for d in ds[1:])
+
+
 def v8_domain(m: Module, library: dict[str, Module]) -> list[Issue]:
+    """도메인 교차. 같은 클럭 그룹(기준 도메인과 그 분주 도메인) 안에서는 동기화 셀 없이 읽는다.
+    리셋 포트는 comb만 읽고, 도메인을 만들지 않는다 (리셋이 걸린 동안의 출력을 정하는 데 씀)."""
     dom, out = signal_domains(m, library)
     storage = m.storage()
     for name, ds in sorted(dom.items()):
         s = storage.get(name)
-        if s and s.kind != "reg" and len(ds - {None}) > 1:
-            out.append(Issue("V8", f"signals/{name}", f"wire에 여러 도메인이 섞임: {sorted(ds)}"))
+        if s and s.kind != "reg" and len(ds - {None}) > 1 and not _one_group(m, ds):
+            out.append(Issue("V8", f"signals/{name}", f"wire에 클럭 그룹이 다른 도메인이 섞임: {sorted(ds)}"))
     mems = m.memories()
+    resets = m.all_reset_ports()
     for b in m.blocks:
         node = f'blocks/{b["id"]}'
+        if b["kind"] in ("cdc_sync", "cdc_fifo") and b["src_domain"] and m.same_clock(b["src_domain"], b["dst_domain"]):
+            out.append(Issue("V8", node, f'같은 클럭 그룹({b["src_domain"]}, {b["dst_domain"]}) 사이에는 동기화 셀이 필요 없음',
+                             severity="warning"))
+        if b["kind"] == "cdc_fifo":
+            for side, k in (("src", "valid"), ("src", "data"), ("dst", "ready")):
+                want = b[f"{side}_domain"]
+                ds = dom.get(b[side][k], set())
+                if ASYNC in ds or not all(m.same_clock(want, d) for d in ds - {None}):
+                    out.append(Issue("V8", node, f'{side}.{k}({b[side][k]}, {sorted(ds)})는 {want} 도메인 신호여야 함'))
         reads = list(b.get("reads", []))
+        for r in [r for r in reads if r in resets]:
+            if b["kind"] != "comb":
+                out.append(Issue("V8", node, f"리셋 포트는 comb 블록에서만 읽음 (seq와 fsm은 Emitter가 리셋 분기를 씌움): {r}"))
+        reads = [r for r in reads if r not in resets]
         for r in [r for r in reads if r in mems]:
             if b["kind"] != "seq" or b["domain"] not in m.memory_domains(r, "read"):
                 out.append(Issue("V8", node, f'메모리는 읽기 포트 도메인({sorted(m.memory_domains(r, "read"))})의 seq 블록에서만 읽음: {r}'))
@@ -273,12 +298,27 @@ def v8_domain(m: Module, library: dict[str, Module]) -> list[Issue]:
                 ds = dom.get(r, set())
                 if ASYNC in ds:
                     out.append(Issue("V8", node, f"비동기 신호는 cdc_sync의 src로만 읽을 수 있음: {r}"))
-                elif ds and ds != {b["domain"]}:
-                    out.append(Issue("V8", node, f'다른 도메인 신호를 읽음: {r} ({sorted(ds)}), 블록 도메인 {b["domain"]}'))
+                elif ds and not all(m.same_clock(d, b["domain"]) for d in ds - {None}):
+                    out.append(Issue("V8", node, f'다른 클럭 그룹의 신호를 읽음: {r} ({sorted(ds)}), 블록 도메인 {b["domain"]}'))
+                else:
+                    out += _rdc(m, node, r, ds, b["domain"], storage)
         elif b["kind"] == "comb":
             for r in reads:
                 if ASYNC in dom.get(r, set()):
                     out.append(Issue("V8", node, f"비동기 신호는 cdc_sync의 src로만 읽을 수 있음: {r}"))
+    return out
+
+
+def _rdc(m: Module, node: str, r: str, ds: set, here: str, storage: dict) -> list[Issue]:
+    """리셋 도메인 교차 (경고): 같은 클럭 그룹이라도 비동기 리셋이 다른 도메인의 레지스터를 읽으면, 그 리셋이
+    걸리는 순간 값이 이 도메인의 클럭과 무관하게 바뀐다. 실제 블록에서 본 뒤 오류로 할지 정한다."""
+    out = []
+    s = storage.get(r)
+    for d in sorted(ds - {None, here}):
+        rd = m.domains[d]["reset"]
+        if s is not None and s.kind == "reg" and rd["async"] and rd["port"] != m.domains[here]["reset"]["port"]:
+            out.append(Issue("V8", node, f'리셋 도메인 교차: {r}는 비동기 리셋 {rd["port"]}로 바뀌는 {d}의 레지스터 '
+                                         f'({here}의 리셋은 {m.domains[here]["reset"]["port"]})', severity="warning"))
     return out
 
 
@@ -349,7 +389,7 @@ def v10_hierarchy(m: Module, library: dict[str, Module]) -> list[Issue]:
                 cp = library[inst["module"]].port(n)
                 return inst["domain_map"].get(cp.domain) if cp.domain else ASYNC
             pa, pb = port_dom(owners[0], da, na), port_dom(owners[1], db, nb)
-            if ASYNC not in (pa, pb) and None not in (pa, pb) and pa != pb:
+            if ASYNC not in (pa, pb) and None not in (pa, pb) and not m.same_clock(pa, pb):
                 out.append(Issue("V10", node, f"도메인이 다른 연결({na}: {pa}, {nb}: {pb})은 동기화 셀을 거치거나 수신 측이 비동기 포트여야 함"))
     for inst in m.instances:
         child = library.get(inst["module"])
@@ -382,6 +422,9 @@ def frozen_scope(library: dict[str, Module]) -> dict[str, str]:
             parts["types"] = m.raw.get("types", [])
             # 해석에 실패한 IR에서도 같은 값이 나오도록 raw에서 직접 읽는다.
             parts["cdc_sync"] = [b for b in m.raw.get("blocks", []) if isinstance(b, dict) and b.get("kind") == "cdc_sync"]
+            fifos = [b for b in m.raw.get("blocks", []) if isinstance(b, dict) and b.get("kind") == "cdc_fifo"]
+            if fifos:   # 없으면 키를 만들지 않음 (이전 실행의 동결 기준선과 해시가 같도록)
+                parts["cdc_fifo"] = fifos
         for k, v in parts.items():
             out[f"{name}/{k}"] = hashlib.sha256(json.dumps(v, sort_keys=True).encode()).hexdigest()
     return out

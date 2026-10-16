@@ -260,6 +260,9 @@ class Widths:
         for p in raw.get("ports", []):
             for s in p.get("signals", [p]):
                 w.sym[s["name"]] = w.type_sym(s["type"])
+        for d in raw.get("domains", []):   # 리셋 포트 (comb 조각이 읽을 수 있음)
+            for x in [d["reset"], *d["reset"].get("extra", [])]:
+                w.sym[x["port"]] = ONE
         for s in raw.get("signals", []):
             w.sym[s["name"]] = w.type_sym(s["type"])
         for b in raw.get("blocks", []):

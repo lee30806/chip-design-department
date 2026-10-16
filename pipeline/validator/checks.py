@@ -97,6 +97,9 @@ def v1_schema(m: Module) -> list[Issue]:
     for name in {p.name for p in m.ports if p.derived}:
         if name not in names:
             claim(name, f"domains/{name}")
+    for d in m.domains.values():
+        if d["reset"].get("synchronize"):
+            claim(m.synced_reset(d["name"]), f'domains/{d["name"]}/reset')
     for b in m.bundles:
         claim(b, f"ports/{b}")
     for t in m.types:
@@ -153,6 +156,7 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
         if d is not None and d not in doms:
             out.append(Issue("V2", node, f"정의되지 않은 도메인: {d}"))
 
+    out += _domain_relations(m)
     for port in m.ports:
         if not port.derived:
             dom(port.domain, f"ports/{port.bundle or port.name}")
@@ -175,10 +179,29 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
             types = {k: (storage[b[k]].type if b[k] in storage else next((p.type for p in m.ports if p.name == b[k]), None))
                      for k in ("src", "dst")}
             norm = {k: "".join(v.split()) if v else None for k, v in types.items()}
-            if b["style"] == "2ff" and any(v not in (None, "logic", "bit") for v in norm.values()):
-                out.append(Issue("V2", node, f"2ff는 1비트만 동기화함. 여러 비트는 gray 코드로 만든 뒤 style \"gray\"를 씀: {types}"))
+            if b["style"] in ("2ff", "pulse") and any(v not in (None, "logic", "bit") for v in norm.values()):
+                out.append(Issue("V2", node, f'{b["style"]}는 1비트만 동기화함. 여러 비트는 gray 코드로 만든 뒤 style "gray"를 '
+                                             f"쓰거나 cdc_fifo를 씀: {types}"))
+            if b["style"] == "pulse" and b["src_domain"] is None:
+                out.append(Issue("V2", node, "pulse는 보내는 쪽 클럭으로 토글을 만들므로 src_domain이 있어야 함"))
             if b["style"] == "gray" and None not in norm.values() and norm["src"] != norm["dst"]:
                 out.append(Issue("V2", node, f"gray 동기화의 src와 dst 타입이 다름: {types}"))
+        if b["kind"] == "cdc_fifo":
+            dom(b["src_domain"], node)
+            dom(b["dst_domain"], node)
+            for side, k, pool in (("src", "valid", readable), ("src", "data", readable), ("dst", "ready", readable),
+                                  ("src", "ready", storage), ("dst", "valid", storage), ("dst", "data", storage)):
+                if b[side][k] not in pool:
+                    out.append(Issue("V2", node, f'{side}.{k}가 가리키는 신호가 없음: {b[side][k]}'))
+
+            def typ(n):
+                t = storage[n].type if n in storage else next((p.type for p in m.ports if p.name == n), None)
+                return "".join(t.split()) if t else None
+            if None not in (typ(b["src"]["data"]), typ(b["dst"]["data"])) and typ(b["src"]["data"]) != typ(b["dst"]["data"]):
+                out.append(Issue("V2", node, f'src.data와 dst.data의 타입이 다름: {typ(b["src"]["data"])} vs {typ(b["dst"]["data"])}'))
+            for side, k in (("src", "valid"), ("src", "ready"), ("dst", "valid"), ("dst", "ready")):
+                if typ(b[side][k]) not in (None, "logic", "bit"):
+                    out.append(Issue("V2", node, f"{side}.{k}는 1비트여야 함: {b[side][k]}"))
         for r in b.get("reads", []):
             if r not in readable:
                 out.append(Issue("V2", node, f"reads의 신호가 없음: {r}"))
@@ -210,6 +233,7 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
         for cd in child.domains:
             if cd not in inst["domain_map"]:
                 out.append(Issue("V2", node, f"domain_map에 자식 도메인이 빠짐: {cd}"))
+        out += _domain_map_relations(m, child, inst, node)
     for c in m.connections:
         node = f'connections/{c["id"]}'
         ends = [_endpoint_ports(m, c[k], library) for k in ("from", "to")]
@@ -218,6 +242,76 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
                 out.append(Issue("V2", node, f"끝점을 해석할 수 없음: {c[k]}"))
         if all(ends) and len(ends[0]) != len(ends[1]):
             out.append(Issue("V2", node, f"양쪽 신호 개수가 다름: {len(ends[0])} vs {len(ends[1])}"))
+    return out
+
+
+def _domain_relations(m: Module) -> list[Issue]:
+    """도메인 사이 관계: 분주(sync_to), 같은 클럭 포트, 비동기(async_to), 리셋 동기화."""
+    out: list[Issue] = []
+    for d in m.domains.values():
+        node = f'domains/{d["name"]}'
+        s = d.get("sync_to")
+        if s:
+            ref = m.domains.get(s["domain"])
+            if ref is None:
+                out.append(Issue("V2", node, f'sync_to가 가리키는 도메인이 없음: {s["domain"]}'))
+            elif s["domain"] == d["name"]:
+                out.append(Issue("V2", node, "sync_to가 자기 자신을 가리킴"))
+            elif ref.get("sync_to"):
+                out.append(Issue("V2", node, f'분주의 사슬은 쓰지 않음: {s["domain"]}도 sync_to가 있음. 기준 도메인에서 바로 나눈 분주비를 씀'))
+            elif d.get("freq_mhz") and ref.get("freq_mhz") and abs(d["freq_mhz"] * s["div"] - ref["freq_mhz"]) > 1e-6 * ref["freq_mhz"]:
+                out.append(Issue("V2", node, f'freq_mhz({d["freq_mhz"]})가 {s["domain"]}({ref["freq_mhz"]}) / {s["div"]}와 다름'))
+        for o in d.get("async_to", []):
+            if o in m.domains and m.same_clock(d["name"], o):
+                out.append(Issue("V2", node, f"같은 클럭 그룹의 도메인을 async_to에 넣음: {o}"))
+        r = d["reset"]
+        if r.get("synchronize"):
+            if m.role not in ("top", "block_top"):
+                out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 top과 block_top에만 둠 (하위 모듈은 동기화한 리셋을 받음)"))
+            if not r["async"]:
+                out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 비동기 리셋(async: true)에만 씀"))
+        if r["port"] in {x["port"] for x in r.get("extra", [])}:
+            out.append(Issue("V2", f"{node}/reset", f'추가 리셋에 주 리셋 포트를 다시 씀: {r["port"]}'))
+    # 클럭 포트가 같은 도메인은 같은 클럭이어야 한다 (같은 그룹, 같은 분주비)
+    by_clock: dict[str, list[str]] = {}
+    for d in m.domains.values():
+        by_clock.setdefault(d["clock"], []).append(d["name"])
+    for clk, names in by_clock.items():
+        roots = {m.clock_root(n) for n in names}
+        if len(roots) > 1:
+            out.append(Issue("V2", f"domains/{names[1]}", f"클럭 포트 {clk}를 함께 쓰는 도메인 {names}은 같은 클럭이어야 함. "
+                                                          "기준 도메인에 sync_to (div 1)로 묶음"))
+    return out
+
+
+def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> list[Issue]:
+    """인스턴스의 domain_map이 자식의 클럭 관계와 리셋 구성을 지키는지."""
+    out: list[Issue] = []
+    dm = inst["domain_map"]
+    nets: dict[str, str] = {}   # 자식 클럭·리셋 포트 → 부모 넷 (도메인끼리 포트를 함께 쓰면 같은 넷이어야 함)
+    for cd, d in child.domains.items():
+        pd = dm.get(cd)
+        if pd not in m.domains:
+            continue
+        pr = m.domains[pd]["reset"]
+        pairs = [(d["clock"], m.domains[pd]["clock"]),
+                 (d["reset"]["port"], m.synced_reset(pd) if pr.get("synchronize") else pr["port"]),
+                 *zip((x["port"] for x in d["reset"].get("extra", [])), (x["port"] for x in pr.get("extra", [])))]
+        for cport, pnet in pairs:
+            if nets.setdefault(cport, pnet) != pnet:
+                out.append(Issue("V2", node, f"자식 포트 {cport}를 함께 쓰는 도메인들에 서로 다른 넷({nets[cport]}, {pnet})을 연결함. "
+                                             "자식 도메인마다 포트를 따로 두거나 같은 클럭·리셋의 도메인에 연결함"))
+        s = d.get("sync_to")
+        if s and dm.get(s["domain"]) in m.domains:
+            (ra, da), (rb, db) = m.clock_root(pd), m.clock_root(dm[s["domain"]])
+            if ra != rb or da != db * s["div"]:
+                out.append(Issue("V2", node, f'자식 도메인 {cd}는 {s["domain"]}에서 {s["div"]}분주인데 연결한 {pd}와 '
+                                             f'{dm[s["domain"]]}의 관계가 다름'))
+        ce = [x["active"] for x in d["reset"].get("extra", [])]
+        pe = [x["active"] for x in m.domains[pd]["reset"].get("extra", [])]
+        if ce != pe[:len(ce)]:   # 자식은 부모 추가 리셋의 앞쪽 일부만 받을 수 있음 (순서대로 연결)
+            out.append(Issue("V2", node, f"자식 도메인 {cd}의 추가 리셋({ce})이 연결한 {pd}의 추가 리셋({pe})과 맞지 않음 "
+                                         "(부모 추가 리셋의 앞에서부터 같은 극성이어야 함)"))
     return out
 
 
@@ -323,6 +417,9 @@ def v5_drivers(m: Module, library: dict[str, Module]) -> list[Issue]:
             add(f'{b["state_name"]}_q', node, b)
         elif b["kind"] == "cdc_sync":
             add(b["dst"], node, b)
+        elif b["kind"] == "cdc_fifo":
+            for side, k in (("src", "ready"), ("dst", "valid"), ("dst", "data")):
+                add(b[side][k], node, b)
     for c in m.connections:
         ends = [_endpoint_ports(m, c[k], library) for k in ("from", "to")]
         if not all(ends):
@@ -335,7 +432,12 @@ def v5_drivers(m: Module, library: dict[str, Module]) -> list[Issue]:
             if src_a == src_b and "signal" not in (da, db):
                 out.append(Issue("V5", f'connections/{c["id"]}', f"{na}와 {nb}의 방향이 맞지 않음"))
                 continue
-            sink, sink_self = (nb, b_self) if (src_a or db == "signal") else (na, a_self)
+            # 내부 신호 끝점은 반대쪽이 정한다: 인스턴스 입력으로 가면 신호가 값을 냄 (동기화 셀 출력 → 인스턴스 입력)
+            if da == "signal" and db != "signal":
+                src_a = not src_b
+            elif db == "signal" and da != "signal":
+                src_b = not src_a
+            sink, sink_self = (nb, b_self) if (src_a or db == "signal" and not src_b) else (na, a_self)
             if sink_self:
                 add(sink, f'connections/{c["id"]}')
     storage = m.storage()

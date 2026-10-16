@@ -56,6 +56,8 @@ def build(m: Module, library: dict[str, Module] | None = None) -> Probe:
     for port in m.ports:
         if not port.derived:
             p.add(f"  {port.type} {port.name};", "V3", f"ports/{port.name}")
+    for name in sorted(m.all_reset_ports()):   # comb 조각이 리셋 포트를 읽을 수 있음
+        p.add(f"  logic {name};", "V3", f"domains/{name}")
     for s in m.signals:
         p.add(f"  {s.type} {s.name};", "V3", f"signals/{s.name}")
     for s in m.state_regs():

@@ -36,6 +36,21 @@ module sync_2ff #(parameter int WIDTH = 1) (
 - 도착 도메인의 리셋이 active-high이면 Emitter가 반전해 `rst_n`에 연결합니다.
 - 리셋이 없는 동기화 플롭을 쓰던 원본(`axis_async_fifo`)도 이 셀로 바뀝니다. 사내 셀의 리셋 규약을 받으면 다시 봅니다.
 
+P10(다중 클럭과 리셋)에서 임시 셀 셋을 더했습니다. 모두 리셋은 active-low 비동기(0으로)이고, 모델은 `pipeline/emitter/stubs/`에 있습니다.
+
+```systemverilog
+module sync_pulse (input logic src_clk, src_rst_n, dst_clk, dst_rst_n, d, output logic q);   // cdc_sync style "pulse"
+module cdc_fifo #(parameter int WIDTH = 1, parameter int DEPTH = 2) (                         // cdc_fifo 블록
+  input  logic src_clk, src_rst_n, src_valid, output logic src_ready, input  logic [WIDTH-1:0] src_data,
+  input  logic dst_clk, dst_rst_n, output logic dst_valid, input  logic dst_ready, output logic [WIDTH-1:0] dst_data);
+module rst_sync (input logic clk, rst_n, output logic rst_n_sync);                             // reset.synchronize
+```
+
+- `sync_pulse`: 보내는 쪽 토글을 2단으로 동기화하고 한 단 더 늦춘 값과 비교해 받는 쪽 한 주기 펄스를 냅니다.
+- `cdc_fifo`: 이진 포인터와 gray 포인터 레지스터, 상대 gray 포인터의 2단 동기화. 받는 쪽 데이터는 조합으로 읽습니다.
+- `rst_sync`: 비동기 assert, 클럭 두 에지 뒤 동기 deassert.
+- SDC 골격은 셀 안의 동기화 첫 단 핀(`s1/D`, `wq1/D`, `rq1/D`)과 `rst_sync`의 `rst_n`을 가리킵니다. 사내 셀을 받으면 핀 이름도 바꿉니다.
+
 ## 메모리
 
 `memory` 블록의 `impl: "inferred"`만 방출합니다. Emitter는 `word_type name [depth];` 배열을 선언합니다.

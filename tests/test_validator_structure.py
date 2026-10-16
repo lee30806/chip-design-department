@@ -88,7 +88,7 @@ CASES = [
     ("pkt_parser", latch, "[V6] blocks/k_hit: 래치 위험: sync_hit"),
     ("pkt_parser", loop, "[V6] signals/a: 조합 루프: a → b → a"),
     ("pkt_parser", mixed_reset, "[V7] blocks/k_cnt: 리셋 유무가 섞임"),
-    ("pkt_parser", cross_read, "[V8] blocks/k_cnt: 다른 도메인 신호를 읽음: f_reg"),
+    ("pkt_parser", cross_read, "[V8] blocks/k_cnt: 다른 클럭 그룹의 신호를 읽음: f_reg"),
     ("pkt_parser", async_read, "[V8] blocks/k_hit: 비동기 신호는 cdc_sync의 src로만"),
     ("pkt_parser", unreachable, "[V9] blocks/k_fsm: 리셋 상태에서 도달할 수 없는 상태: ERR"),
     ("pkt_parser", dead_end, "[V9 경고] blocks/k_fsm: 나가는 전이가 없는 상태: PAYLOAD"),

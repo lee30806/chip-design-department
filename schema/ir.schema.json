@@ -158,7 +158,14 @@
         "properties": {
           "blocks": {
             "items": {
-              "$ref": "#/$defs/block_cdc_sync"
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/block_cdc_sync"
+                },
+                {
+                  "$ref": "#/$defs/block_cdc_fifo"
+                }
+              ]
             }
           }
         }
@@ -262,12 +269,58 @@
             },
             "async": {
               "type": "boolean"
+            },
+            "extra": {
+              "description": "도메인의 추가 리셋 (동기만, 예: 소프트 리셋). 주 리셋 다음 우선순위로 같은 리셋값을 넣음. 포트는 주 리셋처럼 domains에서 유도",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "port",
+                  "active"
+                ],
+                "properties": {
+                  "port": {
+                    "$ref": "#/$defs/ident"
+                  },
+                  "active": {
+                    "enum": [
+                      "low",
+                      "high"
+                    ]
+                  }
+                }
+              }
+            },
+            "synchronize": {
+              "description": "true면 비동기 assert 리셋을 블록 안에서 동기 deassert로 만듦 (표준 셀 rst_sync). async가 true여야 하고 top과 block_top에만 둠",
+              "type": "boolean"
             }
           }
         },
         "async_to": {
           "description": "SPEC 2번 섹션의 도메인 간 관계. SDC 비동기 클럭 그룹의 출처",
           "$ref": "#/$defs/ident_list"
+        },
+        "sync_to": {
+          "description": "같은 원천의 동기 클럭: 이 클럭 = domain의 클럭 / div (상승 에지 정렬). div 1은 같은 클럭 (리셋만 다른 도메인). 기준 도메인은 sync_to가 없어야 함 (사슬 금지)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "domain",
+            "div"
+          ],
+          "properties": {
+            "domain": {
+              "$ref": "#/$defs/ident"
+            },
+            "div": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         },
         "power_domain": {
           "$ref": "#/$defs/ident"
@@ -574,6 +627,9 @@
           "$ref": "#/$defs/block_cdc_sync"
         },
         {
+          "$ref": "#/$defs/block_cdc_fifo"
+        },
+        {
           "$ref": "#/$defs/block_memory"
         }
       ]
@@ -760,11 +816,93 @@
           "$ref": "#/$defs/ident"
         },
         "style": {
-          "description": "2ff: 단일 비트 2단 동기화. gray: gray 코드로 만든 여러 비트 값(포인터 등)을 비트별 2단 동기화. 셀은 같은 표준 셀에 폭만 다름",
+          "description": "2ff: 단일 비트 2단 동기화. gray: gray 코드로 만든 여러 비트 값(포인터 등)을 비트별 2단 동기화. 셀은 같은 표준 셀에 폭만 다름. pulse: src 도메인의 1사이클 펄스를 dst 도메인의 1사이클 펄스로 (토글 방식, 표준 셀 sync_pulse). src_domain이 있어야 하고 펄스 간격은 느린 쪽 클럭 3주기 이상이어야 함",
           "enum": [
             "2ff",
-            "gray"
+            "gray",
+            "pulse"
           ]
+        }
+      }
+    },
+    "block_cdc_fifo": {
+      "description": "여러 비트 값을 valid/ready로 다른 클럭 도메인에 넘기는 비동기 FIFO (표준 셀 cdc_fifo, gray 포인터). src.valid, src.data, dst.ready는 읽고 src.ready, dst.valid, dst.data는 씀 (쓰는 신호는 wire). 폭은 data 타입에서 정함. 깊이 2면 핸드셰이크 동기화로 씀",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "src_domain",
+        "dst_domain",
+        "depth",
+        "src",
+        "dst"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "cdc_fifo"
+        },
+        "src_domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "dst_domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "depth": {
+          "description": "2의 거듭제곱",
+          "enum": [
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "src": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "valid",
+            "ready",
+            "data"
+          ],
+          "properties": {
+            "valid": {
+              "$ref": "#/$defs/ident"
+            },
+            "ready": {
+              "$ref": "#/$defs/ident"
+            },
+            "data": {
+              "$ref": "#/$defs/ident"
+            }
+          }
+        },
+        "dst": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "valid",
+            "ready",
+            "data"
+          ],
+          "properties": {
+            "valid": {
+              "$ref": "#/$defs/ident"
+            },
+            "ready": {
+              "$ref": "#/$defs/ident"
+            },
+            "data": {
+              "$ref": "#/$defs/ident"
+            }
+          }
         }
       }
     },
