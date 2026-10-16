@@ -311,8 +311,8 @@ IR은 모듈당 JSON 파일 하나로 구성되고, 각 파일은 계층 연결(
 
 | role | 가질 수 있는 것 | 금지 |
 | --- | --- | --- |
-| `top` | 포트, 인스턴스, 연결, 동기화 셀(cdc\_sync, cdc\_fifo) | 동기화 셀 외의 블록, 동기화 셀에 쓰이지 않는 내부 신호 |
-| `block_top` | 포트, 인스턴스, 연결, 동기화 셀(cdc\_sync, cdc\_fifo) | 동기화 셀 외의 블록, 동기화 셀에 쓰이지 않는 내부 신호 |
+| `top` | 포트(inout 포함), 인스턴스, 연결, 동기화 셀(cdc\_sync, cdc\_fifo), 3상태 구동(tristate) | 동기화 셀과 tristate 외의 블록, 그 셀들에 쓰이지 않는 내부 신호 |
+| `block_top` | 포트(inout 포함), 인스턴스, 연결, 동기화 셀(cdc\_sync, cdc\_fifo), 3상태 구동(tristate) | 동기화 셀과 tristate 외의 블록, 그 셀들에 쓰이지 않는 내부 신호 |
 | `module` | 포트, 신호, 블록, 인스턴스, 연결 | 없음 |
 | `external` | 포트. L1만 가짐 | 신호, 블록, 인스턴스, 연결 |
 
@@ -325,7 +325,7 @@ IR은 모듈당 JSON 파일 하나로 구성되고, 각 파일은 계층 연결(
 | L0 | `instances`, `connections` | 인스턴스(파라미터 바인딩, `domain_map`)와 연결. 번들은 프로토콜이 같고 역할이 반대이면 한 줄로 연결 |
 | L1 | `params`, `domains`, `ports` | 파라미터(다른 파라미터에서 계산된 값은 `local`), 클럭 도메인(클럭, 주파수, 에지, 분주 관계 `sync_to`, 리셋 극성과 동기 여부, 추가 동기 리셋 `reset.extra`, 블록 안 동기화 `reset.synchronize`), 전력 도메인, 포트. 포트는 단독이거나 프로토콜 태그가 붙은 번들 |
 | L2 | `types`, `signals` | enum과 struct 타입, 내부 신호. 신호는 `reg`(도메인, 리셋값) 또는 `wire` |
-| L3 | `blocks` | 동작 블록 여섯 종류 |
+| L3 | `blocks` | 동작 블록 일곱 종류 |
 
 포트의 `domain`이 `null`이면 비동기 입력이고, `cdc_sync`의 `src`로만 읽을 수 있습니다. Top과 Block Top에는 `cdc_sync`와 `cdc_fifo`도 둘 수 있습니다. 클럭 그룹이 다른 블록 간 연결은 그 계층의 동기화 셀을 거치거나 수신 모듈의 비동기 포트로 받습니다. 클럭 그룹은 기준 도메인과 그 분주 도메인(`sync_to`, 같은 원천의 정수 분주, 상승 에지 정렬)이고, 그룹 안에서는 동기화 셀 없이 읽고 연결합니다.
 
@@ -341,6 +341,7 @@ IR은 모듈당 JSON 파일 하나로 구성되고, 각 파일은 계층 연결(
 | `cdc_sync` | `src`, `src_domain`, `dst`, `dst_domain`, `style` | 프로젝트 표준 동기화 셀 인스턴스. `style`은 단일 비트 `2ff`, gray 코드로 만든 여러 비트 값(FIFO 포인터 등)의 `gray`, 1사이클 펄스를 옮기는 `pulse`(토글 방식) |
 | `cdc_fifo` | `src_domain`, `dst_domain`, `depth`, `src`와 `dst`의 `valid`, `ready`, `data` | 프로젝트 표준 비동기 FIFO 셀 인스턴스 (gray 포인터). 여러 비트 값을 valid/ready로 넘기고, 깊이 2면 핸드셰이크 동기화로 씀 |
 | `memory` | `name`, `word_type`, `depth`, `impl`, `ports` | 추론형 배열(`inferred`) 또는 공정별 매크로 래퍼 인스턴스(`macro`). 쓰기 포트 도메인의 `seq`만 쓰고 읽기 포트 도메인의 `seq`만 읽음 |
+| `tristate` | `pad`, `o`, `oe`, `i`, `domain`, `style` | `top`/`block_top`의 inout 포트 구동 (P11). `push_pull`은 `assign pad = oe ? o : 'z`, `open_drain`은 `oe ? '0 : 'z`. `i`는 패드 값을 받는 wire. 하위 모듈은 inout 대신 `_o`, `_oe`, `_i` 포트를 씀 |
 
 `fsm`에서 같은 상태의 조건이 겹치면 배열 순서가 우선순위이고, 일치하는 전이가 없으면 현재 상태를 유지합니다. FSM 출력은 일반 `comb`와 `seq` 블록이 `state_q`를 읽어 만듭니다.
 
@@ -616,11 +617,11 @@ Architect는 L0와 L1과 함께 가정 목록을 반드시 출력합니다.
 
 v1 스키마는 아래 여섯 가지를 표현하지 못하며, 이식 시험에서 필요한 형태를 확인한 뒤 추가합니다.
 
-- generate (인스턴스 반복, 조건부 생성)
-- function과 task
-- inout과 tristate
+- generate (인스턴스 반복, 조건부 생성). P11 원본 이식은 고정한 파라미터로 펼쳐 옮김
+- function과 task. 조각 안에 풀어 씀
+- inout과 tristate. P11에서 Block Top 경계의 `tristate` 블록으로 추가함 (하위 모듈 사이의 3상태 버스는 여전히 제외)
 - 의도적 래치
-- 다중 비트 CDC (async FIFO, 핸드셰이크)
+- 다중 비트 CDC (async FIFO, 핸드셰이크). P10에서 `cdc_fifo`로 추가함
 - SVA
 
 구현을 시작하려면 아래 입력이 필요합니다.

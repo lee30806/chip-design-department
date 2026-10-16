@@ -492,7 +492,7 @@ Validator는 셀의 읽기·쓰기와 도메인을 알고(V3, V5, V8), SDC는 �
 
 ---
 
-## P11. 원본 RTL에서 IR과 SPEC 만들기 (2026-10-16 사용자 결정, 구현 전)
+## P11. 원본 RTL에서 IR과 SPEC 만들기 (2026-10-16 사용자 결정, 2026-10-16 구현)
 
 원본 RTL이 있는 블록을 IR(JSON + SV 또는 Python 조각)로 옮기고 SPEC도 씁니다. P1에서 손으로 한 이식을 흐름으로 만드는 단계입니다. 결과는 golden 블록과 같은 묶음(`ir/*.ir.json`, `spec.md`, 생성 하니스, `golden.json`)이고, 이후 일반 파이프라인에 그대로 넣을 수 있습니다 (예: SPEC을 바꿔 다시 생성). 기존의 차분 시뮬레이션(`run_diffsim`, `minimize_diff`), L1 기반 하니스 생성기, 일반 파이프라인(SPEC → IR → RTL)을 그대로 씁니다.
 
@@ -617,6 +617,49 @@ SPEC 수정은 최대 3회(설정 가능)까지 돌고, 남은 차이는 사람�
 - `generate if`/`generate for`가 있는 원본(golden `axis_adapter` 원본의 다른 설정 포함)과 Block Top 경계에 inout이 있는 시험용 원본(push-pull, open drain 각각)이 R1을 통과하고 R4에서 원본과 같습니다.
 - 시험용 Verilog·SV 혼합 원본(`.vh` 헤더의 parameter와 localparam, 매크로만 있는 `.v`, `` `ifdef``, package 상수와 enum, SV 예약어를 이름으로 쓴 Verilog, non-ANSI 포트, `always @(...)`, `defparam`)이 define 조합 두 가지에서 R1을 통과하고 R4에서 원본과 같습니다. golden 4블록이 모두 Verilog 원본이므로 첫 기준도 Verilog 경로를 확인합니다.
 - 가짜 에이전트 시험으로 단계 전환, R2에서 멈추고 이어 가기, 거부 목록, R4 불일치에서 Repair로, R6 차이에서 SpecWriter로 넘기는 경로를 확인합니다.
+
+### 진행 상황 (2026-10-16)
+
+| 작업 | 상태 | 위치 |
+| --- | --- | --- |
+| 1. R1 추출기 | 완료 | `pipeline/importer/sources.py`(파일 목록, 헤더, 컴파일 단위, 매크로, 원문), `extract.py`(L1·L0 초안, 거부, 검토), `r1.py`(CLI, 결과 파일) |
+| 2. R2 요청과 답 | 완료 | `pipeline/importer/r2.py` |
+| 3. inout | 완료 (pysim 제외) | 스키마 `block_tristate`, `model.py`, Validator V2/V5/V8/V11, Emitter, `tb/gen.py`의 패드 모델 |
+| 4. Porter 과제 | 완료 | `pipeline/agents/porter.py`, 도구 `pl.py porteq` |
+| 5. R4 | 완료 | `pipeline/importer/r4.py`, `diffsim`의 `cycle_trace`/`fixed` |
+| 6. R5 | 완료 | `pipeline/importer/spec_tables.py`, `pipeline/agents/spec_writer.py`, 도구 `pl.py spec_gate` |
+| 7. R6 | 완료 | `pipeline/importer/r6.py`, `arbiter.make_r6_task`, `minimize_diff`의 `sim_fn` |
+| 8. 실행기 | 완료 | `pipeline/scheduler/port.py` (`start`, `answer`, `resume`, `status`) |
+| 9. 문서 | 완료 | `ir_guide.md`, 설계 문서(role, 블록 종류, v1 제외 항목), SPEC 작성 템플릿, 역할 설정(`porter`, `spec_writer`, `porter_fix`, `spec_revise`) |
+
+```bash
+python3 -m pipeline.scheduler.port start <파일...> --top <모듈> [-f files.f] [-D N=V] [-G N=V] --run-dir <dir>
+python3 -m pipeline.scheduler.port answer --run-dir <dir> freq.sys=100 proto.<모듈>.<번들>=valid_ready review.1=ok ...
+python3 -m pipeline.scheduler.port resume --run-dir <dir> [--until r4|r5|r6]
+```
+
+구현하면서 정한 것:
+- **Verilog 키워드.** Verilog 파일은 먼저 그대로(SV 문법으로) 읽고, 오류가 날 때만 1364-2005 키워드로 감쌉니다. 감싸면 Verilator가 `$error` 같은 SV 시스템 태스크를 거부하기 때문입니다. 감싼 파일은 `import.json`의 `wrapped`에 남기고 R4/R6의 원본 시뮬레이션도 같게 감쌉니다.
+- **리셋 찾기.** 동기 리셋은 always 블록의 첫 문장 `if (rst) 상수 else ...`뿐 아니라 끝 문장 `if (rst) 상수`(끝에서 덮어쓰는 Verilog 관행, verilog-axis 전부)도 봅니다. 같은 리셋 포트를 동기와 비동기로 함께 쓰면 많이 쓴 쪽으로 합치고 검토 항목으로 남깁니다 (`axis_async_fifo`: 리셋 동기화 플롭만 비동기).
+- **하위 모듈 파라미터 기본값.** 인스턴스에서 elaborate한 값(고정한 설정)을 기본값으로 둡니다. 펼친 `generate` 구조와 맞고, 모듈 단위 R4에서 원본에 같은 값을 줄 수 있습니다. 인스턴스 대입은 원문 식(부모 파라미터)을 쓰고, genvar나 `defparam`으로 정해진 값은 숫자로 씁니다.
+- **R1이 더 거부하는 것.** 클럭이 없는 조합 모듈(IR 포트 도메인이 null이면 비동기 입력이라 1:1로 옮길 수 없음), 입력 포트 리셋이 없는 클럭 도메인(IR 도메인은 리셋이 있어야 함), 블록 안에서 만든 클럭, 하위 모듈 리셋에 내부 신호를 연결한 것, 하강 에지 클럭, 인스턴스 배열.
+- **원문.** pyslang 위치는 바이트 단위라 원문을 바이트로 잘라 읽습니다 (한글 주석이 있으면 문자열 인덱스와 다름).
+- **R4 비교 범위.** DUT가 내는 번들의 data는 valid=1인 사이클만 비교합니다 (`strict`면 모두). 리셋 구간과 풀린 뒤 4사이클 안의 차이만 있으면 `reset_only`로 통과시키고 검토 항목으로 남깁니다. R4 불일치는 Repair 대신 Porter 고치기 과제(`prev.ir.json`과 첫 차이)로 넘깁니다. Porter는 SPEC 없이 원본만 보므로 기존 Repair 과제(SPEC과 실패 리포트 기반)가 맞지 않습니다.
+- **inout 패드 모델.** 하니스는 inout 포트 P를 `P_pad_o`, `P_pad_oe`(바깥 장치), `P_pad_val`(패드 값) 세 포트로 바꾼 래퍼를 top으로 씁니다. 바깥 장치는 약한 구동(weak)이라 DUT가 구동하면 DUT 값이 이기고, 패드마다 풀업이 있습니다 (Verilator의 세기 해석으로 확인). 그래서 동시 구동 충돌은 따로 세지 않습니다. 포트를 나눈 하위 모듈은 이식 IR을 다시 inout으로 합치는 래퍼로 감싸 원본과 모듈 단위로 비교합니다.
+- **`tristate`의 i**는 `domain`의 신호로 봅니다 (원본이 패드 입력을 동기 입력으로 쓰는 관행). pysim은 `tristate`를 실행하지 않습니다. `tristate`는 Block Top(SV)에만 있어 Python 조각 모듈의 번역기 검사와 관계없습니다.
+- **R5 왕복 비교**에서 role(이식 IR의 top은 role module일 수 있음)과 파라미터 허용 범위(SpecWriter가 채움)는 뺍니다.
+- **R6 판정**은 Arbiter의 새 과제(`spec_gap` / `regen_defect`)이고, 재생성 실행의 Verifier 테스트를 원본 RTL에도 돌려 실패하면 같은 판정에 넘깁니다.
+- 래퍼 모듈 이름은 `<모듈>_ref_top`, `<모듈>_pad_top`입니다 (Verilator가 `__`를 바꿔 씀). 원본 포트 이름이 SV 예약어면 래퍼에서 이스케이프 식별자로 잇습니다.
+- **남은 것.** 일반 파이프라인(`Run`)의 Verifier 하니스와 E2는 아직 inout Block Top을 모르므로, inout이 있는 블록은 R6(재생성)을 돌릴 수 없습니다. Verilator는 generate 배열 안 인스턴스의 `defparam`을 지원하지 않아 그런 원본은 R4에서 원본을 시뮬레이션할 수 없습니다.
+
+결과 (2026-10-16, 에이전트 없이):
+- **R1:** golden 4블록 원본에서 뽑은 L1이 P1에서 손으로 옮긴 golden IR의 L1과 같습니다. 다른 점은 R2에서 채우는 주파수와 도메인 관계, 쓰이지 않아 지운 `PAUSE_ENABLE`, 원문 그대로 둔 폭 식(`$clog2(DEPTH)`)뿐입니다. `axis_adapter` 원본의 upsize 설정(8 → 32비트, 다른 `generate` 갈래)도 R1과 V1~V3를 통과합니다.
+- **R4:** golden IR을 이식 IR 자리에 두면 `axis_adapter`와 `axis_cobs_decode`는 사이클 단위로 같고, `uart`는 리셋 구간에서만 다릅니다(`txd` 초기값). `axis_async_fifo`는 중간 리셋 모드에서 `m_status_depth`가 다릅니다. P1 우회 표현 7, 8(리셋 동기화 플롭을 바꿈) 때문이고, 트랜잭션 순서는 같습니다.
+- **시험용 원본:** Verilog·SV 혼합 원본(`tests/fixtures/port/mixed`)은 define 조합 두 가지 모두에서 손으로 옮긴 IR이 R4 `equal`입니다. 다른 조합의 IR을 넣으면 다르다고 판정합니다. inout 원본(`tests/fixtures/port/inout`)은 push-pull(하위 모듈에서 구동)과 open-drain(top에서 구동) 모두 R4 `equal`입니다. 일부러 틀리게 바꾼 IR은 R4에서 잡힙니다.
+- **R6:** golden IR을 재생성 IR 자리에 두면 같고, 틀리게 바꾸면 차이를 찾아 자극을 줄이고 Arbiter에 넘길 입력을 만듭니다.
+- **실행기:** 가짜 에이전트로 start → R2 대기 → answer → Porter(첫 시도 틀림 → R4 차이 → 고치기) → SpecWriter → R6(1차 차이 → spec_gap → SPEC 고치기 → 2차 같음) → 묶음을 확인했습니다.
+- 시험: `tests/test_port.py` 17개, `tests/sim/test_port_sim.py` 8개.
+- **아직 하지 않은 것:** 실제 에이전트로 golden 4블록을 다시 만드는 완료 기준 1~3과, upsize 설정의 R4 확인입니다. 일반 파이프라인을 블록마다 한 번 더 돌리므로 비용이 큽니다.
 
 ---
 

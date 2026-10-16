@@ -144,3 +144,120 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------- inout 패드 모델 (P11)
+PAD_SUFFIX = ("_pad_o", "_pad_oe", "_pad_val")
+
+
+def inout_ports(raw: dict) -> list[dict]:
+    return [p for p in raw.get("ports", []) if "bundle" not in p and p.get("dir") == "inout"]
+
+
+def _param_header(raw: dict) -> str:
+    """래퍼의 파라미터 머리 (포트 타입이 IR 파라미터를 씀). 모두 IR 기본값(고정한 설정)."""
+    ps = raw.get("params", [])
+    if not ps:
+        return ""
+    return "#(" + ", ".join(f'parameter {p["type"]} {_esc(p["name"])} = {p["default"]}' for p in ps) + ") "
+
+
+def _esc(name: str) -> str:
+    """SV 예약어인 원본 이름은 이스케이프 식별자로 (Verilog 원본의 포트 `logic` 등)."""
+    from pipeline.validator.checks import SV_KEYWORDS
+    return f"\\{name} " if name in SV_KEYWORDS else name
+
+
+def pad_view(raw: dict) -> dict:
+    """inout 포트 P를 바깥 장치의 구동값 P_pad_o(입력), 구동 enable P_pad_oe(입력), 패드 값 P_pad_val(출력)로 바꾼 L1.
+    하니스와 차분 시뮬레이션은 이 L1로 패드 래퍼(pad_wrapper_sv)를 구동한다."""
+    pads = inout_ports(raw)
+    if not pads:
+        return raw
+    names = {s["name"] for p in raw["ports"] for s in (p["signals"] if "bundle" in p else [p])}
+    ports = []
+    for p in raw["ports"]:
+        if p in pads:
+            new = [f"{p['name']}{s}" for s in PAD_SUFFIX]
+            if names & set(new):
+                raise GenError(f"ports/{p['name']}: 패드 모델 포트 이름이 겹침 ({sorted(names & set(new))})")
+            ports += [{"name": new[0], "dir": "input", "type": p["type"], "domain": p["domain"]},
+                      {"name": new[1], "dir": "input", "type": "logic", "domain": p["domain"]},
+                      {"name": new[2], "dir": "output", "type": p["type"], "domain": p["domain"], "kind": "wire"}]
+        else:
+            ports.append(p)
+    return {**raw, "ports": ports}
+
+
+def pad_wrapper_sv(raw: dict, inner: str, wrapper: str, params: dict[str, str] | None = None,
+                   pin: dict[str, str] | None = None) -> str:
+    """패드 래퍼 (와 이름 바꾼 포트 연결). 바깥 장치는 약한 구동(weak)이라 DUT가 구동하면 DUT 값이 이긴다. 패드마다 풀업.
+    pin: IR 포트 이름 → inner 모듈의 포트 이름 (원본 RTL의 이름이 다를 때). params: inner에 줄 파라미터."""
+    pin = pin or {}
+    view = Module(pad_view(raw))
+    pads = {p["name"]: p for p in inout_ports(raw)}
+    decl = []
+    for p in view.ports:
+        rng = p.type[len("logic"):].strip() if p.type.startswith("logic") else p.type
+        decl.append(f"  {p.dir} logic {rng} {p.name}".replace("  ", " ").rstrip())
+    lines = [f"module {wrapper} {_param_header(raw)}(", ",\n".join(decl), ");"]
+    for n, p in pads.items():
+        rng = p["type"][len("logic"):].strip()
+        lines += [f"  wire {rng} {n};".replace("  ", " "),
+                  f"  assign (weak0, weak1) {n} = {n}_pad_oe ? {n}_pad_o : 'z;",
+                  f"  for (genvar k = 0; k < $bits({n}); k++) begin : g_pu_{n}",
+                  f"    pullup ({n}[k]);" if rng else f"    pullup ({n});",
+                  "  end",
+                  f"  assign {n}_pad_val = {n};"]
+    m = Module(raw)
+    conns = ", ".join(f".{_esc(pin.get(p.name, p.name))}({p.name})" for p in m.ports)
+    pa = ", ".join(f".{_esc(k)}({v})" for k, v in (params or {}).items())
+    lines.append(f"  {inner} {'#(' + pa + ') ' if pa else ''}u_dut ({conns});")
+    lines.append("endmodule")
+    return "\n".join(lines) + "\n"
+
+
+def merge_view(raw: dict, tri_split: dict[str, dict]) -> dict:
+    """inout을 o/oe/i로 나눈 하위 모듈의 L1을 원본처럼 inout 포트 하나로 되돌린다 (원본과 모듈 단위로 비교할 때)."""
+    if not tri_split:
+        return raw
+    split = {v[k]: pad for pad, v in tri_split.items() for k in ("o", "oe", "i") if v.get(k)}
+    ports, done = [], set()
+    for p in raw["ports"]:
+        pad = split.get(p.get("name"))
+        if pad is None:
+            ports.append(p)
+        elif pad not in done:
+            done.add(pad)
+            i = next(q for q in raw["ports"] if q.get("name") == tri_split[pad]["i"])
+            ports.append({"name": pad, "dir": "inout", "type": i["type"], "domain": i["domain"]})
+    return {**raw, "ports": ports}
+
+
+def merge_wrapper_sv(raw: dict, tri_split: dict[str, dict], wrapper: str) -> str:
+    """나눈 포트를 가진 모듈을 감싸 inout 포트로 되돌린 모듈 (원본의 3상태 assign과 같은 구동)."""
+    view = Module(merge_view(raw, tri_split))
+    decl = []
+    for p in view.ports:
+        rng = p.type[len("logic"):].strip() if p.type.startswith("logic") else p.type
+        kw = "inout wire" if p.dir == "inout" else f"{p.dir} logic"
+        decl.append(f"  {kw} {rng} {p.name}".replace("  ", " ").rstrip())
+    lines = [f"module {wrapper} {_param_header(raw)}(", ",\n".join(decl), ");"]
+    pins = {}
+    for pad, v in tri_split.items():
+        t = next(q for q in raw["ports"] if q.get("name") == v["i"])["type"]
+        oe_t = next(q for q in raw["ports"] if q.get("name") == v["oe"])["type"]
+        lines.append(f"  {oe_t} {pad}_m_oe;")
+        drive = "'0"
+        if v.get("o"):
+            lines.append(f"  {t} {pad}_m_o;")
+            pins[v["o"]] = f"{pad}_m_o"
+            drive = f"{pad}_m_o"
+        pins[v["oe"]] = f"{pad}_m_oe"
+        pins[v["i"]] = pad
+        lines.append(f"  assign {pad} = {pad}_m_oe ? {drive} : 'z;")
+    m = Module(raw)
+    conns = ", ".join(f".{p.name}({pins.get(p.name, p.name)})" for p in m.ports)
+    lines.append(f"  {raw['module']} u_split ({conns});")
+    lines.append("endmodule")
+    return "\n".join(lines) + "\n"

@@ -10,6 +10,7 @@ IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 
 - 클럭 그룹: 기준 도메인과 그 분주 도메인(`sync_to`)은 같은 원천의 동기 클럭이라, 그룹 안에서는 동기화 셀 없이 읽고 연결한다.
 - `fsm` 블록은 `<state_name>_q` 레지스터를 노출한다.
 - `memory` 블록은 배열 `name`을 노출한다. 쓰기 포트 도메인의 seq 블록이 쓰고, 읽기 포트 도메인의 블록이 읽는다.
+- inout 포트(top, block_top만)는 `tristate` 블록만 구동하고 읽는다. 조각에서 읽거나 쓸 수 없다.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Port:
     name: str
-    dir: str                 # input | output
+    dir: str                 # input | output | inout
     type: str
     domain: str | None       # None이면 비동기 입력
     kind: str | None = None  # 출력만: reg | wire
@@ -128,6 +129,10 @@ class Module:
         """배열 이름 → memory 블록."""
         return {b["name"]: b for b in self.blocks if b["kind"] == "memory"}
 
+    def tristates(self) -> dict[str, dict]:
+        """inout 포트 이름 → tristate 블록."""
+        return {b["pad"]: b for b in self.blocks if b["kind"] == "tristate"}
+
     def memory_domains(self, name: str, kind: str) -> set[str]:
         """메모리 포트 중 kind(read|write)를 할 수 있는 포트의 도메인."""
         b = self.memories()[name]
@@ -144,7 +149,7 @@ class Module:
 
     def readable(self) -> set[str]:
         """조각에서 읽을 수 있는 신호 이름 (상수 제외). 리셋 포트는 comb만 읽는다 (V8)."""
-        return {p.name for p in self.ports if not p.derived} | set(self.storage()) | self.all_reset_ports()
+        return {p.name for p in self.ports if not p.derived and p.dir != "inout"} | set(self.storage()) | self.all_reset_ports()
 
     def constants(self) -> set[str]:
         """파라미터와 enum 멤버. 조각의 reads 목록에 적지 않아도 된다."""

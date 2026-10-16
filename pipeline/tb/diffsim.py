@@ -9,6 +9,10 @@
 두 모드 모두 출력 트랜잭션 순서 전체를 비교한다. 리셋 때 흘러가던 데이터의 처리도 SPEC이 정할 수 있기 때문이다.
 차이가 SPEC이 정하지 않은 동작에서 났는지는 Verifier가 판단한다.
 
+설정 `cycle_trace`가 참이면 도메인마다 사이클별로 그 도메인의 모든 출력 포트 값을 `cycles`에 기록한다 (P11 R4의
+원본 RTL과 방출 RTL 사이클 비교. 자극이 DUT 응답과 무관하므로 두 RTL을 따로 돌려도 같은 입력을 받는다).
+`fixed`({포트: 값})를 주면 그 단독 입력은 무작위 대신 그 값으로 둔다.
+
 설정은 환경 변수 DIFF_CFG(JSON 파일), 결과는 DIFF_OUT(JSON 파일)이다. 비교는 `compare`가 한다.
 """
 from __future__ import annotations
@@ -186,6 +190,16 @@ if cocotb is not None:
         doms = sorted(h["clocks"])
         rec = {"outputs": {b["name"]: [] for b in outs}, "inputs": {b["name"]: 0 for b in ins}, "events": [],
                "resets": {d: [] for d in doms}, "probe_at": probe_at}
+        fixed = cfg.get("fixed", {})
+        trace_ports = {}
+        if cfg.get("cycle_trace"):
+            rec["cycles"] = {d: [] for d in doms}
+            for d in doms:
+                names = [o["name"] for o in h["outputs"] if o["domain"] == d]
+                for b in h["bundles"]:
+                    if b["domain"] == d:
+                        names += [b["valid"], *b["data"]] if b["dut_drives"] else [b["ready"]]
+                trace_ports[d] = names
         for d in doms:
             clk, period = h["clocks"][d]
             ps = max(2, round(period * 1000 / 2) * 2)   # 하니스와 같이 ps 단위 짝수 주기
@@ -206,7 +220,7 @@ if cocotb is not None:
                 if rport:
                     drv[rport] = ractive if p["reset"][c] else 1 - ractive
                 for x, vals in p["single"].items():
-                    drv[x] = vals[c]
+                    drv[x] = fixed.get(x, vals[c])
                 for b in douts:
                     drv[b["ready"]] = p["ready"][b["name"]][c]
                 for b in dins:
@@ -236,6 +250,8 @@ if cocotb is not None:
                 for b in douts:
                     if _int(getattr(dut, b["valid"])) == 1 and _int(getattr(dut, b["ready"])) == 1:
                         rec["outputs"][b["name"]].append([d, c, {n: _int(getattr(dut, n)) for n in b["data"]}])
+                if d in trace_ports:
+                    rec["cycles"][d].append({n: _int(getattr(dut, n)) for n in trace_ports[d]})
 
         tasks = [cocotb.start_soon(run(d)) for d in doms]
         for t in tasks:

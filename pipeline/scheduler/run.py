@@ -1135,9 +1135,10 @@ def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir
 
 
 def minimize_diff(files: dict[int, list[Path]], top_ir: dict, mode: str, seed: int, work: Path, model: str | None,
-                  harness_dir: Path | None, budget: int = 150) -> dict | None:
+                  harness_dir: Path | None, budget: int = 150, sim_fn=None) -> dict | None:
     """두 후보(files의 두 키)의 출력 차이를 유지하는 가장 작은 자극을 찾는다 (시뮬레이션만, 에이전트 없음).
-    1) 차이 지점 뒤를 잘라 내고 2) 리셋, backpressure, 단독 입력 사건을 delta debugging으로 지운다."""
+    1) 차이 지점 뒤를 잘라 내고 2) 리셋, backpressure, 단독 입력 사건을 delta debugging으로 지운다.
+    sim_fn(후보 키, 계획, rebuild) → 기록: 후보마다 빌드 방식이 다를 때 (P11 R6의 원본 RTL은 -G, include가 필요)."""
     ca, cb = sorted(files)
     cfg = diff_cfg(top_ir, mode, seed, model, harness_dir)
     plan = make_plan(cfg)
@@ -1150,8 +1151,11 @@ def minimize_diff(files: dict[int, list[Path]], top_ir: dict, mode: str, seed: i
         runs += 1
         recs = []
         for c in (ca, cb):
-            recs.append(run_diffsim(files[c], top_ir, mode, seed, work / f"c{c}", model, harness_dir, plan=p,
-                                    rebuild=c not in built))
+            if sim_fn is not None:
+                recs.append(sim_fn(c, p, c not in built))
+            else:
+                recs.append(run_diffsim(files[c], top_ir, mode, seed, work / f"c{c}", model, harness_dir, plan=p,
+                                        rebuild=c not in built))
             built.add(c)
         if None in recs:
             d = {"kind": "sim_failed", "a_ok": recs[0] is not None, "b_ok": recs[1] is not None}

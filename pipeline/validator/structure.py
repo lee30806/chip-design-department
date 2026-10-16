@@ -232,6 +232,8 @@ def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set
         elif b["kind"] == "cdc_fifo":
             dom[b["src"]["ready"]] = {b["src_domain"]}
             dom[b["dst"]["valid"]] = dom[b["dst"]["data"]] = {b["dst_domain"]}
+        elif b["kind"] == "tristate":   # 패드 입력은 tristate 도메인의 신호로 본다 (원본의 관행)
+            dom[b["i"]] = {b["domain"]}
     for inst in m.instances:
         child = library.get(inst["module"])
         if not child:
@@ -278,6 +280,11 @@ def v8_domain(m: Module, library: dict[str, Module]) -> list[Issue]:
         if b["kind"] in ("cdc_sync", "cdc_fifo") and b["src_domain"] and m.same_clock(b["src_domain"], b["dst_domain"]):
             out.append(Issue("V8", node, f'같은 클럭 그룹({b["src_domain"]}, {b["dst_domain"]}) 사이에는 동기화 셀이 필요 없음',
                              severity="warning"))
+        if b["kind"] == "tristate":
+            for k in ("o", "oe"):
+                ds = dom.get(b.get(k), set())
+                if k in b and (ASYNC in ds or not all(m.same_clock(b["domain"], d) for d in ds - {None})):
+                    out.append(Issue("V8", node, f'{k}({b[k]}, {sorted(ds)})는 {b["domain"]} 도메인 신호여야 함'))
         if b["kind"] == "cdc_fifo":
             for side, k in (("src", "valid"), ("src", "data"), ("dst", "ready")):
                 want = b[f"{side}_domain"]
@@ -425,6 +432,9 @@ def frozen_scope(library: dict[str, Module]) -> dict[str, str]:
             fifos = [b for b in m.raw.get("blocks", []) if isinstance(b, dict) and b.get("kind") == "cdc_fifo"]
             if fifos:   # 없으면 키를 만들지 않음 (이전 실행의 동결 기준선과 해시가 같도록)
                 parts["cdc_fifo"] = fifos
+            tris = [b for b in m.raw.get("blocks", []) if isinstance(b, dict) and b.get("kind") == "tristate"]
+            if tris:
+                parts["tristate"] = tris
         for k, v in parts.items():
             out[f"{name}/{k}"] = hashlib.sha256(json.dumps(v, sort_keys=True).encode()).hexdigest()
     return out

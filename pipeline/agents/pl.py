@@ -9,6 +9,8 @@
     python3 tools/pl.py harness <l1.json> -o <dir>                               # L1에서 cocotb 하니스 생성
     python3 tools/pl.py model <model.py> <l1.json> [--n 200]                     # 참조 모델 단독 실행 (무작위 입력)
     python3 tools/pl.py pysim <ir.json> [--lib <dir>] [--stim stim.json] [--cycles 20]  # lang: py 설계 모델 실행 (RTL 없이)
+    python3 tools/pl.py porteq <ir.json> [--lib <dir>] --ref <원본 묶음>             # P11 원본 RTL과 사이클 비교 (R4)
+    python3 tools/pl.py spec_gate <spec.md> --tables tables.md --top <모듈>          # P11 SPEC 게이트 (검사 + 2~4절 왕복)
 
 결과는 JSON으로 낸다. 호출 기록은 `.tools.log`에 남는다 (도구 사용 측정용. PL_NO_LOG=1이면 남기지 않음).
 """
@@ -196,6 +198,46 @@ def cmd_pysim(a) -> dict:
     return {"ok": True, "cycles": rows}
 
 
+def cmd_porteq(a) -> dict:
+    """원본 RTL과 IR에서 방출한 RTL을 같은 자극으로 돌려 출력을 사이클 단위로 비교한다 (P11 R4와 같은 판정, 시드 하나)."""
+    from pipeline.importer import r4
+    from pipeline.scheduler.run import STUB_CELLS
+
+    try:
+        raw = _load_ir(a.ir)
+    except (OSError, json.JSONDecodeError) as e:
+        return {"ok": False, "errors": [f"IR을 읽을 수 없음: {e}"]}
+    ref = Path(a.ref).resolve()
+    r1 = json.loads((ref / "ref.json").read_text(encoding="utf-8"))
+    r1["units"] = [str(ref / u) for u in r1["units"]]
+    r1["wrapped"] = [str(ref / u) for u in r1["wrapped"]]
+    r1["headers"] = [str(ref / h) for h in r1["headers"]]
+    lib = {n: json.loads(p.read_text(encoding="utf-8")) for n, p in
+           ((p.name.removesuffix(".ir.json"), p) for p in sorted(Path(a.lib).glob("*.ir.json")))} if a.lib else {}
+    lib[raw["module"]] = raw
+    res = r4.run_module(raw["module"], lib, r1, Path(".porteq").resolve(), STUB_CELLS, seeds=(a.seed,), cycles=a.cycles)
+    out = {"ok": res["status"] in ("equal", "reset_only"), "status": res["status"]}
+    for k in ("first", "txn", "error", "mode", "seed"):
+        if res.get(k) is not None:
+            out[k] = res[k]
+    if res["status"] == "differ":
+        out["hint"] = ("first: 원본(ref)과 IR(ir)의 값이 처음 다른 도메인, 사이클(그 도메인 클럭 기준, 0부터), 포트. "
+                       "mode=reset이면 중간에 리셋을 넣는 자극. 리셋 직후 차이는 in_window=true")
+    return out
+
+
+def cmd_spec_gate(a) -> dict:
+    """SPEC 검사 게이트와, SPEC 2~4절에서 만든 L1이 tables.md의 L1과 같은지."""
+    from pipeline.agents.spec_writer import gate
+    from pipeline.spec.l1 import block_top_l1
+    from pipeline.spec.parse import parse
+
+    tables = Path(a.tables).read_text(encoding="utf-8")
+    want, _ = block_top_l1(parse(f"# {a.top} SPEC\n\n" + tables))
+    errs = gate(Path(a.spec), want)
+    return {"ok": not errs, "errors": errs[:30]}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="에이전트 도구")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -211,6 +253,9 @@ def main(argv=None) -> int:
     p.add_argument("--n", type=int, default=200); p.add_argument("--seed", type=int, default=1)
     p = sub.add_parser("pysim"); p.add_argument("ir"); p.add_argument("--lib"); p.add_argument("--stim")
     p.add_argument("--cycles", type=int, default=20); p.add_argument("--seed", type=int, default=1)
+    p = sub.add_parser("porteq"); p.add_argument("ir"); p.add_argument("--lib"); p.add_argument("--ref", required=True)
+    p.add_argument("--seed", type=int, default=1); p.add_argument("--cycles", type=int, default=800)
+    p = sub.add_parser("spec_gate"); p.add_argument("spec"); p.add_argument("--tables", required=True); p.add_argument("--top", required=True)
     a = ap.parse_args(argv)
     res = globals()[f"cmd_{a.cmd}"](a)
     import os

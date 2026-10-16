@@ -157,6 +157,21 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
             out.append(Issue("V2", node, f"정의되지 않은 도메인: {d}"))
 
     out += _domain_relations(m)
+    tri = {}
+    for b in m.blocks:
+        if b["kind"] == "tristate":
+            tri.setdefault(b["pad"], []).append(b["id"])
+    for port in m.ports:
+        if port.dir == "inout":
+            if m.role not in ("top", "block_top"):
+                out.append(Issue("V2", f"ports/{port.bundle or port.name}", f"inout 포트는 top과 block_top에만 둠 (하위 모듈은 o, oe, i로 나눔): {port.name}"))
+            elif port.bundle:
+                out.append(Issue("V2", f"ports/{port.bundle}", f"inout 포트는 번들에 넣지 않음: {port.name}"))
+            elif len(tri.get(port.name, [])) != 1:
+                out.append(Issue("V2", f"ports/{port.name}", f"inout 포트는 tristate 블록 하나가 맡아야 함: {port.name} ({tri.get(port.name, [])})"))
+    for b in m.blocks:
+        if b["kind"] == "tristate" and m.role not in ("top", "block_top"):
+            out.append(Issue("V2", f'blocks/{b["id"]}', "tristate 블록은 top과 block_top에만 둠"))
     for port in m.ports:
         if not port.derived:
             dom(port.domain, f"ports/{port.bundle or port.name}")
@@ -186,6 +201,26 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
                 out.append(Issue("V2", node, "pulse는 보내는 쪽 클럭으로 토글을 만들므로 src_domain이 있어야 함"))
             if b["style"] == "gray" and None not in norm.values() and norm["src"] != norm["dst"]:
                 out.append(Issue("V2", node, f"gray 동기화의 src와 dst 타입이 다름: {types}"))
+        if b["kind"] == "tristate":
+            dom(b["domain"], node)
+            pad = m.port(b["pad"])
+            if pad is None or pad.dir != "inout":
+                out.append(Issue("V2", node, f'pad는 inout 포트여야 함: {b["pad"]}'))
+            for k in ("o", "oe"):
+                if k in b and b[k] not in readable:
+                    out.append(Issue("V2", node, f"{k}가 가리키는 신호가 없음: {b[k]}"))
+            if b["i"] not in storage:
+                out.append(Issue("V2", node, f'i가 가리키는 신호가 없음 (내부 wire 신호 또는 출력 포트): {b["i"]}'))
+
+            def ttyp(n):
+                t = storage[n].type if n in storage else next((p.type for p in m.ports if p.name == n), None)
+                return "".join(t.split()) if t else None
+            want = ttyp(b["pad"])
+            for k in ("o", "i"):
+                if k in b and None not in (want, ttyp(b[k])) and ttyp(b[k]) != want:
+                    out.append(Issue("V2", node, f"{k}의 타입이 pad와 다름: {ttyp(b[k])} vs {want}"))
+            if None not in (want, ttyp(b["oe"])) and ttyp(b["oe"]) not in ("logic", "bit", want):
+                out.append(Issue("V2", node, f'oe는 1비트이거나 pad와 같은 폭이어야 함: {ttyp(b["oe"])}'))
         if b["kind"] == "cdc_fifo":
             dom(b["src_domain"], node)
             dom(b["dst_domain"], node)
@@ -420,6 +455,8 @@ def v5_drivers(m: Module, library: dict[str, Module]) -> list[Issue]:
         elif b["kind"] == "cdc_fifo":
             for side, k in (("src", "ready"), ("dst", "valid"), ("dst", "data")):
                 add(b[side][k], node, b)
+        elif b["kind"] == "tristate":
+            add(b["i"], node, b)
     for c in m.connections:
         ends = [_endpoint_ports(m, c[k], library) for k in ("from", "to")]
         if not all(ends):

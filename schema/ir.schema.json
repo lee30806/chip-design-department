@@ -164,6 +164,9 @@
                 },
                 {
                   "$ref": "#/$defs/block_cdc_fifo"
+                },
+                {
+                  "$ref": "#/$defs/block_tristate"
                 }
               ]
             }
@@ -358,9 +361,11 @@
           "$ref": "#/$defs/ident"
         },
         "dir": {
+          "description": "inout은 top과 block_top의 단독 포트만 (V2). tristate 블록 하나가 구동하고 읽음",
           "enum": [
             "input",
-            "output"
+            "output",
+            "inout"
           ]
         },
         "type": {
@@ -383,7 +388,10 @@
           "if": {
             "properties": {
               "dir": {
-                "const": "input"
+                "enum": [
+                  "input",
+                  "inout"
+                ]
               }
             }
           },
@@ -628,6 +636,9 @@
         },
         {
           "$ref": "#/$defs/block_cdc_fifo"
+        },
+        {
+          "$ref": "#/$defs/block_tristate"
         },
         {
           "$ref": "#/$defs/block_memory"
@@ -1038,6 +1049,70 @@
           "$ref": "#/$defs/endpoint"
         }
       }
+    },
+    "block_tristate": {
+      "description": "inout 포트의 3상태 구동 (Block Top 경계, P11). push_pull: pad = oe ? o : z. open_drain: pad = oe ? 0 : z (o 없음, 1은 바깥 풀업). i는 pad 값을 읽는 wire이고 domain의 신호로 본다 (원본이 패드 입력을 동기 입력으로 쓰는 관행). o, oe도 domain의 신호. oe는 1비트(전체) 또는 pad와 같은 폭(비트마다)",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "pad",
+        "oe",
+        "i",
+        "domain",
+        "style"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "const": "tristate"
+        },
+        "pad": {
+          "$ref": "#/$defs/ident"
+        },
+        "o": {
+          "$ref": "#/$defs/ident"
+        },
+        "oe": {
+          "$ref": "#/$defs/ident"
+        },
+        "i": {
+          "$ref": "#/$defs/ident"
+        },
+        "domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "style": {
+          "enum": [
+            "push_pull",
+            "open_drain"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "style": {
+                "const": "push_pull"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "o"
+            ]
+          },
+          "else": {
+            "properties": {
+              "o": false
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -9,6 +9,8 @@
 - 도메인의 추가 동기 리셋(`reset.extra`)은 `if (주 리셋) ... else if (추가 리셋) ... else 본문`으로 씌운다.
 - `reset.synchronize` 도메인은 `rst_sync` 셀로 리셋을 동기화하고, 그 도메인의 셀과 인스턴스에는 동기화한 리셋을 연결한다.
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
+- inout 포트는 `inout wire`로 선언하고, `tristate` 블록은 `assign pad = oe ? o : 'z; assign i = pad;`로 낸다
+  (open_drain은 `oe ? '0 : 'z`, oe가 pad와 같은 폭이면 비트마다).
 - 노드마다 `// @ir <노드>` 주석을 달고, 소스맵(노드 → 줄 범위)을 함께 낸다.
   `lang: py` 모듈의 조각은 문장마다 `py_line`(조각 안의 Python 줄)을 단 세부 항목을 더 낸다.
   IR 값이 그대로 놓인 줄(조각 본문, 전이 조건, 신호 타입, 리셋값, 파라미터와 포트 선언, 연결로 정해진 핀)은
@@ -207,6 +209,14 @@ def _instance_nets(m: Module, library: dict[str, Module]) -> tuple[dict[tuple[st
     return nets, wires
 
 
+def storage_or_port_type(m: Module, name: str) -> str:
+    st = m.storage().get(name)
+    if st is not None:
+        return st.type
+    p = m.port(name)
+    return p.type if p else "logic"
+
+
 def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     if m.role == "external":
         raise EmitError(f"{m.name}: external 모듈은 방출하지 않음. rtl_files를 그대로 참조함")
@@ -224,7 +234,8 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
         w.line(f"module {m.name} (")
     for i, p in enumerate(m.ports):
         src = f"domains/{p.domain}" if p.derived else f"ports/{p.bundle or p.name}"
-        w.line(f"  {p.dir.ljust(6)} {p.type} {p.name}" + ("," if i < len(m.ports) - 1 else ""), frag=src)
+        typ = ("wire" + p.type[len("logic"):]) if p.dir == "inout" and p.type.startswith("logic") else p.type
+        w.line(f"  {p.dir.ljust(6)} {typ} {p.name}" + ("," if i < len(m.ports) - 1 else ""), frag=src)
     w.line(");")
 
     for p in m.params:
@@ -296,6 +307,17 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
                        f'.src_ready({a["ready"]}), .src_data({a["data"]}),')
                 w.line(f'    .dst_clk({d["clock"]}), .dst_rst_n({_rst_n(m, d)}), .dst_valid({z["valid"]}), '
                        f'.dst_ready({z["ready"]}), .dst_data({z["data"]}));')
+            elif b["kind"] == "tristate":
+                pad, oe = b["pad"], b["oe"]
+                drive = b["o"] if b["style"] == "push_pull" else "'0"
+                if "".join(storage_or_port_type(m, oe).split()) in ("logic", "bit"):
+                    w.line(f"  assign {pad} = {oe} ? {drive} : 'z;")
+                else:   # 비트마다 enable
+                    w.line(f"  for (genvar k_{b['id']} = 0; k_{b['id']} < $bits({pad}); k_{b['id']}++) begin : g_{b['id']}")
+                    bit = f"{b['o']}[k_{b['id']}]" if b["style"] == "push_pull" else "1'b0"
+                    w.line(f"    assign {pad}[k_{b['id']}] = {oe}[k_{b['id']}] ? {bit} : 1'bz;")
+                    w.line("  end")
+                w.line(f"  assign {b['i']} = {pad};")
             else:
                 raise EmitError(f"{node}: v0 Emitter는 {b['kind']} 블록을 방출하지 않음")
         w.line()

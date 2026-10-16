@@ -75,3 +75,60 @@ def check(spec: str | Path):
             errs.append("test_wrong과 spec_ambiguous는 수정안이나 질문(proposal)이 필요함")
         return errs
     return _check
+
+
+# ---------------------------------------------------------------- P11 R6
+R6_VERDICTS = {"spec_gap", "regen_defect"}
+
+R6_TASK = """\
+# 과제: SPEC 충실도 판정 (P11 R6)
+
+너는 RTL 생성 파이프라인의 Arbiter 에이전트다. 원본 RTL에서 SPEC을 썼고, 그 SPEC만으로 설계를 다시 만들었다.
+같은 자극에서 원본과 다시 만든 설계(재생성)의 출력 순서가 달랐다. 어느 쪽 문제인지 SPEC을 근거로 판정한다.
+원본은 기준이다 (원본 동작이 곧 의도한 동작).
+
+## 입력
+- `spec.md`: SPEC
+- `r6.json`: `stimulus`(차이를 내는 가장 짧은 자극, 사건 시간순), `difference`(첫 차이: 스트림, 순번, 원본(a)과 재생성(b)의
+  트랜잭션), `ref`/`regen`(각 출력 스트림의 트랜잭션 앞부분), `inputs_accepted`(받아들인 입력 수)
+
+## 할 일
+`{out}`에 아래 JSON을 쓴다.
+
+{{"verdict": "spec_gap | regen_defect", "reqs": ["근거 요구사항 ID"], "reason": "SPEC 문장을 인용한 판정 이유",
+  "proposal": "spec_gap이면 SPEC에 더하거나 고칠 문장 (원본 동작을 하나로 정하도록)"}}
+
+- spec_gap: SPEC이 이 동작을 정하지 않았거나 두 가지로 읽힌다. 재생성 설계는 SPEC을 어기지 않았다
+- regen_defect: SPEC이 원본 동작을 분명히 정했는데 재생성 설계가 어겼다 (`reqs`에 그 요구사항)
+
+## 규칙
+- `{out}` 외의 파일은 만들거나 고치지 않는다.
+"""
+
+
+def make_r6_task(name: str, spec: str | Path, r6: dict) -> Task:
+    inputs = {"spec.md": Path(spec), "r6.json": json.dumps(r6, ensure_ascii=False, indent=1)}
+    return Task("arbiter", name, R6_TASK.format(out=OUT), inputs=inputs, tools=False, outputs=[OUT])
+
+
+def check_r6(spec: str | Path):
+    known = {r.id for r in load(spec).requirements}
+
+    def _check(work: Path) -> list[str]:
+        try:
+            v = json.loads((work / OUT).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            return [f"판정을 읽을 수 없음: {e}"]
+        errs = []
+        if v.get("verdict") not in R6_VERDICTS:
+            errs.append(f"verdict는 {sorted(R6_VERDICTS)} 중 하나여야 함")
+        reqs = v.get("reqs") or []
+        if v.get("verdict") == "regen_defect" and not reqs:
+            errs.append("regen_defect는 근거 요구사항(reqs)이 필요함")
+        errs += [f"SPEC에 없는 요구사항: {r}" for r in reqs if r not in known]
+        if not str(v.get("reason", "")).strip():
+            errs.append("판정 이유(reason)가 없음")
+        if v.get("verdict") == "spec_gap" and not str(v.get("proposal", "")).strip():
+            errs.append("spec_gap은 SPEC 수정안(proposal)이 필요함")
+        return errs
+    return _check

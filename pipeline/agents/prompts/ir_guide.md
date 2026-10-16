@@ -26,7 +26,7 @@
 ## signals
 
 - `{"name", "kind": "reg", "type", "domain", "reset"}`: `seq` 블록 하나가 쓰는 레지스터. 리셋이 없으면 `reset`을 뺀다.
-- `{"name", "kind": "wire", "type"}`: `comb` 블록 하나, `cdc_sync`의 `dst`, 또는 `cdc_fifo`의 `src.ready`·`dst.valid`·`dst.data`가 구동한다.
+- `{"name", "kind": "wire", "type"}`: `comb` 블록 하나, `cdc_sync`의 `dst`, `cdc_fifo`의 `src.ready`·`dst.valid`·`dst.data`, 또는 `tristate`의 `i`가 구동한다.
 
 ## 도메인과 리셋
 
@@ -46,6 +46,7 @@
 | `cdc_sync` | `src`, `src_domain`, `dst`, `dst_domain`, `style` | 다른 클럭 그룹의 값을 읽는 방법이다. `style`은 1비트 수준 신호에 `2ff`, gray 코드로 만든 여러 비트 값에 `gray`, 보내는 쪽의 1사이클 펄스를 받는 쪽 1사이클 펄스로 옮길 때 `pulse`(펄스 간격은 느린 쪽 클럭 3주기 이상, `src_domain` 필요)를 쓴다. `dst`는 wire이고, 리셋 때 0이다 |
 | `cdc_fifo` | `src_domain`, `dst_domain`, `depth`(2~256의 2의 거듭제곱), `src: {valid, ready, data}`, `dst: {valid, ready, data}` | 여러 비트 값을 valid/ready로 다른 클럭 그룹에 넘기는 비동기 FIFO. `src.valid`·`src.data`는 보내는 쪽 신호, `dst.ready`는 받는 쪽 신호이고, `src.ready`·`dst.valid`·`dst.data`는 셀이 구동하는 wire다. 폭은 `data` 타입에서 정한다. 깊이 2면 핸드셰이크 동기화로 쓴다 |
 | `memory` | `name`, `word_type`, `depth`, `impl: "inferred"`, `ports` | 배열 `name[addr]`. 쓰기 포트 도메인의 `seq`만 쓰고, 읽기 포트 도메인의 `seq`만 읽는다 |
+| `tristate` | `pad`, `o`, `oe`, `i`, `domain`, `style` | `top`과 `block_top`의 inout 포트 `pad`를 구동한다. `push_pull`은 `pad = oe ? o : z`, `open_drain`은 `pad = oe ? 0 : z`(`o` 없음, 1은 바깥 풀업). `i`는 패드 값을 받는 wire이고 `domain`의 신호로 본다. `oe`는 1비트이거나 `pad`와 같은 폭(비트마다). inout 포트는 이 블록 하나만 다루고 조각에서 읽거나 쓰지 않는다. 하위 모듈은 inout 대신 `<이름>_o`, `<이름>_oe`(출력), `<이름>_i`(입력) 포트를 쓴다 |
 
 ## 자주 틀리는 것
 
