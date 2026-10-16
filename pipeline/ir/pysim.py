@@ -313,7 +313,10 @@ class PySim:
 
         for d, dd in m.domains.items():
             self.dom_of[(prefix, d)] = dmap[d]
-            r = dd["reset"]
+            r = dd.get("reset")
+            if r is None:   # 리셋 없는 도메인
+                self.rst_src[(prefix, d)], self.extra_src[(prefix, d)] = ("none",), []
+                continue
             if parent is None:
                 src = ("port", r["port"], 0 if r["active"] == "low" else 1)
                 self.extra_src[(prefix, d)] = [(x["port"], 0 if x["active"] == "low" else 1) for x in r.get("extra", [])]
@@ -358,6 +361,8 @@ class PySim:
 
     # -- 리셋 --
     def _asserted(self, src: tuple) -> bool:
+        if src[0] == "none":
+            return False
         if src[0] == "sync":
             return self.val[f"{src[1]}.out"] == 0
         return self.val.get(src[1], 0) == src[2]
@@ -371,7 +376,8 @@ class PySim:
         return self.in_reset(sc, dom) or any(self.val.get(p, 0) == a for p, a in self.extra_src[(sc.prefix, dom)])
 
     def async_reset_active(self, sc: _Scope, dom: str) -> bool:
-        return sc.m.domains[dom]["reset"]["async"] and self.in_reset(sc, dom)
+        r = sc.m.domains[dom].get("reset")
+        return bool(r and r["async"]) and self.in_reset(sc, dom)
 
     def _reset_ports(self) -> None:
         """하위 모듈의 리셋 포트 값 (comb 조각이 읽음): 연결된 리셋의 값."""
@@ -379,7 +385,9 @@ class PySim:
             if not sc.prefix:
                 continue
             for d, dd in sc.m.domains.items():
-                src, r = self.rst_src[(sc.prefix, d)], dd["reset"]
+                src, r = self.rst_src[(sc.prefix, d)], dd.get("reset")
+                if r is None:
+                    continue
                 if r.get("synchronize"):   # 이 모듈이 받는 것은 동기화 전 리셋
                     src = self.rst_syncs[f"{sc.prefix}u_rst_sync_{d}"][1]
                 if src[0] == "sync":

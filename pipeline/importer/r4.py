@@ -29,14 +29,16 @@ def ref_sources(r1: dict, build: Path) -> tuple[list[Path], list[str]]:
     out.mkdir(parents=True, exist_ok=True)
     files = []
     incs = list(dict.fromkeys([*inp["incdirs"], *[str(Path(h).parent) for h in r1.get("headers", [])]]))
+    sim = r1.get("sim_units", {})
     for k, u in enumerate(r1["units"]):
         u = Path(u)
+        src = Path(sim.get(str(u), u))   # 시뮬레이션 사본이 있으면 그것 (defparam 옮김)
         if str(u) in r1.get("wrapped", []):   # R1이 1364-2005 키워드로 감싸 읽은 파일
             dst = out / f"{k:02d}_{u.stem}.sv"
-            dst.write_text(KW_OPEN + u.read_text(encoding="utf-8", errors="replace") + KW_CLOSE, encoding="utf-8")
+            dst.write_text(KW_OPEN + src.read_text(encoding="utf-8", errors="replace") + KW_CLOSE, encoding="utf-8")
             files.append(dst)
         else:
-            files.append(u)
+            files.append(src)
         if str(u.parent) not in incs:
             incs.append(str(u.parent))
     args = [f"-I{d}" for d in incs] + [f"-D{k}={v}" for k, v in inp["defines"].items()]
@@ -44,35 +46,37 @@ def ref_sources(r1: dict, build: Path) -> tuple[list[Path], list[str]]:
 
 
 def ref_wrapper(ir: dict, renames: dict[str, str], build: Path) -> tuple[Path | None, str]:
-    """원본을 감싼 래퍼 (파일, top 이름). 포트 이름을 바꿨거나(SV 예약어) inout 포트가 있으면 만든다. 없으면 (None, 원본 이름).
-    래퍼가 top이면 -G가 원본에 닿지 않으므로 파라미터(고정한 설정)는 래퍼 안의 인스턴스에 준다."""
-    from pipeline.tb.gen import inout_ports, pad_wrapper_sv
+    """원본을 감싼 래퍼 (파일, top 이름). 포트 이름을 바꿨거나(SV 예약어), inout 포트가 있거나, 조합 모듈(가상 클럭)이면 만든다.
+    없으면 (None, 원본 이름). 래퍼가 top이면 -G가 원본에 닿지 않으므로 파라미터(고정한 설정)는 래퍼 안의 인스턴스에 준다."""
+    from pipeline.tb.gen import comb_view, inout_ports, pad_wrapper_sv
 
     name = ir["module"]
-    if not renames and not inout_ports(ir):
+    hview = comb_view(ir)
+    if not renames and not inout_ports(ir) and hview is ir:
         return None, name
     inv = {v: k for k, v in renames.items()}
     params = {inv.get(p["name"], p["name"]): p["default"] for p in ir["params"] if not p.get("local")}
     f = build / f"{name}_ref_top.sv"
-    f.write_text(pad_wrapper_sv(ir, name, f"{name}_ref_top", params, inv), encoding="utf-8")
+    f.write_text(pad_wrapper_sv(hview, name, f"{name}_ref_top", params, inv, inner_raw=ir), encoding="utf-8")
     return f, f"{name}_ref_top"
 
 
-def ir_wrapper(ir: dict, build: Path) -> tuple[Path | None, str]:
-    """방출 RTL의 패드 래퍼 (inout 포트가 있을 때)."""
-    from pipeline.tb.gen import inout_ports, pad_wrapper_sv
+def ir_wrapper(ir: dict, build: Path, inner: str | None = None) -> tuple[Path | None, str]:
+    """방출 RTL의 래퍼 (inout 포트가 있거나 조합 모듈일 때). inner: 감쌀 모듈 (기본은 ir의 모듈)."""
+    from pipeline.tb.gen import comb_view, inout_ports, pad_wrapper_sv
 
     name = ir["module"]
-    if not inout_ports(ir):
+    hview = comb_view(ir)
+    if not inout_ports(ir) and hview is ir and inner is None:
         return None, name
     f = build / f"{name}_pad_top.sv"
-    f.write_text(pad_wrapper_sv(ir, name, f"{name}_pad_top"), encoding="utf-8")
+    f.write_text(pad_wrapper_sv(hview, inner or name, f"{name}_pad_top", inner_raw=ir), encoding="utf-8")
     return f, f"{name}_pad_top"
 
 
 def _diff_cfg(top_ir: dict, mode: str, seed: int, fixed: dict, cycles: int) -> dict:
-    from pipeline.tb.gen import harness_config, pad_view, signal_widths
-    top_ir = pad_view(top_ir)
+    from pipeline.tb.gen import comb_view, harness_config, pad_view, signal_widths
+    top_ir = pad_view(comb_view(top_ir))
     return {"harness": harness_config(Module(top_ir)), "widths": signal_widths(top_ir), "mode": mode, "seed": seed,
             "cycles": cycles, "drain": 200, "model": None, "harness_dir": None, "cycle_trace": True, "fixed": fixed}
 
@@ -150,19 +154,17 @@ def run_module(name: str, lib: dict[str, dict], r1: dict, work: Path, cells: lis
     top_ir = lib[name]
     sub = _sub_lib(name, lib)
     ir_files, _ = emit_lib(sub, work / "rtl", cells)
-    from pipeline.tb.gen import harness_config, merge_view, merge_wrapper_sv, pad_view, pad_wrapper_sv
+    from pipeline.tb.gen import comb_view, harness_config, merge_view, merge_wrapper_sv, pad_view
     tri = r1["modules"].get(name, {}).get("tri_split") or {}
     view = merge_view(top_ir, tri)    # inout을 나눈 하위 모듈은 원본처럼 inout으로 되돌려 비교
+    inner = None
     if tri:
         mw = work / f"{name}_merged.sv"
         mw.write_text(merge_wrapper_sv(top_ir, tri, f"{name}_merged"), encoding="utf-8")
-        pw = work / f"{name}_pad_top.sv"
-        pw.write_text(pad_wrapper_sv(view, f"{name}_merged", f"{name}_pad_top"), encoding="utf-8")
-        ir_files, ir_top = [*ir_files, mw, pw], f"{name}_pad_top"
-    else:
-        iw, ir_top = ir_wrapper(top_ir, work)
-        if iw:
-            ir_files = [*ir_files, iw]
+        ir_files, inner = [*ir_files, mw], f"{name}_merged"
+    iw, ir_top = ir_wrapper(view, work, inner)
+    if iw:
+        ir_files = [*ir_files, iw]
     ref_files, ref_args = ref_sources(r1, work)
     renames = r1["modules"].get(name, {}).get("renames", {})
     wrap, ref_top = ref_wrapper(view, renames, work)
@@ -170,7 +172,7 @@ def run_module(name: str, lib: dict[str, dict], r1: dict, work: Path, cells: lis
         ref_files = [*ref_files, wrap]
     gparams = [] if wrap else [f"-G{p['name']}={p['default']}" for p in top_ir["params"] if not p.get("local")]
     top_ir = view
-    h = harness_config(Module(pad_view(top_ir)))
+    h = harness_config(Module(pad_view(comb_view(top_ir))))
     results = []
     status = "equal"
     for mode in modes:

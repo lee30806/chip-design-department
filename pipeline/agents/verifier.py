@@ -136,11 +136,23 @@ def out_rel(module: str) -> str:
     return f"out/test_{module}.py"
 
 
+INOUT_NOTE = """
+## 양방향 패드 (inout)
+`l1.json`의 inout 포트 P는 하니스에서 세 포트로 다룬다. 테스트가 구동하는 바깥 장치의 값 `P_pad_o`와 구동 여부 `P_pad_oe`(입력),
+패드에 보이는 값 `P_pad_val`(출력, 블록이 구동하면 블록의 값, 아무도 구동하지 않으면 풀업으로 1). 바깥 장치는 약하게 구동하므로
+블록과 동시에 구동하면 블록의 값이 보인다. 참조 모델의 입력과 출력도 이 이름으로 쓴다.
+"""
+
+
+def _inout(l1: dict) -> str:
+    return INOUT_NOTE if any(p.get("dir") == "inout" for p in l1.get("ports", [])) else ""
+
+
 def make_task(name: str, l1: dict, spec: str | Path) -> Task:
     module = l1["module"]
     inputs = {"spec.md": Path(spec), "l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "tb_guide.md": GUIDE,
               f"harness/{module}_harness.py": harness_source(Module(l1))}
-    return Task("verifier", name, TASK.format(module=module, out=out_rel(module)), inputs=inputs,
+    return Task("verifier", name, TASK.format(module=module, out=out_rel(module)) + _inout(l1), inputs=inputs,
                 outputs=[out_rel(module)], write_scope=["out/"])
 
 
@@ -149,7 +161,7 @@ def make_revise_task(name: str, l1: dict, spec: str | Path, test_file: Path, app
     t = make_task(name, l1, spec)
     t.inputs[out_rel(module)] = Path(test_file)
     t.inputs["approved.json"] = json.dumps(approved, ensure_ascii=False, indent=1)
-    t.text = REVISE.format(module=module, out=out_rel(module))
+    t.text = REVISE.format(module=module, out=out_rel(module)) + _inout(l1)
     return t
 
 
@@ -158,7 +170,7 @@ def make_augment_task(name: str, l1: dict, spec: str | Path, test_file: Path, di
     t = make_task(name, l1, spec)
     t.inputs[out_rel(module)] = Path(test_file)
     t.inputs["diff.json"] = json.dumps(diff, ensure_ascii=False, indent=1)
-    t.text = AUGMENT.format(module=module, out=out_rel(module))
+    t.text = AUGMENT.format(module=module, out=out_rel(module)) + _inout(l1)
     return t
 
 
@@ -168,7 +180,7 @@ def make_spec_update_task(name: str, l1: dict, spec: str | Path, old_spec: str |
     t.inputs[out_rel(module)] = Path(test_file)
     t.inputs["spec_old.md"] = Path(old_spec)
     t.inputs["spec_diff.json"] = json.dumps(spec_diff, ensure_ascii=False, indent=1)
-    t.text = SPEC_UPDATE.format(module=module, out=out_rel(module))
+    t.text = SPEC_UPDATE.format(module=module, out=out_rel(module)) + _inout(l1)
     return t
 
 

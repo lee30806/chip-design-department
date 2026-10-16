@@ -167,6 +167,8 @@ def cmd_pysim(a) -> dict:
         return {"ok": False, "errors": [str(e)]}
     resets = {}   # 리셋 포트 → 활성 값 (주 리셋만 처음 2행 동안 걸고, 추가 리셋은 풀어 둠)
     for d in m.domains.values():
+        if not d.get("reset"):
+            continue
         resets.setdefault(d["reset"]["port"], (0 if d["reset"]["active"] == "low" else 1, True))
         for x in d["reset"].get("extra", []):
             resets.setdefault(x["port"], (0 if x["active"] == "low" else 1, False))

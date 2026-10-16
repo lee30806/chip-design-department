@@ -126,7 +126,7 @@ def make_ref_dir(r1: dict, dest: Path) -> Path:
     units, headers, wrapped = [], [], []
     for k, u in enumerate(r1["units"]):
         name = f"{k:02d}_{Path(u).name}"
-        shutil.copy(u, src / name)
+        shutil.copy(r1.get("sim_units", {}).get(u, u), src / name)   # 시뮬레이션 사본이 있으면 그것
         units.append(f"src/{name}")
         if u in r1.get("wrapped", []):
             wrapped.append(f"src/{name}")

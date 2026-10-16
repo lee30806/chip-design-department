@@ -6,6 +6,7 @@ IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 
 이 모듈은 검사와 방출이 공통으로 쓰는 이름 해석만 맡는다.
 - 번들 포트를 개별 포트로 펼친다.
 - 클럭과 리셋 포트(주 리셋, 추가 동기 리셋)는 `domains`에서 유도한다. IR의 `ports`에는 적지 않는다.
+  `reset`이 없는 도메인은 리셋 없는 도메인이다 (`reset_of`가 None).
 - 리셋 포트는 `comb` 조각에서만 읽을 수 있다 (예: 리셋 중 ready를 0으로). 클럭 포트는 읽지 않는다.
 - 클럭 그룹: 기준 도메인과 그 분주 도메인(`sync_to`)은 같은 원천의 동기 클럭이라, 그룹 안에서는 동기화 셀 없이 읽고 연결한다.
 - `fsm` 블록은 `<state_name>_q` 레지스터를 노출한다.
@@ -77,7 +78,8 @@ class Module:
         out: list[Port] = []
         seen: set[str] = set()
         for d in self.raw.get("domains", []):
-            for name in (d["clock"], d["reset"]["port"], *(x["port"] for x in d["reset"].get("extra", []))):
+            r = d.get("reset") or {}
+            for name in (d["clock"], *([r["port"]] if r else []), *(x["port"] for x in r.get("extra", []))):
                 if name not in seen:
                     out.append(Port(name, "input", "logic", d["name"], derived=True))
                     seen.add(name)
@@ -109,8 +111,12 @@ class Module:
 
     def reset_ports(self, dom: str) -> list[str]:
         """도메인의 리셋 포트: 주 리셋, 추가 동기 리셋 순."""
-        r = self.domains[dom]["reset"]
-        return [r["port"], *(x["port"] for x in r.get("extra", []))]
+        r = self.domains[dom].get("reset")
+        return [r["port"], *(x["port"] for x in r.get("extra", []))] if r else []
+
+    def reset_of(self, dom: str) -> dict | None:
+        """도메인의 리셋 설정. 리셋 없는 도메인은 None."""
+        return self.domains[dom].get("reset")
 
     def all_reset_ports(self) -> set[str]:
         return {p for d in self.domains for p in self.reset_ports(d)}

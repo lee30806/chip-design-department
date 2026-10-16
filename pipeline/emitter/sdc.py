@@ -95,7 +95,7 @@ def emit_sdc(m: Module, library: dict[str, Module] | None = None) -> str:
         for b in mod.blocks:
             if b["kind"] in ("cdc_sync", "cdc_fifo"):
                 cdc.append((path, mod, dmap, b))
-        rsts += [(path, d) for d in mod.domains.values() if d["reset"].get("synchronize")]
+        rsts += [(path, d) for d in mod.domains.values() if (d.get("reset") or {}).get("synchronize")]
     if cdc:
         out += ["", "# CDC paths into standard sync cells"]
     for path, mod, dmap, b in cdc:

@@ -42,7 +42,9 @@ async def pyequiv(dut):
     in_root = {n: (top.clock_root(d)[0] if d else first_root) for n, d in in_dom.items()}   # 비동기 입력은 첫 그룹에서 바꿈
     resets = {}   # 리셋 포트 → (활성 값, 주 리셋인지)
     for d, dd in top.domains.items():
-        r = dd["reset"]
+        r = dd.get("reset")
+        if r is None:
+            continue
         resets.setdefault(r["port"], (0 if r["active"] == "low" else 1, True))
         for x in r.get("extra", []):
             resets.setdefault(x["port"], (0 if x["active"] == "low" else 1, False))

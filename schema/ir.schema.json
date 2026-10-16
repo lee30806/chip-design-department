@@ -231,8 +231,7 @@
       "required": [
         "name",
         "clock",
-        "edge",
-        "reset"
+        "edge"
       ],
       "properties": {
         "name": {
@@ -301,7 +300,8 @@
               "description": "true면 비동기 assert 리셋을 블록 안에서 동기 deassert로 만듦 (표준 셀 rst_sync). async가 true여야 하고 top과 block_top에만 둠",
               "type": "boolean"
             }
-          }
+          },
+          "description": "도메인의 리셋. 없으면 리셋 없는 도메인 (레지스터에 리셋값을 둘 수 없고, Emitter는 리셋 분기 없이 방출함. P11)"
         },
         "async_to": {
           "description": "SPEC 2번 섹션의 도메인 간 관계. SDC 비동기 클럭 그룹의 출처",

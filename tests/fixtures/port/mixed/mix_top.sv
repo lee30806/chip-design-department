@@ -19,7 +19,8 @@ module mix_top import mix_pkg::*; #(
   for (genvar i = 0; i < N; i++) begin : g_acc
     acc #(.INIT(i)) u_acc (clk, rst, a, go, s[i]);   // acc의 포트 이름 logic은 SV 예약어라 위치로 연결
   end
-  // defparam: Verilator가 generate 배열 안 인스턴스의 defparam을 지원하지 않아 generate 밖 인스턴스에 둠
+  // generate 배열 안 인스턴스의 defparam (Verilator 미지원이라 R1이 시뮬레이션 사본에서 인스턴스 파라미터로 옮김)
+  defparam g_acc[1].u_acc.INIT = 6;
   logic [`DW-1:0] s_extra;
   acc u_extra (clk, rst, a, go, s_extra);
   defparam u_extra.INIT = 5;

@@ -642,7 +642,7 @@ python3 -m pipeline.scheduler.port resume --run-dir <dir> [--until r4|r5|r6]
 - **Verilog 키워드.** Verilog 파일은 먼저 그대로(SV 문법으로) 읽고, 오류가 날 때만 1364-2005 키워드로 감쌉니다. 감싸면 Verilator가 `$error` 같은 SV 시스템 태스크를 거부하기 때문입니다. 감싼 파일은 `import.json`의 `wrapped`에 남기고 R4/R6의 원본 시뮬레이션도 같게 감쌉니다.
 - **리셋 찾기.** 동기 리셋은 always 블록의 첫 문장 `if (rst) 상수 else ...`뿐 아니라 끝 문장 `if (rst) 상수`(끝에서 덮어쓰는 Verilog 관행, verilog-axis 전부)도 봅니다. 같은 리셋 포트를 동기와 비동기로 함께 쓰면 많이 쓴 쪽으로 합치고 검토 항목으로 남깁니다 (`axis_async_fifo`: 리셋 동기화 플롭만 비동기).
 - **하위 모듈 파라미터 기본값.** 인스턴스에서 elaborate한 값(고정한 설정)을 기본값으로 둡니다. 펼친 `generate` 구조와 맞고, 모듈 단위 R4에서 원본에 같은 값을 줄 수 있습니다. 인스턴스 대입은 원문 식(부모 파라미터)을 쓰고, genvar나 `defparam`으로 정해진 값은 숫자로 씁니다.
-- **R1이 더 거부하는 것.** 클럭이 없는 조합 모듈(IR 포트 도메인이 null이면 비동기 입력이라 1:1로 옮길 수 없음), 입력 포트 리셋이 없는 클럭 도메인(IR 도메인은 리셋이 있어야 함), 블록 안에서 만든 클럭, 하위 모듈 리셋에 내부 신호를 연결한 것, 하강 에지 클럭, 인스턴스 배열.
+- **R1이 더 거부하는 것.** 블록 안에서 만든 클럭, 하위 모듈 리셋에 내부 신호를 연결한 것(아래 리셋 동기화기 패턴 제외), 하강 에지 클럭, 인스턴스 배열. 처음에는 조합 모듈과 리셋 없는 도메인도 거부했으나 아래 추가 작업으로 옮길 수 있게 함.
 - **원문.** pyslang 위치는 바이트 단위라 원문을 바이트로 잘라 읽습니다 (한글 주석이 있으면 문자열 인덱스와 다름).
 - **R4 비교 범위.** DUT가 내는 번들의 data는 valid=1인 사이클만 비교합니다 (`strict`면 모두). 리셋 구간과 풀린 뒤 4사이클 안의 차이만 있으면 `reset_only`로 통과시키고 검토 항목으로 남깁니다. R4 불일치는 Repair 대신 Porter 고치기 과제(`prev.ir.json`과 첫 차이)로 넘깁니다. Porter는 SPEC 없이 원본만 보므로 기존 Repair 과제(SPEC과 실패 리포트 기반)가 맞지 않습니다.
 - **inout 패드 모델.** 하니스는 inout 포트 P를 `P_pad_o`, `P_pad_oe`(바깥 장치), `P_pad_val`(패드 값) 세 포트로 바꾼 래퍼를 top으로 씁니다. 바깥 장치는 약한 구동(weak)이라 DUT가 구동하면 DUT 값이 이기고, 패드마다 풀업이 있습니다 (Verilator의 세기 해석으로 확인). 그래서 동시 구동 충돌은 따로 세지 않습니다. 포트를 나눈 하위 모듈은 이식 IR을 다시 inout으로 합치는 래퍼로 감싸 원본과 모듈 단위로 비교합니다.
@@ -650,7 +650,19 @@ python3 -m pipeline.scheduler.port resume --run-dir <dir> [--until r4|r5|r6]
 - **R5 왕복 비교**에서 role(이식 IR의 top은 role module일 수 있음)과 파라미터 허용 범위(SpecWriter가 채움)는 뺍니다.
 - **R6 판정**은 Arbiter의 새 과제(`spec_gap` / `regen_defect`)이고, 재생성 실행의 Verifier 테스트를 원본 RTL에도 돌려 실패하면 같은 판정에 넘깁니다.
 - 래퍼 모듈 이름은 `<모듈>_ref_top`, `<모듈>_pad_top`입니다 (Verilator가 `__`를 바꿔 씀). 원본 포트 이름이 SV 예약어면 래퍼에서 이스케이프 식별자로 잇습니다.
-- **남은 것.** 일반 파이프라인(`Run`)의 Verifier 하니스와 E2는 아직 inout Block Top을 모르므로, inout이 있는 블록은 R6(재생성)을 돌릴 수 없습니다. Verilator는 generate 배열 안 인스턴스의 `defparam`을 지원하지 않아 그런 원본은 R4에서 원본을 시뮬레이션할 수 없습니다.
+- **남은 것.** 하강 에지 클럭, 패드 동시 구동 충돌 검출(4-state 시뮬레이터 필요), pysim의 `tristate` 실행은 보류했습니다 (2026-10-16 사용자 결정).
+
+**추가 작업: 제약 해소 (2026-10-16 사용자 결정, 같은 날 구현).**
+
+| 항목 | 방법 | 위치 |
+| --- | --- | --- |
+| 클럭이 없는 조합 모듈 | `domains: []` 모듈을 허용. 그 모듈의 null 도메인 입력은 비동기가 아니라 부모가 정하는 도메인(V8). 부모에서 출력 넷은 연결한 입력 넷의 도메인을 물려받고(V8 고정점), 연결 도메인 검사(V10)는 이 핀을 보지 않음. R1은 부모의 포트 도메인 계산에서 조합 하위 모듈을 조합 경로로 봄. 모듈 단위 R4는 가상 클럭(`tb_comb_clk`, 리셋 없음) 하나를 둔 하니스 뷰(`comb_view`)와 래퍼로 입력을 바꿔 가며 비교 | `validator/structure.py`, `importer/extract.py`, `tb/gen.py`, `importer/r4.py` |
+| 리셋이 없는 도메인 | 도메인의 `reset`을 뺄 수 있음(스키마). 레지스터 리셋값과 `fsm` 금지, 리셋 있는 자식 도메인을 리셋 없는 부모 도메인에 잇기 금지(V2, V7), 받는 쪽 리셋이 없는 동기화 셀은 경고. Emitter는 리셋 분기 없이, 셀 리셋은 1로. 하니스, pysim, 번역기 검사, SPEC 2절("없음") 왕복 | 스키마, `model.py`(`reset_of`), Validator, Emitter, SDC, `tb/gen.py`, `tb/lib.py`, `pysim.py`, `pyequiv_tb.py`, `spec/l1.py`, `spec_tables.py` |
+| top의 리셋 동기화기 | R1이 top 안에서 입력 포트 리셋으로 비동기 리셋되고 리셋 아닌 갈래가 자기 레지스터와 상수만 읽는(시프트 체인) 블록을 찾고, 그 출력(또는 그대로 옮긴 wire)이 하위 모듈 리셋으로만 쓰이면 `reset.synchronize` 도메인으로 옮김. 2단이 아니면 검토 항목. top이 아닌 모듈에 있으면 거부 | `importer/extract.py` |
+| generate 배열 안 인스턴스의 `defparam` | R1이 원본 시뮬레이션 사본(`r1/sim_src/`)을 만듦: `defparam`을 지우고 대상 인스턴스의 파라미터를 배열 원소마다 elaborate한 값을 고르는 조건식으로 바꿈. R4, R6, `porteq`가 사본을 씀. IR 추출에는 쓰지 않음 | `importer/simcopy.py` |
+| 일반 파이프라인의 inout Block Top | 하니스 설정과 신호 폭이 inout을 패드 모델 포트로 바꿔 읽고, E2와 차분 시뮬레이션이 패드 래퍼(`pad_top`)를 top으로 씀. 트레이스는 래퍼 포트만. Verifier 과제에 패드 포트 안내, Architect 과제에 `tristate`와 하위 모듈 포트 나누기 규칙. 이제 inout 블록도 R6을 돌릴 수 있음 | `tb/gen.py`, `scheduler/run.py`, `agents/verifier.py`, `agents/architect.py` |
+
+결과: 시험용 원본 `tests/fixtures/port/comb`(조합 모듈 + 리셋 없는 파이프라인)와 `rsync`(top의 2단 리셋 동기화기)가 R1, Validator, R4 `equal`을 통과하고, 조합 로직을 틀리게 바꾸면 R4가 잡습니다. 혼합 원본에 generate 배열 안 `defparam`을 다시 넣었고 두 define 조합 모두 R4 `equal`입니다. 생성 하니스와 패드 래퍼로 inout Block Top(`od_top`)을 cocotb 테스트와 `run_diffsim`으로 돌렸습니다.
 
 결과 (2026-10-16, 에이전트 없이):
 - **R1:** golden 4블록 원본에서 뽑은 L1이 P1에서 손으로 옮긴 golden IR의 L1과 같습니다. 다른 점은 R2에서 채우는 주파수와 도메인 관계, 쓰이지 않아 지운 `PAUSE_ENABLE`, 원문 그대로 둔 폭 식(`$clog2(DEPTH)`)뿐입니다. `axis_adapter` 원본의 upsize 설정(8 → 32비트, 다른 `generate` 갈래)도 R1과 V1~V3를 통과합니다.

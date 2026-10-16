@@ -98,7 +98,7 @@ def v1_schema(m: Module) -> list[Issue]:
         if name not in names:
             claim(name, f"domains/{name}")
     for d in m.domains.values():
-        if d["reset"].get("synchronize"):
+        if (d.get("reset") or {}).get("synchronize"):
             claim(m.synced_reset(d["name"]), f'domains/{d["name"]}/reset')
     for b in m.bundles:
         claim(b, f"ports/{b}")
@@ -299,7 +299,9 @@ def _domain_relations(m: Module) -> list[Issue]:
         for o in d.get("async_to", []):
             if o in m.domains and m.same_clock(d["name"], o):
                 out.append(Issue("V2", node, f"같은 클럭 그룹의 도메인을 async_to에 넣음: {o}"))
-        r = d["reset"]
+        r = d.get("reset")
+        if r is None:
+            continue   # 리셋 없는 도메인
         if r.get("synchronize"):
             if m.role not in ("top", "block_top"):
                 out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 top과 block_top에만 둠 (하위 모듈은 동기화한 리셋을 받음)"))
@@ -328,10 +330,15 @@ def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> li
         pd = dm.get(cd)
         if pd not in m.domains:
             continue
-        pr = m.domains[pd]["reset"]
-        pairs = [(d["clock"], m.domains[pd]["clock"]),
-                 (d["reset"]["port"], m.synced_reset(pd) if pr.get("synchronize") else pr["port"]),
-                 *zip((x["port"] for x in d["reset"].get("extra", [])), (x["port"] for x in pr.get("extra", [])))]
+        pr, cr = m.domains[pd].get("reset"), d.get("reset")
+        if cr and not pr:
+            out.append(Issue("V2", node, f"리셋이 있는 자식 도메인 {cd}를 리셋 없는 도메인 {pd}에 연결함"))
+            continue
+        pr, cr = pr or {}, cr or {}
+        pairs = [(d["clock"], m.domains[pd]["clock"])]
+        if cr:
+            pairs += [(cr["port"], m.synced_reset(pd) if pr.get("synchronize") else pr["port"]),
+                      *zip((x["port"] for x in cr.get("extra", [])), (x["port"] for x in pr.get("extra", [])))]
         for cport, pnet in pairs:
             if nets.setdefault(cport, pnet) != pnet:
                 out.append(Issue("V2", node, f"자식 포트 {cport}를 함께 쓰는 도메인들에 서로 다른 넷({nets[cport]}, {pnet})을 연결함. "
@@ -342,8 +349,8 @@ def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> li
             if ra != rb or da != db * s["div"]:
                 out.append(Issue("V2", node, f'자식 도메인 {cd}는 {s["domain"]}에서 {s["div"]}분주인데 연결한 {pd}와 '
                                              f'{dm[s["domain"]]}의 관계가 다름'))
-        ce = [x["active"] for x in d["reset"].get("extra", [])]
-        pe = [x["active"] for x in m.domains[pd]["reset"].get("extra", [])]
+        ce = [x["active"] for x in cr.get("extra", [])]
+        pe = [x["active"] for x in pr.get("extra", [])]
         if ce != pe[:len(ce)]:   # 자식은 부모 추가 리셋의 앞쪽 일부만 받을 수 있음 (순서대로 연결)
             out.append(Issue("V2", node, f"자식 도메인 {cd}의 추가 리셋({ce})이 연결한 {pd}의 추가 리셋({pe})과 맞지 않음 "
                                          "(부모 추가 리셋의 앞에서부터 같은 극성이어야 함)"))

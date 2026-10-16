@@ -209,11 +209,20 @@ def v7_reset(m: Module) -> list[Issue]:
             if len(set(has.values())) > 1:
                 out.append(Issue("V7", f'blocks/{b["id"]}', f"리셋 유무가 섞임: 있음 {sorted(k for k, v in has.items() if v)}, "
                                                             f"없음 {sorted(k for k, v in has.items() if not v)}"))
+        if b["kind"] in ("seq", "fsm") and b.get("domain") in m.domains and not m.reset_of(b["domain"]):
+            if b["kind"] == "fsm":
+                out.append(Issue("V7", f'blocks/{b["id"]}', f'리셋 없는 도메인 {b["domain"]}에는 fsm을 둘 수 없음 (리셋 상태가 없음). seq로 씀'))
+            elif any(storage[w].reset is not None for w in b["writes"] if w in storage):
+                out.append(Issue("V7", f'blocks/{b["id"]}', f'리셋 없는 도메인 {b["domain"]}의 레지스터에 리셋값이 있음'))
+    for b in m.blocks:   # 동기화 셀이 받는 쪽 리셋이 없으면 셀 리셋을 1로 묶음 (리셋 직후 값이 정해지지 않음)
+        if b["kind"] in ("cdc_sync", "cdc_fifo") and b.get("dst_domain") in m.domains and not m.reset_of(b["dst_domain"]):
+            out.append(Issue("V7", f'blocks/{b["id"]}', f'동기화 셀의 받는 쪽 도메인 {b["dst_domain"]}에 리셋이 없음', severity="warning"))
     return out
 
 
 # ---------------------------------------------------------------- V8
 ASYNC = "<async>"
+
 
 
 def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set[str]], list[Issue]]:
@@ -222,7 +231,8 @@ def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set
     dom: dict[str, set[str]] = {}
     for p in m.ports:
         if p.dir == "input" and not p.derived:
-            dom[p.name] = {p.domain or ASYNC}
+            # 도메인이 없는 조합 모듈의 입력은 비동기가 아니라 부모가 정하는 도메인이다 (None)
+            dom[p.name] = {p.domain or (ASYNC if m.domains else None)}
     for name, s in m.storage().items():
         if s.kind == "reg":
             dom[name] = {s.domain}
@@ -234,15 +244,23 @@ def signal_domains(m: Module, library: dict[str, Module]) -> tuple[dict[str, set
             dom[b["dst"]["valid"]] = dom[b["dst"]["data"]] = {b["dst_domain"]}
         elif b["kind"] == "tristate":   # 패드 입력은 tristate 도메인의 신호로 본다 (원본의 관행)
             dom[b["i"]] = {b["domain"]}
+    comb_insts = []   # 도메인이 없는 조합 모듈 인스턴스: (입력 넷, 출력 넷). 출력은 입력 넷의 도메인을 물려받음
     for inst in m.instances:
         child = library.get(inst["module"])
         if not child:
             continue
-        for port, net in _inst_nets(m, inst["name"], library).items():
+        nets = _inst_nets(m, inst["name"], library)
+        if not child.domains:
+            dirs = {pt: getattr(child.port(pt), "dir", None) for pt in nets}
+            ins = [n for pt, n in nets.items() if dirs[pt] == "input"]
+            outs = [n for pt, n in nets.items() if dirs[pt] == "output"]
+            comb_insts.append({"reads": ins, "writes": outs})
+            continue
+        for port, net in nets.items():
             cp = child.port(port)
             if cp and cp.dir == "output":
                 dom[net] = {inst["domain_map"].get(cp.domain, cp.domain) if cp.domain else ASYNC}
-    combs = [b for b in m.blocks if b["kind"] == "comb"]
+    combs = [b for b in m.blocks if b["kind"] == "comb"] + comb_insts
     for _ in range(len(combs) + 1):  # 고정점까지 전파
         changed = False
         for b in combs:
@@ -322,10 +340,10 @@ def _rdc(m: Module, node: str, r: str, ds: set, here: str, storage: dict) -> lis
     out = []
     s = storage.get(r)
     for d in sorted(ds - {None, here}):
-        rd = m.domains[d]["reset"]
-        if s is not None and s.kind == "reg" and rd["async"] and rd["port"] != m.domains[here]["reset"]["port"]:
+        rd, rh = m.domains[d].get("reset"), m.domains[here].get("reset") or {}
+        if s is not None and s.kind == "reg" and rd and rd["async"] and rd["port"] != rh.get("port"):
             out.append(Issue("V8", node, f'리셋 도메인 교차: {r}는 비동기 리셋 {rd["port"]}로 바뀌는 {d}의 레지스터 '
-                                         f'({here}의 리셋은 {m.domains[here]["reset"]["port"]})', severity="warning"))
+                                         f'({here}의 리셋은 {rh.get("port", "없음")})', severity="warning"))
     return out
 
 
@@ -393,7 +411,10 @@ def v10_hierarchy(m: Module, library: dict[str, Module]) -> list[Issue]:
                 if owner == "self":
                     return next(iter(dom.get(n, {None})), None)
                 inst = next(i for i in m.instances if i["name"] == owner)
-                cp = library[inst["module"]].port(n)
+                child = library[inst["module"]]
+                cp = child.port(n)
+                if not child.domains:   # 조합 모듈: 연결한 넷의 도메인을 물려받으므로 여기서 보지 않음
+                    return None
                 return inst["domain_map"].get(cp.domain) if cp.domain else ASYNC
             pa, pb = port_dom(owners[0], da, na), port_dom(owners[1], db, nb)
             if ASYNC not in (pa, pb) and None not in (pa, pb) and not m.same_clock(pa, pb):

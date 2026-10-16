@@ -58,6 +58,8 @@ TASK = """\
   펄스는 `pulse`, 여러 비트 값은 `cdc_fifo`(valid/ready)를 쓴다. 같은 클럭 그룹 안에서는 셀 없이 잇는다.
 - 하위 모듈의 도메인마다 클럭과 리셋 포트를 따로 둔다. Block Top이 리셋을 블록 안에서 동기화하면(`reset.synchronize`)
   도메인마다 동기화한 리셋이 따로 나오므로, 두 도메인이 리셋 포트 하나를 함께 쓰면 연결할 수 없다.
+- Block Top에 inout 포트가 있으면 Block Top에 `tristate` 블록을 두고(`guide.md`의 blocks 표), 하위 모듈은 inout 대신
+  `<이름>_o`, `<이름>_oe`(출력), `<이름>_i`(입력) 포트를 둔다. Block Top은 이 셋을 wire 신호로 받아 `tristate`의 o, oe, i에 잇는다.
 """
 
 

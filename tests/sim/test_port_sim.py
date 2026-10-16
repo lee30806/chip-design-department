@@ -153,3 +153,36 @@ def test_port_runner_flow_with_fake_agents(tmp_path, monkeypatch):
     assert (pkg / "spec.md").exists() and (pkg / "ir" / f"{blk}.ir.json").exists() and (pkg / "harness" / f"{blk}_harness.py").exists()
     g = json.loads((pkg / "golden.json").read_text())
     assert g["r4"] == {blk: "equal"} and len(g["r6"]) == 2
+
+
+def test_pipeline_inout_block_top_harness_and_diffsim(tmp_path):
+    """일반 파이프라인이 inout Block Top을 다룸: 생성 하니스(패드 모델 뷰)와 패드 래퍼 top으로 E2 시뮬레이션, run_diffsim."""
+    from pipeline.scheduler.run import emit_lib, run_diffsim
+    from pipeline.tb.gen import harness_source, pad_top
+    from pipeline.verify.run import sim
+    from pipeline.ir.model import Module
+
+    lib = _lib(FX / "inout" / "ported", ["od_ctrl", "od_top"])
+    files, _ = emit_lib(lib, tmp_path / "rtl", STUB_CELLS)
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / "od_top_harness.py").write_text(harness_source(Module(lib["od_top"])))
+    pads, top = pad_top(lib["od_top"], tmp_path / "pad")
+    assert top == "od_top_pad_top"
+    r = sim([*files, *pads], top, "tb_od_top_h", ROOT / "tests" / "sim", tmp_path / "build", harness_dir=tmp_path / "h")
+    assert r.ok, [f.message for f in r.findings]
+    rec = run_diffsim(files, lib["od_top"], "reset", 1, tmp_path / "diff")
+    assert rec is not None and rec["probe_at"] is not None
+
+
+@pytest.mark.parametrize("name,top,mods", [("comb/cr", "cr_top", ["dec", "pipe", "cr_top"]), ("rsync/rs", "rs_top", ["rs_core", "rs_top"])])
+def test_r4_comb_noreset_and_reset_sync(tmp_path, name, top, mods):
+    """조합 모듈(가상 클럭 래퍼로 모듈 단위 비교), 리셋 없는 도메인, top의 리셋 동기화기(reset.synchronize)."""
+    r1 = _r1(tmp_path, [FX / f"{name}.v"], top)
+    assert r1["ok"], r1
+    lib = _lib(FX / name.split("/")[0] / "ported", r1["order"])
+    res = r4.run_all(r1["order"], lib, r1, tmp_path / "r4", STUB_CELLS, **FAST)
+    assert {n: r["status"] for n, r in res.items()} == {m: "equal" for m in mods}
+    if name.startswith("comb"):
+        bad = copy.deepcopy(lib)
+        bad["dec"]["blocks"][0]["body"] = bad["dec"]["blocks"][0]["body"].replace("1'b1", "1'b0")
+        assert r4.run_module("dec", bad, r1, tmp_path / "r4b", STUB_CELLS, **FAST)["status"] == "differ"

@@ -161,6 +161,8 @@ class Extractor:
 
         # 도메인 키: (clock, edge, reset_port, active, async)
         input_ports = {p.name for p in body.portList if p.kind == SK.Port and p.direction == pyslang.ArgumentDirection.In}
+        rsync, procs = self._reset_syncs(procs, input_ports, top, name, body)
+        sync_keys: set[tuple] = set()
         keys: dict[tuple, list] = {}
         clocks: dict[str, str] = {}
         for p in procs:
@@ -187,10 +189,25 @@ class Extractor:
             child_maps[iname] = {}
             for cd in cm.ir.get("domains", []):
                 ck = self._net(c, cd["clock"])
-                rs = self._net(c, cd["reset"]["port"])
                 loc = self._loc(c)
                 if ck not in input_ports:
                     self._reject(name, loc, "child_clock", f"{iname}의 클럭 {cd['clock']}에 입력 포트가 아닌 것이 연결됨: {ck or '식'}")
+                    continue
+                if not cd.get("reset"):   # 리셋 없는 자식 도메인: 같은 클럭의 부모 도메인에 붙임 (아래에서 정함)
+                    clocks.setdefault(ck, cd["edge"])
+                    child_maps[iname][cd["name"]] = ("noreset", ck, cd["edge"])
+                    continue
+                rs = self._net(c, cd["reset"]["port"])
+                if rs in rsync:   # top 안의 리셋 동기화기 출력 → reset.synchronize 도메인
+                    sk = rsync[rs]
+                    if sk[0] != ck:
+                        self._reject(name, loc, "child_reset", f"{iname}의 리셋 {rs}을 동기화한 클럭({sk[0]})이 {iname}의 클럭({ck})과 다름")
+                        continue
+                    key = (ck, cd["edge"], sk[1], sk[2], True)
+                    sync_keys.add(key)
+                    keys.setdefault(key, [])
+                    clocks.setdefault(ck, cd["edge"])
+                    child_maps[iname][cd["name"]] = key
                     continue
                 if rs not in input_ports:
                     self._reject(name, loc, "child_reset",
@@ -216,13 +233,18 @@ class Extractor:
                 self._review(name, keys[keep][0].loc, "mixed_reset",
                              f"리셋 {k[2]}을 비동기 {na}개 블록, 동기 {ns}개 블록에서 씀. {'비동기' if keep[4] else '동기'}로 둠 "
                              f"(나머지 블록은 리셋 시점이 원본과 다를 수 있음)")
-        for ck in clocks:
-            if not any(k[0] == ck for k in keys):
-                self._reject(name, floc, "no_reset", f"클럭 {ck} 도메인에 입력 포트 리셋이 없음 (IR 도메인은 리셋이 있어야 함)")
-        if not clocks:
-            self._reject(name, floc, "comb_module", "클럭이 없는 조합 모듈 (IR 포트 도메인을 정할 수 없음)")
+        for ck, edge in clocks.items():
+            if not any(k[0] == ck for k in keys):   # 리셋 없는 도메인
+                keys[(ck, edge, None, None, None)] = []
+                self._review(name, floc, "no_reset", f"클럭 {ck}의 레지스터에 입력 포트 리셋이 없어 리셋 없는 도메인으로 둠")
+        for cmap in child_maps.values():
+            for cd, key in cmap.items():
+                if key and key[0] == "noreset":
+                    cmap[cd] = next(k for k in keys if k[0] == key[1])
+        if not clocks:   # 조합 모듈: 도메인 없이, 포트 도메인은 부모가 연결한 넷에서 물려받음
+            self._review(name, floc, "comb_module", "클럭이 없는 조합 모듈 (도메인 없이 옮김. 포트 도메인은 연결한 넷을 따름)")
         order = {p.name: i for i, p in enumerate(body.portList)}
-        keys = dict(sorted(keys.items(), key=lambda kv: (order.get(kv[0][0], 1e9), order.get(kv[0][2], 1e9))))
+        keys = dict(sorted(keys.items(), key=lambda kv: (order.get(kv[0][0], 1e9), order.get(kv[0][2] or "", 1e9))))
         dnames = self._domain_names(list(keys))
         domains = []
         for key, dn in dnames.items():
@@ -230,12 +252,19 @@ class Extractor:
             if edge == "neg":
                 self._reject(name, floc, "negedge", f"하강 에지 클럭 {ck} (파이프라인은 상승 에지 도메인만 씀)")
             dom = {"name": dn, "clock": ck, "edge": edge, "reset": {"port": rs, "active": act, "async": asy}}
+            if rs is None:
+                del dom["reset"]
+            elif key in sync_keys:
+                dom["reset"]["synchronize"] = True
+                if any(keys[key]):
+                    self._reject(name, floc, "reset_sync", f"리셋 {rs}을 블록 안에서 동기화하는 도메인에 top 자신의 로직도 있음 "
+                                                           "(동기화 전 리셋을 쓰는 로직과 섞임)")
             extra = []
             for p in keys[key]:
                 for x in p.extra:
                     if x not in extra:
                         extra.append(x)
-            if extra:
+            if extra and "reset" in dom:
                 dom["reset"]["extra"] = [{"port": e, "active": a} for e, a in extra]
                 self._review(name, keys[key][0].loc, "extra_reset", f"{dn} 도메인의 추가 동기 리셋 후보: {', '.join(e for e, _ in extra)}")
             domains.append(dom)
@@ -244,8 +273,8 @@ class Extractor:
             if p.reset:
                 return dnames.get((p.clock, p.edge, *p.reset))
             return next((dn for k, dn in dnames.items() if k[0] == p.clock), None)
-        derived = {d["clock"] for d in domains} | {d["reset"]["port"] for d in domains} | \
-                  {x["port"] for d in domains for x in d["reset"].get("extra", [])}
+        derived = {d["clock"] for d in domains} | {d["reset"]["port"] for d in domains if d.get("reset")} | \
+                  {x["port"] for d in domains if d.get("reset") for x in d["reset"].get("extra", [])}
 
         # 포트 도메인
         pdom = self._port_domains(body, procs, dom_of, children, child_maps, dnames, derived, name)
@@ -428,6 +457,36 @@ class Extractor:
         r -= {ck[0]}
         return Proc("seq", r, w, loc, clock=ck[0], edge=ck[1], reset=reset, extra=extra)
 
+    # ------------------------------------------------------------------ 리셋 동기화기
+    def _reset_syncs(self, procs: list[Proc], input_ports: set[str], top: bool, mod: str, body) -> tuple[dict, list[Proc]]:
+        """리셋 동기화 플롭 패턴 → ({출력 넷: (클럭, 리셋 포트, 극성)}, 남은 블록).
+        입력 포트 리셋으로 비동기 리셋되고, 리셋 아닌 갈래가 자기 레지스터와 상수만 읽고(시프트 체인), 그 레지스터를
+        다른 로직이 읽지 않는 블록이다. 그 레지스터를 그대로 옮긴 wire(assign x = r 또는 r[k])도 출력 넷이다.
+        top에만 둘 수 있다 (IR의 reset.synchronize). 하위 모듈 리셋으로 쓰이는지는 호출한 쪽이 본다."""
+        cands = [p for p in procs if p.kind == "seq" and p.reset and p.reset[2] and p.reset[0] in input_ports
+                 and p.writes and (p.reads - {p.reset[0]}) <= p.writes]
+        if not cands:
+            return {}, procs
+        out, drop = {}, []
+        for p in cands:
+            others = [q for q in procs if q is not p and q not in cands]
+            aliases = [q for q in others if q.kind == "comb" and len(q.writes) == 1 and q.reads and q.reads <= p.writes]
+            readers = [q for q in others if q not in aliases and q.reads & (p.writes | {w for a in aliases for w in a.writes})]
+            if readers:
+                continue
+            if not top:
+                self._reject(mod, p.loc, "reset_sync", "리셋 동기화 플롭이 top이 아닌 모듈에 있음 (IR은 top의 reset.synchronize만 지원)")
+                continue
+            info = (p.clock, p.reset[0], p.reset[1])
+            for n in p.writes | {w for a in aliases for w in a.writes}:
+                out[n] = info
+            drop += [p, *aliases]
+            depth = sum(getattr(getattr(body.find(n), "type", None), "bitWidth", 1) for n in p.writes)
+            if depth != 2:
+                self._review(mod, p.loc, "reset_sync_depth", f"리셋 동기화 {depth}단을 표준 셀 rst_sync(2단)로 옮김. "
+                                                             "리셋 해제 시점이 원본과 다를 수 있음")
+        return out, [p for p in procs if p not in drop]
+
     # ------------------------------------------------------------------ inout
     def _tri_assigns(self, body, children, mod: str, top: bool) -> dict[str, dict]:
         """inout 포트 → {style, o, oe, i, domain, oe_type, ...}. 원본의 `assign P = c ? x : 'z`와 `assign y = P`,
@@ -599,6 +658,16 @@ class Extractor:
             cm = self.mods.get(c.definition.name)
             if not cm:
                 continue
+            if not cm.ir.get("domains"):   # 조합 하위 모듈은 입력 넷 → 출력 넷 조합 경로
+                ins, outs = set(), set()
+                for pc in c.portConnections:
+                    if pc.expression is not None:
+                        (outs if pc.port.direction == pyslang.ArgumentDirection.Out else ins).update(names(strip_conv(pc.expression)))
+                for w in outs:
+                    comb_deps.setdefault(w, set()).update(ins)
+                for r in ins:
+                    comb_fwd.setdefault(r, set()).update(outs)
+                continue
             for pc in c.portConnections:
                 if pc.expression is None:
                     continue
@@ -666,7 +735,8 @@ class Extractor:
                 pdom[p.name] = doms[0]
             elif not ds:
                 pdom[p.name] = None
-                self._undecided.add(p.name)
+                if doms:   # 조합 모듈은 도메인이 없는 것이 정상
+                    self._undecided.add(p.name)
             else:
                 pdom[p.name] = sorted(ds)[0]
                 self._review(mod, self._loc(p), "port_domain",
@@ -991,8 +1061,9 @@ class Extractor:
             dm = {cd: dnames[key] for cd, key in child_maps.get(iname, {}).items() if key in dnames}
             entry["domain_map"] = dm
             instances.append(entry)
-            child_derived = {d["clock"] for d in cm.ir.get("domains", [])} | {d["reset"]["port"] for d in cm.ir.get("domains", [])} | \
-                            {x["port"] for d in cm.ir.get("domains", []) for x in d["reset"].get("extra", [])}
+            cdoms = cm.ir.get("domains", [])
+            child_derived = {d["clock"] for d in cdoms} | {d["reset"]["port"] for d in cdoms if d.get("reset")} | \
+                            {x["port"] for d in cdoms if d.get("reset") for x in d["reset"].get("extra", [])}
             cren = cm.renames
             for pc in c.portConnections:
                 pname = pc.port.name
@@ -1113,7 +1184,7 @@ class Extractor:
             if s["name"] in SV_KEYWORDS:
                 ren[s["name"]] = s["name"] + "_"
         for d in ir["domains"]:
-            for n in (d["clock"], d["reset"]["port"]):
+            for n in (d["clock"], *([d["reset"]["port"]] if d.get("reset") else [])):
                 if n in SV_KEYWORDS:
                     ren[n] = n + "_"
         if not ren:
@@ -1137,9 +1208,10 @@ class Extractor:
             p["type"] = sub_type(p["type"])
         for d in ir["domains"]:
             d["clock"] = ident(d["clock"])
-            d["reset"]["port"] = ident(d["reset"]["port"])
-            for x in d["reset"].get("extra", []):
-                x["port"] = ident(x["port"])
+            if d.get("reset"):
+                d["reset"]["port"] = ident(d["reset"]["port"])
+                for x in d["reset"].get("extra", []):
+                    x["port"] = ident(x["port"])
         for i in ir.get("instances", []):
             i["name"] = ident(i["name"])
             i["params"] = {k: sub(v) for k, v in i.get("params", {}).items()} if "params" in i else i.get("params")

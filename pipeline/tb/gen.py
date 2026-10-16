@@ -36,6 +36,7 @@ def signal_widths(raw: dict) -> dict[str, int]:
     import re
     params = {p["name"]: int(p["default"]) for p in raw.get("params", []) if str(p["default"]).isdigit()}
     out = {}
+    raw = pad_view(raw)   # inout 포트는 패드 모델 포트로
     for p in raw["ports"]:
         for s in p.get("signals", [p]):
             m = re.search(r"\[(.+?):(.+?)\]", s["type"])
@@ -65,14 +66,17 @@ def _bundle(p: dict) -> dict:
 
 
 def harness_config(m: Module) -> dict:
-    """L1만 읽는다."""
+    """L1만 읽는다. inout 포트가 있으면 패드 모델 뷰(pad_view)로 바꿔 읽는다 (DUT 자리에는 pad_top_sv 래퍼를 둠)."""
+    if inout_ports(m.raw):
+        m = Module(pad_view(m.raw))
     clocks = {d["name"]: (d["clock"], round(1000.0 / d["freq_mhz"], 3) if d.get("freq_mhz") else DEFAULT_PERIOD_NS)
               for d in m.domains.values()}
-    resets = {d["name"]: (d["reset"]["port"], 0 if d["reset"]["active"] == "low" else 1) for d in m.domains.values()}
+    # 리셋 없는 도메인은 resets에 넣지 않는다
+    resets = {d["name"]: (d["reset"]["port"], 0 if d["reset"]["active"] == "low" else 1) for d in m.domains.values() if d.get("reset")}
     # 분주 도메인: 하니스가 기준 클럭 주기(ps) × 분주비로 맞춰 상승 에지를 정렬한다
     clock_sync = {d["name"]: (d["sync_to"]["domain"], d["sync_to"]["div"]) for d in m.domains.values() if d.get("sync_to")}
     extra_resets = {d["name"]: [(x["port"], 0 if x["active"] == "low" else 1) for x in d["reset"]["extra"]]
-                    for d in m.domains.values() if d["reset"].get("extra")}
+                    for d in m.domains.values() if (d.get("reset") or {}).get("extra")}
     bundles, outputs, inputs = [], [], []
     for p in m.raw["ports"]:
         if "bundle" in p:
@@ -96,7 +100,12 @@ def trace_names(m: Module, library: dict[str, Module] | None = None) -> dict:
     library가 있으면 인스턴스 포트도 `<인스턴스>.<포트>`로 넣는다 (Block Top에서 원인 모듈을 좁히려고).
     outputs: DUT 출력 포트. Verify가 시드별 결과를 비교할 때(T1) 쓴다.
     qualifiers: DUT가 내는 번들의 data 출력 → 그 번들의 valid. valid가 0인 사이클의 data 값은 비교하지 않는다.
-    domains: 클럭 도메인. 둘 이상이면 T1은 사이클 비교를 하지 않는다 (시드에 따라 도메인 사이 위상이 바뀜)."""
+    domains: 클럭 도메인. 둘 이상이면 T1은 사이클 비교를 하지 않는다 (시드에 따라 도메인 사이 위상이 바뀜).
+    inout 포트가 있으면 DUT 자리에 패드 래퍼가 오므로 래퍼의 포트만 넣는다 (내부 신호는 래퍼 안이라 보이지 않음)."""
+    if inout_ports(m.raw):
+        v = Module(pad_view(m.raw))
+        return {"names": {p.name: p.domain for p in v.ports if not p.derived}, "outputs": [p.name for p in v.ports if p.dir == "output"],
+                "qualifiers": {}, "domains": sorted(v.domains)}
     names = {p.name: p.domain for p in m.ports if not p.derived}
     for s in m.signals + m.state_regs():
         names[s.name] = s.domain if s.kind == "reg" else None
@@ -190,9 +199,10 @@ def pad_view(raw: dict) -> dict:
 
 
 def pad_wrapper_sv(raw: dict, inner: str, wrapper: str, params: dict[str, str] | None = None,
-                   pin: dict[str, str] | None = None) -> str:
+                   pin: dict[str, str] | None = None, inner_raw: dict | None = None) -> str:
     """패드 래퍼 (와 이름 바꾼 포트 연결). 바깥 장치는 약한 구동(weak)이라 DUT가 구동하면 DUT 값이 이긴다. 패드마다 풀업.
-    pin: IR 포트 이름 → inner 모듈의 포트 이름 (원본 RTL의 이름이 다를 때). params: inner에 줄 파라미터."""
+    pin: IR 포트 이름 → inner 모듈의 포트 이름 (원본 RTL의 이름이 다를 때). params: inner에 줄 파라미터.
+    inner_raw: inner 모듈의 L1 (raw가 하니스용 뷰라 포트가 다를 때, 예: 조합 모듈의 가상 클럭)."""
     pin = pin or {}
     view = Module(pad_view(raw))
     pads = {p["name"]: p for p in inout_ports(raw)}
@@ -209,7 +219,7 @@ def pad_wrapper_sv(raw: dict, inner: str, wrapper: str, params: dict[str, str] |
                   f"    pullup ({n}[k]);" if rng else f"    pullup ({n});",
                   "  end",
                   f"  assign {n}_pad_val = {n};"]
-    m = Module(raw)
+    m = Module(inner_raw or raw)
     conns = ", ".join(f".{_esc(pin.get(p.name, p.name))}({p.name})" for p in m.ports)
     pa = ", ".join(f".{_esc(k)}({v})" for k, v in (params or {}).items())
     lines.append(f"  {inner} {'#(' + pa + ') ' if pa else ''}u_dut ({conns});")
@@ -261,3 +271,28 @@ def merge_wrapper_sv(raw: dict, tri_split: dict[str, dict], wrapper: str) -> str
     lines.append(f"  {raw['module']} u_split ({conns});")
     lines.append("endmodule")
     return "\n".join(lines) + "\n"
+
+
+COMB_CLK = "tb_comb_clk"
+
+
+def comb_view(raw: dict) -> dict:
+    """도메인이 없는 조합 모듈을 하니스로 돌리기 위한 L1: 가상 클럭 하나(리셋 없음)의 도메인에 모든 포트를 둔다.
+    래퍼(pad_wrapper_sv의 inner_raw)는 이 클럭을 DUT에 잇지 않는다. 도메인이 있으면 그대로 돌려준다."""
+    if raw.get("domains"):
+        return raw
+    if any(p.get("name") == COMB_CLK for p in raw.get("ports", [])):
+        raise GenError(f"포트 이름 {COMB_CLK}가 하니스의 가상 클럭과 겹침")
+    ports = [{**p, "domain": "comb"} for p in raw.get("ports", [])]
+    return {**raw, "domains": [{"name": "comb", "clock": COMB_CLK, "edge": "pos"}], "ports": ports}
+
+
+def pad_top(raw: dict, out_dir: Path) -> tuple[list[Path], str]:
+    """시뮬레이션 top: inout 포트가 있으면 패드 래퍼 파일과 그 이름, 없으면 ([], 모듈 이름)."""
+    if not inout_ports(raw):
+        return [], raw["module"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = f'{raw["module"]}_pad_top'
+    f = out_dir / f"{name}.sv"
+    f.write_text(pad_wrapper_sv(raw, raw["module"], name), encoding="utf-8")
+    return [f], name

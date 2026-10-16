@@ -323,7 +323,8 @@ class Harness:
             await ClockCycles(getattr(self.dut, clk), reset_cycles)
         for d in self.cfg["clocks"]:
             await FallingEdge(getattr(self.dut, self.cfg["clocks"][d][0]))
-            getattr(self.dut, self.cfg["resets"][d][0]).value = 1 - self.cfg["resets"][d][1]
+            if d in self.cfg["resets"]:   # 리셋 없는 도메인은 풀 리셋이 없음
+                getattr(self.dut, self.cfg["resets"][d][0]).value = 1 - self.cfg["resets"][d][1]
             # 리셋을 푼 바로 그 사이클부터 표본을 읽는다. 리셋이 빠진 레지스터의 초기값이 여기서 보인다(T1).
             cocotb.start_soon(self._loop(d))
 
@@ -398,7 +399,8 @@ class Harness:
         drivers = [d for n, d in self.drivers.items() if self._domain_of(n) == domain]
         # 속성 표본에는 그 도메인의 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 클럭은 넣지 않는다.
         extra = self.cfg.get("extra_resets", {}).get(domain, [])
-        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + [self.cfg["resets"][domain][0]] \
+        rst = self.cfg["resets"].get(domain)
+        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + ([rst[0]] if rst else []) \
             + [p for p, _ in extra]
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
         first = True
@@ -414,8 +416,7 @@ class Harness:
                 d.on_sample()
             # 테스트가 도중에 리셋을 걸면 그 도메인의 입력 큐를 비운다. 리셋 뒤에도 남은 전송이 들어가면
             # 테스트가 리셋 전 프레임의 나머지를 리셋 뒤 출력으로 오해한다 (P8a async_fifo sc02, 두 번)
-            port, active = self.cfg["resets"][domain]
-            if any(_int(getattr(self.dut, p)) == a for p, a in [(port, active), *extra]):
+            if any(_int(getattr(self.dut, p)) == a for p, a in [*([rst] if rst else []), *extra]):
                 for d in drivers:
                     if hasattr(d, "flush"):
                         d.flush()

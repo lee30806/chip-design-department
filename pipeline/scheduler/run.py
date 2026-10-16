@@ -43,7 +43,7 @@ from pipeline.patch.apply import apply, ir_hash
 from pipeline.spec import check as spec_check
 from pipeline.spec.l1 import block_top_l1
 from pipeline.spec.parse import load as load_spec
-from pipeline.tb.gen import harness_source, trace_names
+from pipeline.tb.gen import harness_source, pad_top, trace_names
 from pipeline.tb.diffsim import compare, describe, episodes, make_plan, truncate, without
 from pipeline.tb.report import mismatch_report
 from pipeline.validator.checks import errors, validate
@@ -549,8 +549,9 @@ class Run:
         (hdir / f"{top}_harness.py").write_text(harness_source(top_m), encoding="utf-8")
         (tdir / f"{top}_trace.json").write_text(json.dumps(trace_names(top_m, mods)), encoding="utf-8")
         e2 = []
+        pads, sim_top = pad_top(top_m.raw, out / "pad")   # inout Block Top은 패드 래퍼를 top으로
         for k, tb in enumerate(tbs):
-            r = sim(files, top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
+            r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
                     trace=tdir / f"{top}_trace.json")
             res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
             e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
@@ -1128,7 +1129,8 @@ def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir
     (build_dir / "diff_cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
     out = build_dir / "diff_out.json"
     out.unlink(missing_ok=True)
-    sim(files, top_ir["module"], "diffsim", ROOT / "pipeline" / "tb", build_dir,
+    pads, sim_top = pad_top(top_ir, build_dir / "pad")   # inout Block Top은 패드 래퍼를 top으로
+    sim([*files, *pads], sim_top, "diffsim", ROOT / "pipeline" / "tb", build_dir,
         env={"DIFF_CFG": str((build_dir / "diff_cfg.json").resolve()), "DIFF_OUT": str(out.resolve())},
         harness_dir=harness_dir, rebuild=rebuild, timeout_s=300)
     return json.loads(out.read_text()) if out.exists() else None

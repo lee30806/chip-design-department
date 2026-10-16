@@ -75,7 +75,7 @@ def test_r1_mixed_verilog_sv_sources():
     assert {x["name"]: x["default"] for x in top.ir["params"]}["K"] == "3"
     # generate for는 인스턴스로 펼치고 genvar 바인딩은 값으로, defparam은 인스턴스 파라미터로
     inst = {i["name"]: i.get("params") for i in top.ir["instances"]}
-    assert inst == {"u_acc_0": {"INIT": "0"}, "u_acc_1": {"INIT": "1"}, "u_extra": {"INIT": "5"}}
+    assert inst == {"u_acc_0": {"INIT": "0"}, "u_acc_1": {"INIT": "6"}, "u_extra": {"INIT": "5"}}
     # 배열 원소 연결은 Porter가 마무리
     assert {(x["instance"], x["expr"]) for x in top.pending} == {("u_acc_0", "s[i]"), ("u_acc_1", "s[i]")}
     kinds = [r["kind"] for r in res["reviews"]]
@@ -120,7 +120,8 @@ def test_r1_rejects(tmp_path):
                  "  wire w; sub u1(.a(en), .p(w)); sub u2(.a(q), .p(w)); assign p = w;\nendmodule\n")
     res = Extractor(Design(Inputs([f], "bad"))).run()
     kinds = {r["kind"] for r in res["rejects"]}
-    assert "no_reset" in kinds and "comb_module" in kinds and "tristate_bus" in kinds
+    assert "tristate_bus" in kinds
+    assert {"no_reset", "comb_module"} <= {r["kind"] for r in res["reviews"]}   # 리셋 없는 도메인, 조합 모듈은 옮김
     g = tmp_path / "neg.v"
     g.write_text("module neg(input clk, input rst, output reg q); always @(negedge clk) if (rst) q <= 0; else q <= ~q; endmodule\n")
     assert "negedge" in {r["kind"] for r in Extractor(Design(Inputs([g], "neg"))).run()["rejects"]}
@@ -209,3 +210,67 @@ def test_porter_gate_keeps_draft_structure(tmp_path):
     out.write_text(json.dumps(moved))
     errs = check(tmp_path)
     assert any("instances" in e for e in errs) and any("연결이 빠지거나" in e for e in errs)
+
+
+def test_r1_comb_module_and_no_reset_domain():
+    res = Extractor(Design(Inputs([FX / "comb" / "cr.v"], "cr_top"))).run()
+    assert not res["rejects"]
+    dec, pipe, top = (res["modules"][n].ir for n in ("dec", "pipe", "cr_top"))
+    assert dec["domains"] == [] and {p["domain"] for p in dec["ports"]} == {None}
+    assert pipe["domains"] == [{"name": "sys", "clock": "clk", "edge": "pos"}]
+    assert {i["name"]: i["domain_map"] for i in top["instances"]} == {"u_dec": {}, "u_pipe": {"sys": "sys"}}
+    assert {p["name"]: p["domain"] for p in top["ports"]} == {"sel": "sys", "en": "sys", "q": "sys", "cnt": "sys"}
+    lib = {n: Module(json.loads((FX / "comb" / "ported" / f"{n}.ir.json").read_text())) for n in ("dec", "pipe", "cr_top")}
+    for n, m in lib.items():
+        assert not errors(validate(m, lib)), (n, validate(m, lib))
+
+
+def test_no_reset_domain_rules():
+    pipe = json.loads((FX / "comb" / "ported" / "pipe.ir.json").read_text())
+    bad = json.loads(json.dumps(pipe))
+    bad["signals"][0]["reset"] = "'0"
+    bad["blocks"][0]["writes"] = ["s"]
+    bad["blocks"][0]["body"] = "s <= d;"
+    bad["blocks"].append({"id": "k_q", "kind": "seq", "domain": "sys", "reads": ["s"], "writes": ["q"], "body": "q <= s;"})
+    assert any("리셋 없는 도메인 sys의 레지스터에 리셋값" in str(i) for i in validate(Module(bad), {}))
+    # 리셋 있는 자식 도메인을 리셋 없는 부모 도메인에 연결할 수 없음
+    top = json.loads((FX / "comb" / "ported" / "cr_top.ir.json").read_text())
+    top["domains"] = [{"name": "sys", "clock": "clk", "edge": "pos"}]
+    top["ports"][3].pop("reset")
+    top["blocks"] = []
+    top["ports"] = top["ports"][:3]
+    core = json.loads((FX / "rsync" / "ported" / "rs_core.ir.json").read_text())
+    top["instances"][1] = {"name": "u_pipe", "module": "rs_core", "domain_map": {"sys": "sys"}}
+    top["connections"] = [c for c in top["connections"] if "u_pipe" not in c["from"] + c["to"]]
+    lib = {"rs_core": Module(core), "dec": Module(json.loads((FX / "comb" / "ported" / "dec.ir.json").read_text()))}
+    assert any("리셋 없는 도메인 sys에 연결함" in str(i) for i in validate(Module(top), lib))
+    # SPEC 2절: 리셋 포트 "없음" 왕복
+    l1, _ = block_top_l1(parse("# pipe SPEC\n\n" + spec_tables.tables_md(pipe)))
+    assert "reset" not in l1["domains"][0] and spec_tables.roundtrip_diff(pipe, l1) == []
+
+
+def test_r1_reset_synchronizer_in_top():
+    res = Extractor(Design(Inputs([FX / "rsync" / "rs.v"], "rs_top"))).run()
+    assert not res["rejects"]
+    top = res["modules"]["rs_top"].ir
+    assert top["role"] == "block_top"
+    assert top["domains"][0]["reset"] == {"port": "arst_n", "active": "low", "async": True, "synchronize": True}
+
+
+def test_r1_reset_synchronizer_not_in_top(tmp_path):
+    f = tmp_path / "x.v"
+    f.write_text((FX / "rsync" / "rs.v").read_text().replace("module rs_top", "module rs_mid") +
+                 "module x_top(input clk, input arst_n, input [7:0] d, output [7:0] q);\n"
+                 "  rs_mid u_mid(.clk(clk), .arst_n(arst_n), .d(d), .q(q));\nendmodule\n")
+    res = Extractor(Design(Inputs([f], "x_top"))).run()
+    assert "reset_sync" in {r["kind"] for r in res["rejects"]}
+
+
+def test_simcopy_moves_arrayed_defparam(tmp_path):
+    from pipeline.importer import simcopy
+    files, incs, defs = read_filelist(FX / "mixed" / "files.f")
+    d = Design(Inputs(files, "mix_top", {}, incs, defs))
+    out = simcopy.make(d, tmp_path)
+    text = Path(out[str((FX / "mixed" / "mix_top.sv").resolve())]).read_text()
+    assert "defparam g_acc[1]" not in text and "defparam u_extra.INIT = 5;" in text
+    assert "acc #(.INIT(((i == 0) ? 0 : 6)))" in text

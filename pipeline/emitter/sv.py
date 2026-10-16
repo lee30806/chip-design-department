@@ -96,7 +96,9 @@ def _extra_cond(dom: dict) -> str | None:
 
 
 def _rst_n(m: Module, dom: dict) -> str:
-    """이 모듈 안에서 도메인 리셋을 active-low로 쓴 식. 블록 안에서 동기화하는 도메인은 동기화한 넷."""
+    """이 모듈 안에서 도메인 리셋을 active-low로 쓴 식. 블록 안에서 동기화하는 도메인은 동기화한 넷. 리셋 없는 도메인은 1."""
+    if not dom.get("reset"):
+        return "1'b1"
     if dom["reset"].get("synchronize"):
         return m.synced_reset(dom["name"])
     r = dom["reset"]
@@ -106,8 +108,8 @@ def _rst_n(m: Module, dom: dict) -> str:
 def _sensitivity(dom: dict) -> str:
     edge = "posedge" if dom["edge"] == "pos" else "negedge"
     s = f'{edge} {dom["clock"]}'
-    r = dom["reset"]
-    if r["async"]:
+    r = dom.get("reset")
+    if r and r["async"]:
         s += f' or {"negedge" if r["active"] == "low" else "posedge"} {r["port"]}'
     return s
 
@@ -120,7 +122,7 @@ def _indent(body: str, n: int) -> str:
 def _seq(w: _Writer, m: Module, dom: dict, resets: list[tuple[str, str, str]], body: str, body_node: str | None) -> None:
     """resets: (이름, 리셋값, 리셋값이 온 노드)."""
     w.line(f"  always_ff @({_sensitivity(dom)}) begin")
-    if resets:
+    if resets and dom.get("reset"):   # 리셋 없는 도메인의 리셋값은 V7이 막음
         width = max(len(n) for n, _, _ in resets)
         for kw, cond in (("if", _reset_cond(dom)), ("end else if", _extra_cond(dom))):
             if cond is None:
@@ -266,7 +268,7 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     w.line()
 
     for d in m.domains.values():
-        if d["reset"].get("synchronize"):
+        if (d.get("reset") or {}).get("synchronize"):
             with w.node(f'domains/{d["name"]}/reset'):
                 r = d["reset"]
                 src = r["port"] if r["active"] == "low" else f'!{r["port"]}'
@@ -328,12 +330,15 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
         pins: set[str] = set()   # 자식 도메인끼리 함께 쓰는 클럭·리셋 포트는 한 번만 (같은 넷인지는 V2가 봄)
         for cd, dom in child.domains.items():
             pd = m.domains[inst["domain_map"][cd]]
-            prst = pd["reset"]["port"]
-            if pd["reset"].get("synchronize"):   # 동기화한 리셋 (active-low)을 자식 극성으로
-                prst = m.synced_reset(pd["name"]) if dom["reset"]["active"] == "low" else f'!{m.synced_reset(pd["name"])}'
-            # 추가 리셋의 개수와 극성은 V2가 봄
-            for cport, net in [(dom["clock"], pd["clock"]), (dom["reset"]["port"], prst),
-                               *((cx["port"], px["port"]) for cx, px in zip(dom["reset"].get("extra", []), pd["reset"].get("extra", [])))]:
+            cr, pr = dom.get("reset"), pd.get("reset") or {}
+            pins_ = [(dom["clock"], pd["clock"])]
+            if cr:   # 리셋 있는 자식 도메인을 리셋 없는 부모 도메인에 잇는 것은 V2가 막음
+                prst = pr.get("port")
+                if pr.get("synchronize"):   # 동기화한 리셋 (active-low)을 자식 극성으로
+                    prst = m.synced_reset(pd["name"]) if cr["active"] == "low" else f'!{m.synced_reset(pd["name"])}'
+                # 추가 리셋의 개수와 극성은 V2가 봄
+                pins_ += [(cr["port"], prst), *((cx["port"], px["port"]) for cx, px in zip(cr.get("extra", []), pr.get("extra", [])))]
+            for cport, net in pins_:
                 if cport not in pins:
                     pins.add(cport)
                     conns.append((f".{cport}({net})", None))

@@ -32,10 +32,13 @@ def section2(l1: dict) -> str:
     rows = []
     pds = {p["name"]: p for p in l1.get("power_domains", [])}
     for d in doms:
-        r = d["reset"]
-        ports = [r["port"], *(x["port"] for x in r.get("extra", []))]
-        acts = [r["active"], *(x["active"] for x in r.get("extra", []))]
-        sync = ("비동기 (블록 안에서 동기화)" if r.get("synchronize") else "비동기") if r["async"] else "동기"
+        r = d.get("reset")
+        if r:
+            ports = [r["port"], *(x["port"] for x in r.get("extra", []))]
+            acts = [r["active"], *(x["active"] for x in r.get("extra", []))]
+            sync = ("비동기 (블록 안에서 동기화)" if r.get("synchronize") else "비동기") if r["async"] else "동기"
+        else:   # 리셋 없는 도메인
+            ports, acts, sync = ["없음"], ["–"], "–"
         rel = []
         s = d.get("sync_to")
         same_clock = next((x for x in doms if x is not d and x["clock"] == d["clock"] and doms.index(x) < doms.index(d)), None)
@@ -56,8 +59,8 @@ def section3(l1: dict) -> str:
     rows = []
     for d in l1["domains"]:
         rows.append([d["clock"], "input", "logic", "–", d["name"]])
-        r = d["reset"]
-        for p in [r["port"], *(x["port"] for x in r.get("extra", []))]:
+        r = d.get("reset") or {}
+        for p in ([r["port"], *(x["port"] for x in r.get("extra", []))] if r else []):
             if p not in [x[0] for x in rows]:
                 rows.append([p, "input", "logic", "–", d["name"]])
     for p in l1["ports"]:

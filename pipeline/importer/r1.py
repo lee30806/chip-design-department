@@ -5,6 +5,7 @@
 결과 (`<폴더>/r1/`):
 - `ir/<모듈>.ir.json`: L1(params, domains, ports)과 L0(instances, connections, 연결에 쓰는 wire 신호) 초안
 - `source/<모듈>.sv`: 원본 모듈 글자 (Porter 입력). 헤더는 `source/headers/`
+- `sim_src/`: 원본 시뮬레이션용 사본 (generate 배열 안 인스턴스의 defparam을 인스턴스 파라미터로 옮김. 필요할 때만)
 - `import.json`: 입력, 모듈 순서(하위부터), 모듈별 원본 위치·이름 바꿈·마무리할 연결·매크로에서 온 localparam·포트 도메인,
   거부 목록(`rejects`), 검토 항목(`reviews`), V1~V3 결과
 거부 항목이 있으면 종료 코드 1이다.
@@ -36,6 +37,8 @@ def run(inp: Inputs, out: Path) -> dict:
         (r1 / "import.json").write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
         return res
     ext = Extractor(design).run()
+    from pipeline.importer import simcopy
+    sim_units = simcopy.make(design, r1 / "sim_src")   # Verilator가 받지 못하는 구문을 바꾼 원본 사본 (R4/R6)
     mods = ext["modules"]
     meta = {}
     for name in ext["order"]:
@@ -53,7 +56,7 @@ def run(inp: Inputs, out: Path) -> dict:
     issues = {n: [str(i) for i in errors(validate(lib[n], lib, upto=3))] for n in ext["order"]}
     res = {"inputs": inp.to_dict(), "top": ext["top"], "order": ext["order"], "modules": meta,
            "headers": [str(h) for h in design.headers], "units": [str(u) for u in design.units],
-           "wrapped": sorted(design.wrapped),
+           "wrapped": sorted(design.wrapped), "sim_units": sim_units,
            "macros": {k: {"value": v.value, "file": v.file, "line": v.line, "numeric": v.numeric} for k, v in design.macros.items()},
            "rejects": ext["rejects"], "reviews": ext["reviews"], "validate": issues,
            "ok": not ext["rejects"] and not any(issues.values())}

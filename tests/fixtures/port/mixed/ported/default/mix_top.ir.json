@@ -166,7 +166,7 @@
    "name": "u_acc_1",
    "module": "acc",
    "params": {
-    "INIT": "1"
+    "INIT": "6"
    },
    "domain_map": {
     "sys": "sys"
