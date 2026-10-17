@@ -60,9 +60,10 @@ class BudgetExceeded(RuntimeError):
 
 class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
-                 isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None):
+                 isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None, max_modules: int | None = None):
         """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
-        "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}."""
+        "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}.
+        max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +79,8 @@ class Run:
                           "agent_runs": 0}
             if seed:
                 self.state["seed"] = seed
+            if max_modules:
+                self.state["max_modules"] = max_modules
 
     # -- 기록 --
     @staticmethod
@@ -344,8 +347,9 @@ class Run:
         conflicts = [{k: p.get(k) for k in ("id", "group", "c", "reqs", "first_failure", "spec", "chain")}
                      | {"claims": [{k: x[k] for k in ("module", "suspects", "reason")} for x in p["claims"]],
                         "lead_note": p["decision"].get("note"), "by": p["decision"].get("by")} for p in items]
-        res = self.agent("architect", architect.make_revise_task(f"architect/rev{rev}", top_l1, self.spec_path, tree, conflicts),
-                         architect.check(top_l1))
+        mx = self.state.get("max_modules")
+        res = self.agent("architect", architect.make_revise_task(f"architect/rev{rev}", top_l1, self.spec_path, tree, conflicts, mx),
+                         architect.check(top_l1, mx))
         if not res.ok:
             self.review("ARCHITECT_REVISE_FAILED", f"Architect가 모듈 트리를 다시 정하지 못함 ({[p['id'] for p in items]}): "
                                                    f"{res.errors[:3]}", str(res.workdir), "architect")
@@ -355,7 +359,8 @@ class Run:
             if architect.needs_review(a):
                 self.review("ASSUMPTION", f"[재구성 {rev}] {_assumption(a)}", "architect", "architect")
         lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
-        new = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions}
+        new = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions,
+               "contracts": architect.read_contracts(Path(res.workdir))}
         # 이전 트리의 후보 상태와 L1은 보관하고 새 트리로 Author부터 다시 돌린다
         (self.dir / "modules").rename(self.dir / f"modules_a{rev - 1}")
         (self.dir / "modules").mkdir()
@@ -402,7 +407,8 @@ class Run:
             self.finish_step("architect", tree)
             return tree
         top_l1, _ = block_top_l1(load_spec(self.spec_path))
-        res = self.agent("architect", architect.make_task("architect", top_l1, self.spec_path), architect.check(top_l1))
+        mx = self.state.get("max_modules")
+        res = self.agent("architect", architect.make_task("architect", top_l1, self.spec_path, mx), architect.check(top_l1, mx))
         if not res.ok:
             self.finish_step("architect", None)
             return None
@@ -411,7 +417,8 @@ class Run:
             if architect.needs_review(a):
                 self.review("ASSUMPTION", _assumption(a), "architect", "architect")
         lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
-        tree = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions}
+        tree = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions,
+                "contracts": architect.read_contracts(Path(res.workdir))}
         (self.dir / "ir").mkdir(exist_ok=True)
         for n, ir in [(top_ir["module"], top_ir), *children.items()]:
             (self.dir / "ir" / f"{n}.l1.json").write_text(json.dumps(ir, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -601,7 +608,9 @@ class Run:
         l1 = tree["children"][mod]
         lang = self.roles.lang_of(c)
         st["lang"] = lang
-        res = self.agent("author", author.make_task(f"author/{mod}/c{c}{self.arch_tag()}", l1, self.spec_path, lang=lang),
+        contracts = architect.contracts_for(tree.get("contracts", []), tree["top"], mod)
+        res = self.agent("author", author.make_task(f"author/{mod}/c{c}{self.arch_tag()}", l1, self.spec_path, lang=lang,
+                                                    contracts=contracts),
                          author.check(l1, lang=lang))
         if not res.ok:
             st.update(status="failed", reason=f"Author 실패: {res.errors[:3]}")
@@ -799,7 +808,8 @@ class Run:
                     break
                 block = None if len(mods) == 1 else {
                     "top": top_ir["module"], "instances": top_ir.get("instances", []), "connections": top_ir.get("connections", []),
-                    "siblings": {n: children[n] for n in mods if n != mod}}
+                    "siblings": {n: children[n] for n in mods if n != mod},
+                    "contracts": architect.contracts_for(tree.get("contracts", []), top_ir, mod)}
                 n = _seq(st)
                 rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{n}{self.arch_tag()}", st["ir"],
                                                              self.spec_path, failure, st["history"], block, lead=pin),

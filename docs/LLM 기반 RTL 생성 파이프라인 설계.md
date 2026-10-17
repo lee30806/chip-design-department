@@ -164,8 +164,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | SPEC 변환 | 툴, 비전 coding agent | Word 또는 PDF 문서, 다이어그램 원본, 엑셀 레지스터 맵 | Markdown SPEC 초안, WaveJSON, 경계 신호 목록 |
 | SPEC 검사 | 툴, LLM | Markdown SPEC 초안 | 고정된 SPEC, 또는 작성자에게 돌려줄 질문 목록 |
-| Architect | LLM | 고정된 SPEC, SPEC 표에서 만든 Block Top의 L1 | 모듈 트리, 하위 모듈의 L1, `top`과 `block_top`의 연결, 가정 목록 |
-| Author | LLM | SPEC 해당 부분, 동결된 L1 | 자기 모듈의 L2, L3, 내부 연결 |
+| Architect | LLM | 고정된 SPEC, SPEC 표에서 만든 Block Top의 L1 | 모듈 트리, 하위 모듈의 L1, `top`과 `block_top`의 연결, 가정 목록, 하위 모듈 사이 연결의 계약 |
+| Author | LLM | SPEC 해당 부분, 동결된 L1, 자기 모듈이 끝인 연결의 계약 | 자기 모듈의 L2, L3, 내부 연결 |
 | Validator | 툴 | IR | 통과, 또는 노드가 지정된 오류 |
 | Emitter | 툴 | 검증된 IR | SV 파일, 소스맵, SDC 골격 |
 | Verifier | LLM | 고정된 SPEC, 동결된 L1 | 참조 모델, 시나리오, 속성 체커 |
@@ -198,8 +198,8 @@ Arbiter는 그림의 에스컬레이션 경로에 속하며, RTL과 참조 모�
 
 | 에이전트 | 인스턴스 | 볼 수 있는 것 | 쓸 수 있는 것 | 도구 |
 | --- | --- | --- | --- | --- |
-| Architect | 설계당 1 | 고정된 SPEC, Block Top의 L1 | 모듈 트리, 하위 L1, 가정 목록 | 구조 Validator 사전 실행 |
-| Author | 모듈당 2 (기본) | SPEC 해당 부분, 동결된 L1 | 자기 후보의 L2, L3 | Validator 사전 실행 |
+| Architect | 설계당 1 | 고정된 SPEC, Block Top의 L1 | 모듈 트리, 하위 L1, 가정 목록, 연결 계약 | 구조 Validator 사전 실행 |
+| Author | 모듈당 2 (기본) | SPEC 해당 부분, 동결된 L1, 연결 계약 | 자기 후보의 L2, L3 | Validator 사전 실행 |
 | Verifier | Block Top당 2 (기본), 하위 모듈당 1 | 고정된 SPEC, 동결된 L1 | 참조 모델, 테스트 | 하니스 생성, 모델 단독 실행 |
 | Repair | 후보당 1 | SPEC, 자기 후보의 IR, 실패 리포트, patch 이력 | patch | patch 사전 실행, 팬인 조회, 트레이스 조회 |
 | Arbiter | 불일치당 1 | SPEC, 불일치 트레이스, 양쪽 기댓값 | 수정 제안 | SPEC 구절 조회 |
@@ -604,7 +604,7 @@ Verifier는 SPEC과 동결된 L1만 보고, L2, L3, RTL은 보지 못합니다. 
 - `memory`의 `macro` 구현 없음
 - 모든 번들이 표준 프로토콜 태그를 가짐
 
-Architect는 L0와 L1과 함께 가정 목록을 반드시 출력합니다.
+Architect는 L0와 L1과 함께 가정 목록을 반드시 출력합니다. 하위 모듈이 둘 이상이면 하위 모듈끼리 잇는 연결마다 계약(실어 나르는 값의 뜻, 레지스터 단 수와 ready 관계)도 출력합니다. 형제 모듈을 따로 쓰는 Author들이 SPEC만으로 경계를 각자 해석하면 뜻이나 시점이 어긋나기 때문입니다 (P11 실제 실행에서 확인).
 
 ### 실행 중 멈추는 경우
 

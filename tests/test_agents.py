@@ -179,3 +179,44 @@ def test_architect_rejects_packed_word_between_modules():
     top["instances"][1]["params"] = {"WW": "DW"}
     kids["r"]["ports"][0]["type"] = "logic [WW-1:0]"
     assert packed_ports(top, kids) == []
+
+
+def test_architect_contracts_and_module_limit(tmp_path):
+    """하위 모듈끼리 잇는 연결마다 계약(carries, timing)이 있어야 하고, 계약은 그 연결의 양쪽 모듈에게 간다.
+    max_modules(P11 R6 재생성)를 넘으면 거부한다."""
+    from pipeline.agents import architect
+
+    top = {"instances": [{"name": "u_a", "module": "a"}, {"name": "u_b", "module": "b"}, {"name": "u_c", "module": "c"}],
+           "connections": [{"id": "c1", "from": "self.s", "to": "u_a.s"}, {"id": "c2", "from": "u_a.m", "to": "u_b.s"},
+                           {"id": "c3", "from": "u_b.m", "to": "self.m"}]}
+    assert architect.sibling_links(top) == [("u_a.m", "u_b.s")]
+    errs = architect.contract_errors(top, [])
+    assert len(errs) == 1 and "u_a.m → u_b.s" in errs[0]
+    ok = [{"from": "u_a.m", "to": "u_b.s", "carries": "디코드한 바이트", "timing": "a는 입력 다음 사이클, ready는 조합 아님"}]
+    assert architect.contract_errors(top, ok) == []
+    assert "timing" in architect.contract_errors(top, [{**ok[0], "timing": " "}])[0]
+    assert architect.contracts_for(ok, top, "b") == ok and architect.contracts_for(ok, top, "c") == []
+
+    work = tmp_path / "w"
+    (work / "out" / "ir").mkdir(parents=True)
+    rx = json.loads((ROOT / "tests" / "fixtures" / "pkt_rx_top.ir.json").read_text())
+    parser = json.loads((ROOT / "tests" / "fixtures" / "pkt_parser.ir.json").read_text())
+    l1 = {k: rx[k] for k in ("module", "role", "params", "domains", "ports")}
+    (work / "out" / "ir" / "pkt_rx_top.ir.json").write_text(json.dumps(rx))
+    (work / "out" / "ir" / "pkt_parser.ir.json").write_text(json.dumps(parser))
+    (work / "out" / "ir" / "pkt_extra.ir.json").write_text(json.dumps({**parser, "module": "pkt_extra"}))
+    (work / "out" / "assumptions.json").write_text(json.dumps({"assumptions": [{"text": "x", "affects": []}]}))
+    assert not any("하위 모듈(role module)" in e for e in architect.check(l1)(work))
+    assert any("하위 모듈(role module)이 2개" in e for e in architect.check(l1, max_modules=1)(work))
+    assert "1개 이하" in architect.make_task("architect", l1, ROOT / "IMPLEMENTATION.md", max_modules=1).text
+    assert "개 이하" not in architect.make_task("architect", l1, ROOT / "IMPLEMENTATION.md").text
+
+
+def test_author_gets_contracts():
+    from pipeline.agents import author
+
+    l1 = json.loads((ROOT / "tests" / "fixtures" / "pkt_parser.ir.json").read_text())
+    c = [{"from": "u_a.m", "to": "u_parser.s", "carries": "x", "timing": "y"}]
+    t = author.make_task("author/pkt_parser/c0", l1, ROOT / "IMPLEMENTATION.md", contracts=c)
+    assert json.loads(t.inputs["contracts.json"])["contracts"] == c and "contracts.json" in t.text
+    assert "contracts.json" not in author.make_task("author/pkt_parser/c0", l1, ROOT / "IMPLEMENTATION.md").inputs

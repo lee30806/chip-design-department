@@ -135,6 +135,8 @@ def _files2(tmp_path, core_ir=None, repair=None):
                           {"id": "c_m", "from": "u_out.m_axis", "to": "self.m_axis"}]
     f["Architect"]["out/ir/axis_adapter.ir.json"] = json.dumps(top)
     f["Architect"]["out/ir/axis_adapter_out.ir.json"] = json.dumps(frozen_l1(out))
+    f["Architect"]["out/contracts.json"] = json.dumps({"contracts": [
+        {"from": "u_core.m_axis", "to": "u_out.s_axis", "carries": "변환한 출력 비트", "timing": "out은 조합으로 그대로 넘김"}]})
     f["Author"] = {"out/axis_adapter_core.ir.json": json.dumps(core_ir or core), "out/axis_adapter_out.ir.json": json.dumps(out)}
     if repair is not None:
         f["Repair"] = {"out/patches.json": json.dumps(repair)}
@@ -147,6 +149,10 @@ def test_two_modules_verified_together(tmp_path):
     assert rep["chosen"] == {"axis_adapter_core": 0, "axis_adapter_out": 0}
     assert len(rep["candidates"]) == 4 and all(c["status"] == "pass" for c in rep["candidates"].values())
     assert sorted(_calls(tmp_path)) == ["Architect"] + ["Author"] * 4 + ["Verifier"] * 2
+    # Architect의 연결 계약이 양쪽 모듈의 Author에게 감
+    for m in ("axis_adapter_core", "axis_adapter_out"):
+        c = json.loads((tmp_path / "run" / "work" / f"author__{m}__c0" / "contracts.json").read_text())["contracts"]
+        assert [(x["from"], x["to"]) for x in c] == [("u_core.m_axis", "u_out.s_axis")]
 
 
 def test_repair_goes_to_driver_then_suspected_sibling(tmp_path):

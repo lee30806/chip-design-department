@@ -136,8 +136,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | SPEC 변환 | 툴, 비전 coding agent | Word/PDF, 다이어그램 원본, 엑셀 | 10개 섹션 Markdown, WaveJSON, 경계 신호 목록 |
 | SPEC 검사 | 툴, LLM | Markdown 초안 | 고정된 SPEC, 또는 작성자에게 돌려줄 질문 목록 |
-| Architect | LLM | 고정된 SPEC, Block Top L1 | 모듈 트리, 하위 L1, `top`/`block_top` 연결, 가정 목록 |
-| Author | LLM | SPEC 해당 부분, 동결된 L1, 후보의 조각 언어 | 자기 모듈의 L2, L3 (SV 또는 Python 조각) |
+| Architect | LLM | 고정된 SPEC, Block Top L1 | 모듈 트리, 하위 L1, `top`/`block_top` 연결, 가정 목록, 하위 모듈 사이 연결 계약 |
+| Author | LLM | SPEC 해당 부분, 동결된 L1, 연결 계약, 후보의 조각 언어 | 자기 모듈의 L2, L3 (SV 또는 Python 조각) |
 | 조각 번역기 | 툴 | `lang: py` IR | SV 조각 IR, 계산한 reads/writes, 문장별 줄 대응. 폭 확장과 절단은 파라미터 식 캐스트로 명시 |
 | Validator | 툴 | IR | 통과, 또는 노드가 지정된 오류 |
 | Emitter | 툴 | 검증된 IR | SV 파일, 소스맵, SDC 골격 |
@@ -162,8 +162,8 @@ flowchart LR
 
 | 에이전트 | 인스턴스 | 볼 수 있는 것 | 쓸 수 있는 것 |
 | --- | --- | --- | --- |
-| Architect | 설계당 1 | 고정된 SPEC, Block Top L1 | 모듈 트리, 하위 L1, 가정 목록 |
-| Author | 모듈당 2 | SPEC 해당 부분, 동결된 L1 | 자기 후보의 L2, L3 |
+| Architect | 설계당 1 | 고정된 SPEC, Block Top L1 | 모듈 트리, 하위 L1, 가정 목록, 연결 계약 |
+| Author | 모듈당 2 | SPEC 해당 부분, 동결된 L1, 연결 계약 | 자기 후보의 L2, L3 |
 | Verifier | Block Top당 2, 하위 모듈당 1 | 고정된 SPEC, 동결된 L1 | 참조 모델, 테스트 |
 | Repair | 후보당 1 | SPEC, 자기 후보 IR, 실패 리포트, patch 이력 | patch (L2, L3, 연결만. 동결 범위, 테스트, waiver는 불가) |
 | Arbiter | 불일치당 1 | SPEC, 트레이스, 양쪽 기댓값 | 수정 제안 |

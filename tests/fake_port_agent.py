@@ -28,6 +28,7 @@ if (cwd / "draft.json").exists():
     ir["domains"] = draft["domains"]   # R2에서 확정한 주파수와 관계 (실제 Porter도 초안 L1을 그대로 둠)
     (out / f"{name}.ir.json").write_text(json.dumps(ir))
 elif (cwd / "tables.md").exists():
+    assert (cwd / "ref" / "ref.json").exists()   # refsim용 원본 묶음
     base = Path(os.environ["FAKE_SPEC_BASE"]).read_text()
     tables = (cwd / "tables.md").read_text()
     head, rest = base.split("\n## 2.", 1)

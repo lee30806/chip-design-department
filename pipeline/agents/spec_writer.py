@@ -1,8 +1,10 @@
 """SpecWriter 에이전트 (P11 R5, R6): 원본 RTL과 이식한 IR을 읽고 10개 섹션 SPEC을 쓴다.
 
 볼 수 있는 것: 원본 RTL과 헤더, 이식 IR 묶음, 미리 만든 SPEC 2~4절 표(`tables.md`, L1에서 결정론적으로 만듦),
-R1~R4가 남긴 메모(`notes.json`: define 설정, 헤더 상수, 지운 파라미터, 검토 항목, 리셋 직후 차이), SPEC 작성 템플릿.
+R1~R4가 남긴 메모(`notes.json`: define 설정, 헤더 상수, 지운 파라미터, 검토 항목, 리셋 직후 차이), SPEC 작성 템플릿,
+원본 시뮬레이션 묶음(`ref/`).
 쓸 수 있는 것: `out/spec.md` 하나.
+도구: `pl.py refsim`(원본 RTL에 정한 자극을 넣고 출력 트랜잭션과 사이클을 봄), `pl.py spec_gate`.
 종료 게이트: SPEC 검사 게이트 통과, SPEC 2~4절에서 만든 L1이 이식 IR의 L1과 같음(role, 허용 범위 제외), 제목의 모듈 이름.
 고치기 과제(make_revise_task, R6): SPEC만으로 다시 만든 설계가 원본과 다르게 동작했고 Arbiter가 SPEC 누락으로 판정하면,
 줄인 자극과 원본·재생성 출력을 받아 SPEC을 고친다.
@@ -34,6 +36,16 @@ TASK = """\
 - `source/`: 원본 RTL (모듈마다 파일, `headers/`)
 - `ir/`: 원본을 1:1로 옮긴 IR (원본과 사이클 단위로 같음을 확인함). 원본보다 읽기 쉬우면 참고한다
 - `notes.json`: define 설정, 헤더에서 온 상수, 고정 설정에서 지운 파라미터, 원본 추출의 검토 항목, 이식에서 리셋 직후 다른 곳
+- `ref/`: 원본 시뮬레이션 묶음 (`refsim` 도구가 읽음)
+
+## 원본으로 확인하기 (`refsim`)
+`python3 tools/pl.py refsim ir/{top}.ir.json --ref ref --stim .refsim/stim1.json`은 원본 RTL에 네가 정한 자극을 넣고, 출력 번들마다
+나간 트랜잭션(필드 값, 리셋이 풀린 뒤 사이클)을 낸다. 자극 파일은 `.refsim/` 아래에 둔다 (예: `.refsim/stim1.json`):
+`{{"inputs": {{"<입력 번들>": [{{"<필드>": 값, ...}}, ...]}}, "valid": {{"<입력 번들>": [사이클별 0/1]}},
+"ready": {{"<출력 번들>": [사이클별 0/1]}}, "single": {{"<단독 입력 포트>": [사이클별 값]}}, "cycles": N}}`.
+`inputs` 말고는 모두 생략할 수 있다 (생략하면 valid=1, ready=1, 단독 입력 0). 필드는 포트 이름(`s_axis_tdata`)이나
+번들 이름을 뺀 이름(`tdata`)으로 쓴다. 원본을 읽어 짐작한 동작, 특히 **오류 입력, 경계 값, 프레임 끝, backpressure에서의
+출력**은 이 도구로 원본 출력을 확인한 뒤 쓴다. 출력의 필드 값(오류 출력의 data 값 포함), 지연 사이클 수도 원본이 낸 그대로 쓴다.
 
 ## 할 일
 `{out}`에 SPEC을 쓴다.
@@ -41,8 +53,9 @@ TASK = """\
 - 1절: 목적, 범위, 범위 밖. 고정 설정(파라미터 값, define)과 지운 파라미터를 범위에 적는다.
 - 5절 기능 요구사항: 포트에서 보이는 동작. 데이터 변환, 순서, 프레이밍, 플래그와 상태 출력의 뜻, 프로토콜(valid/ready) 규칙.
 - 6절 타이밍과 성능: 원본의 지연(입력에서 출력까지 몇 클럭), 처리율, backpressure에서의 동작. 원본이 고정 지연이면 그 값을 쓴다.
-- 7절 예외와 코너 케이스: 리셋 중과 리셋 직후 출력, 가득 참/비어 있음, 잘못된 입력. 원본이 정하지 않은 동작은 "미정의"로 적는다.
-- 8절 시나리오: 정상 하나 이상, 코너 하나 이상. 입력과 기대 출력 표.
+- 7절 예외와 코너 케이스: 리셋 중과 리셋 직후 출력, 가득 참/비어 있음, 잘못된 입력. 잘못된 입력마다 `refsim`으로 원본 출력을
+  확인하고 그 출력(필드 값, tlast 같은 끝 표시, 오류 플래그)을 그대로 쓴다. 원본 출력이 입력에 따라 정해지면 "미정의"로 쓰지 않는다.
+- 8절 시나리오: 정상 하나 이상, 코너(오류 입력 포함) 하나 이상. 입력과 기대 출력 표. 기대 출력은 `refsim`으로 원본에서 얻은 값이다.
 - 9절 구현 제약: 헤더에서 온 상수(이름과 값), 반드시 지킬 구조(예: CDC 셀 종류)가 있으면.
 - 10절 열린 질문: 원본에서 의도를 알 수 없는 것.
 그다음 `python3 tools/pl.py spec_gate {out} --tables tables.md --top {top}`이 `"ok": true`가 될 때까지 고친다.
@@ -60,12 +73,17 @@ REVISE = """\
 정하지 않았거나 두 가지로 읽힌다고 판정했다. `r6.json`에 판정 이유, 차이를 내는 가장 짧은 자극(`stimulus`), 원본과 재생성
 설계의 출력(`ref`, `regen`)이 있다. `spec_prev.md`에서 시작해 원본 동작을 하나로 정하는 요구사항(또는 시나리오, 타이밍)을
 더하거나 고친 SPEC 전체를 `{out}`에 쓰고, `spec_gate`를 다시 통과시킨다. 2~4절은 그대로 둔다.
+고치기 전에 `r6.json`의 자극과 비슷한 경우(같은 오류의 다른 자리, 앞뒤 바이트를 바꾼 것)를 `refsim`으로 돌려,
+더하는 문장이 이 사례 하나가 아니라 원본의 규칙과 맞는지 확인한다.
 """
 
 
 def make_task(name: str, top: str, tables: str, sources: dict[str, Path], irs: dict[str, dict], notes: dict,
-              prev_spec: Path | None = None, r6: dict | None = None) -> Task:
+              prev_spec: Path | None = None, r6: dict | None = None, ref_dir: Path | None = None) -> Task:
+    """ref_dir: `porter.make_ref_dir`로 만든 원본 묶음 (`refsim`이 읽음)."""
     inputs: dict = {"template.md": TEMPLATE, "tables.md": tables, "notes.json": json.dumps(notes, ensure_ascii=False, indent=1)}
+    if ref_dir is not None:
+        inputs["ref"] = ref_dir
     for rel, p in sources.items():
         inputs[f"source/{rel}"] = p
     for n, ir in irs.items():
@@ -75,7 +93,7 @@ def make_task(name: str, top: str, tables: str, sources: dict[str, Path], irs: d
         inputs["spec_prev.md"] = prev_spec
         inputs["r6.json"] = json.dumps(r6 or {}, ensure_ascii=False, indent=1)
         text += REVISE.format(out=OUT)
-    return Task("spec_writer", name, text, inputs=inputs, outputs=[OUT], write_scope=["out/"])
+    return Task("spec_writer", name, text, inputs=inputs, outputs=[OUT], write_scope=["out/", ".refsim/"])
 
 
 def gate(spec_path: Path, top_l1: dict) -> list[str]:

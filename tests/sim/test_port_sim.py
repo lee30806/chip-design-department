@@ -114,9 +114,36 @@ def test_porteq_tool(tmp_path):
     assert out["ok"] and out["status"] == "equal", r.stdout + r.stderr
 
 
+def test_refsim_tool(tmp_path):
+    """SpecWriter의 refsim: 원본에 정한 자극을 넣고 출력 트랜잭션을 본다. 오류로 끝나는 프레임의 출력 data(직전 바이트)도
+    원본 그대로 나온다 (실제 실행 R6 1회차에서 SPEC이 놓친 것)."""
+    r1 = _golden_r1(tmp_path / "r1", "axis_cobs_decode")
+    work = tmp_path / "w"
+    porter.make_ref_dir(r1, work / "ref")
+    shutil.copy(G / "axis_cobs_decode" / "ir" / "axis_cobs_decode.ir.json", work / "m.ir.json")
+    byte = lambda d, last=0: {"tdata": d, "tlast": last, "tuser": 0}
+    stim = {"inputs": {"s_axis": [byte(3), byte(17), byte(34), byte(2), byte(51), byte(0, 1), byte(5), byte(133), byte(218, 1)]}}
+    (work / ".refsim").mkdir()
+    (work / ".refsim" / "s.json").write_text(json.dumps(stim))
+    env = {"PL_NO_LOG": "1", "PATH": "/usr/bin:/bin:/opt/homebrew/bin"}
+    pl = str(ROOT / "pipeline" / "agents" / "pl.py")
+    r = subprocess.run([sys.executable, pl, "refsim", "m.ir.json", "--ref", "ref", "--stim", ".refsim/s.json"],
+                       cwd=work, capture_output=True, text=True, env=env)
+    out = json.loads(r.stdout)
+    assert out["ok"] and out["inputs_accepted"] == {"s_axis": 9}, r.stdout + r.stderr
+    got = [(t["m_axis_tdata"], t["m_axis_tlast"], t["m_axis_tuser"]) for t in out["outputs"]["m_axis"]]
+    assert got == [(17, 0, 0), (34, 0, 0), (0, 0, 0), (51, 1, 0), (133, 1, 1)]
+    assert out["outputs"]["m_axis"][0]["cycle"] >= 0
+    (work / ".refsim" / "b.json").write_text(json.dumps({"inputs": {"nope": []}}))
+    r = subprocess.run([sys.executable, pl, "refsim", "m.ir.json", "--ref", "ref", "--stim", ".refsim/b.json"],
+                       cwd=work, capture_output=True, text=True, env=env)
+    out = json.loads(r.stdout)
+    assert not out["ok"] and "nope" in out["errors"][0] and "s_axis" in out["bundles"]
+
+
 def test_port_runner_flow_with_fake_agents(tmp_path, monkeypatch):
     """start → R2 대기 → answer → resume: Porter(첫 시도 틀림 → R4 차이 → 고치기) → SpecWriter → R6(1차 차이 → 판정 spec_gap
-    → SPEC 고치기 → 2차 같음) → 묶음."""
+    → SPEC 고치기 → 2차 같음) → 묶음. R6 첫 재생성은 사람 결정을 기다리다 멈추고(waiting_regen), resume에서 이어 간다."""
     blk = "axis_cobs_decode"
     cfg = AgentConfig("fake", "Test", "fake", [sys.executable, str(ROOT / "tests" / "fake_port_agent.py")], "m",
                       env={"FAKE_PORTED": str(G / blk / "ir"), "FAKE_SPEC_BASE": str(G / blk / "block_spec.md"),
@@ -128,7 +155,9 @@ def test_port_runner_flow_with_fake_agents(tmp_path, monkeypatch):
 
     def regen(spec, regen_dir):
         calls.append(spec.read_text())
-        return "pass", {blk: bad if len(calls) == 1 else good}, [], 0
+        if len(calls) == 1:
+            return "waiting_approval", {}, [], 3
+        return "pass", {blk: bad if len(calls) == 2 else good}, [], 0
 
     run_dir = tmp_path / "run"
     pr = PortRun(run_dir)
@@ -144,15 +173,54 @@ def test_port_runner_flow_with_fake_agents(tmp_path, monkeypatch):
     pr = PortRun(run_dir, roles, isolate=False, regen_fn=regen, r4_kw=FAST,
                  r6_kw={"cycles": 800, "seeds": (("steady", 1),), "budget": 8})
     st = pr.resume()
+    assert st["status"] == "waiting_regen" and pr.state["r6"]["rounds"][-1]["regen_status"] == "waiting_approval", st
+    assert pr.state["agent_runs"] >= 3
+    pr = PortRun(run_dir, roles, isolate=False, regen_fn=regen, r4_kw=FAST,
+                 r6_kw={"cycles": 800, "seeds": (("steady", 1),), "budget": 8})
+    st = pr.resume()
     assert st["status"] == "pass", st
     assert st["modules"][blk] == {"status": "equal", "attempts": 2}
     rounds = pr.state["r6"]["rounds"]
     assert [r["compare"] for r in rounds] == ["differ", "equal"] and rounds[0]["verdict"]["verdict"] == "spec_gap"
-    assert "FAKE-99" in calls[1] and "FAKE-99" not in calls[0]
+    assert [r["round"] for r in rounds] == [0, 1]   # 기다리던 재생성은 같은 회차로 이어 감
+    assert "FAKE-99" in calls[2] and "FAKE-99" not in calls[1]
     pkg = run_dir / "package"
     assert (pkg / "spec.md").exists() and (pkg / "ir" / f"{blk}.ir.json").exists() and (pkg / "harness" / f"{blk}_harness.py").exists()
     g = json.loads((pkg / "golden.json").read_text())
     assert g["r4"] == {blk: "equal"} and len(g["r6"]) == 2
+
+
+def test_port_runner_regen_failed_but_verifier_fails_on_original(tmp_path):
+    """재생성이 끝나지 않았어도, 그 Verifier 테스트가 원본에서 실패하면 Arbiter 판정(spec_gap) → SPEC 고치기로 넘긴다."""
+    blk = "axis_cobs_decode"
+    cfg = AgentConfig("fake", "Test", "fake", [sys.executable, str(ROOT / "tests" / "fake_port_agent.py")], "m",
+                      env={"FAKE_PORTED": str(G / blk / "ir"), "FAKE_SPEC_BASE": str(G / blk / "block_spec.md")}, timeout_s=120)
+    roles = Roles({"porter": cfg, "spec_writer": cfg, "arbiter": cfg}, {}, {"agent_retries": 0, "porter_fix": 1, "spec_revise": 2})
+    good = json.loads((G / blk / "ir" / f"{blk}.ir.json").read_text())
+    tb = tmp_path / "vtb" / f"test_{blk}.py"   # SPEC을 원본과 다르게 읽은 테스트: 원본은 출력을 내므로 실패
+    tb.parent.mkdir()
+    tb.write_text("import cocotb\n\n"
+                  "@cocotb.test()\nasync def never_outputs(dut):\n    assert False, 'SPEC 해석: 출력이 없어야 함'\n")
+    calls = []
+
+    def regen(spec, regen_dir):
+        calls.append(spec.read_text())
+        return ("failed", {}, [str(tb)], 5) if len(calls) == 1 else ("pass", {blk: good}, [], 0)
+
+    run_dir = tmp_path / "run"
+    pr = PortRun(run_dir)
+    st = pr.start(Inputs([G / blk / "upstream" / "rtl" / f"{blk}.v"], blk))
+    PortRun(run_dir).answer({q["id"]: ("100" if q["id"] == "freq.sys" else "ok" if q["id"].startswith("review") else "valid_ready")
+                             for q in st["questions"]})
+    pr = PortRun(run_dir, roles, isolate=False, regen_fn=regen, r4_kw=FAST, r6_kw={"cycles": 800, "seeds": (("steady", 1),)})
+    st = pr.resume()
+    assert st["status"] == "pass", st
+    rounds = pr.state["r6"]["rounds"]
+    assert rounds[0]["regen_status"] == "failed" and not rounds[0]["verifier_on_ref"][0]["ok"]
+    assert rounds[0]["verdict"]["verdict"] == "spec_gap" and rounds[1]["compare"] == "equal"
+    judge = json.loads((run_dir / "r6" / "judge_0.json").read_text())
+    assert judge["regen_status"] == "failed" and judge["verifier_failures_on_original"]
+    assert len(calls) == 2 and "FAKE-99" in calls[1]
 
 
 def test_pipeline_inout_block_top_harness_and_diffsim(tmp_path):

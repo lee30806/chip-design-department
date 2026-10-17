@@ -154,6 +154,11 @@ class PortRun:
                 return False
         return True
 
+    def ref_dir(self, r1: dict) -> Path:
+        """원본 시뮬레이션 묶음 (Porter의 `porteq`, SpecWriter의 `refsim`이 읽음)."""
+        d = self.dir / "ref"
+        return d if (d / "ref.json").exists() else porter.make_ref_dir(r1, d)
+
     def _port_module(self, name: str, r1: dict, draft: dict, lib: dict, ref_dir: Path, st: dict) -> bool:
         meta = r1["modules"][name]
         notes = {"pending": meta["pending"], "renames": meta["renames"], "macro_params": meta["macro_params"],
@@ -217,7 +222,8 @@ class PortRun:
         hd = self.dir / "r1" / "source" / "headers"
         if hd.exists():
             sources["headers"] = hd
-        task = spec_writer.make_task("spec_writer/v0", r1["top"], tables, sources, ported, self._spec_notes(r1))
+        task = spec_writer.make_task("spec_writer/v0", r1["top"], tables, sources, ported, self._spec_notes(r1),
+                                     ref_dir=self.ref_dir(r1))
         res = self.agent("spec_writer", task, spec_writer.check(top), "spec_writer/v0")
         if not res.ok:
             self.review("SPEC_WRITER_FAILED", f"SPEC이 게이트를 통과하지 못함: {res.errors[:3]}")
@@ -306,7 +312,8 @@ class PortRun:
             prev = self.dir / f"spec_v{self.state.get('spec_version', 0)}.md"
             task = spec_writer.make_task(f"spec_writer/v{k + 1}", r1["top"], spec_tables.tables_md(top),
                                          {f"{n}.sv": self.dir / "r1" / "source" / f"{n}.sv" for n in r1["order"]}, ported,
-                                         self._spec_notes(r1), prev_spec=prev, r6={**judge, "verdict": verdict})
+                                         self._spec_notes(r1), prev_spec=prev, r6={**judge, "verdict": verdict},
+                                         ref_dir=self.ref_dir(r1))
             res2 = self.agent("spec_writer", task, spec_writer.check(top, prev.read_text(encoding="utf-8")), f"spec_writer/v{k + 1}")
             if not res2.ok:
                 self.review("SPEC_WRITER_FAILED", f"R6 SPEC 고치기 실패: {res2.errors[:3]}")
@@ -317,8 +324,10 @@ class PortRun:
             self.save()
 
     def _regen(self, spec: Path, regen_dir: Path):
-        """SPEC만 입력으로 일반 파이프라인을 돌린다."""
-        run = Run(regen_dir, spec, self.roles, self.cells, isolate=self.isolate)
+        """SPEC만 입력으로 일반 파이프라인을 돌린다. Architect의 하위 모듈 수는 원본 모듈 수(top 빼고, 적어도 1)를 넘지 않게 한다:
+        원본이 모듈 하나면 재생성도 하위 모듈 하나. 실제 실행(axis_cobs_decode, 2026-10-17)에서 작은 블록을 둘로 나눌 때마다
+        모듈 사이 계약이 어긋나 재구성이 필요했고, 하나로 둔 회차만 통과했다."""
+        run = Run(regen_dir, spec, self.roles, self.cells, isolate=self.isolate, max_modules=max(1, len(self.r1()["order"]) - 1))
         rep = run.execute()
         regen = r6.load_regen(regen_dir) if rep["status"] == "pass" else {}
         return rep["status"], regen, run.state["steps"].get("verifiers") or [], rep.get("agent_runs", 0)

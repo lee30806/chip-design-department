@@ -42,6 +42,11 @@ TASK = """\
 ## 규칙
 {lang_note}- `{out}` 외의 파일은 만들거나 고치지 않는다.
 - SPEC에 없는 동작을 지어내지 않는다. SPEC이 정하지 않은 세부는 단순한 쪽을 고른다.
+{contracts}"""
+
+CONTRACTS = """- `contracts.json`: Architect가 정한, 이 모듈과 형제 모듈 사이 연결의 계약. `carries`(실어 나르는 값의 뜻)와
+  `timing`(레지스터 단 수, ready 관계, 보관 개수)을 그대로 지킨다. 형제 모듈은 다른 Author가 같은 계약을 보고 쓴다.
+  SPEC의 블록 전체 지연을 두 모듈에 어떻게 나눴는지는 계약이 정한다.
 """
 
 
@@ -49,7 +54,9 @@ def out_rel(module: str) -> str:
     return f"out/{module}.ir.json"
 
 
-def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] | None = None, lang: str = "sv") -> Task:
+def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] | None = None, lang: str = "sv",
+              contracts: list[dict] | None = None) -> Task:
+    """contracts: 이 모듈이 한쪽 끝인 하위 모듈 사이 연결의 계약 (`architect.contracts_for`)."""
     module = l1["module"]
     inputs: dict = {"l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "spec.md": Path(spec),
                     "guide.md": GUIDE}
@@ -61,7 +68,10 @@ def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] |
         inputs[f"lib/{cname}.ir.json"] = json.dumps(cl1, ensure_ascii=False, indent=1)
     text = TASK.format(module=module, out=out_rel(module),
                        children="\n- `lib/`: 인스턴스로 쓰는 자식 모듈의 L1" if children else "",
-                       lib_arg=" --lib lib" if children else "", lang_note=LANG_NOTE[lang])
+                       lib_arg=" --lib lib" if children else "", lang_note=LANG_NOTE[lang],
+                       contracts=CONTRACTS if contracts else "")
+    if contracts:
+        inputs["contracts.json"] = json.dumps({"contracts": contracts}, ensure_ascii=False, indent=1)
     return Task("author", name, text, inputs=inputs, outputs=[out_rel(module)], write_scope=["out/"])
 
 

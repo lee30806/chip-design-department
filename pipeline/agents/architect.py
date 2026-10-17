@@ -5,7 +5,10 @@
 재구성(make_revise_task): 형제 모듈의 Repair들이 실패 원인을 서로 넘겨 Design-lead가 근본 원인 수정을 요청하면, 지금 모듈 트리와
 충돌 경위(`conflict.json`)를 받아 모듈 경계와 하위 모듈 L1을 다시 정한다. Block Top의 L1은 그대로라서 Verifier 테스트는 그대로 쓴다.
 종료 게이트: Block Top의 L1이 바뀌지 않음, Block Top이 V1~V10 통과(하위 모듈 L1을 라이브러리로), 하위 모듈 L1이 V1~V3 통과,
-             가정 목록이 있음, 하위 모듈끼리 잇는 포트가 여러 필드를 묶은 워드가 아님(폭이 파라미터 둘 이상의 합).
+             가정 목록이 있음, 하위 모듈끼리 잇는 포트가 여러 필드를 묶은 워드가 아님(폭이 파라미터 둘 이상의 합),
+             하위 모듈끼리 잇는 연결마다 계약(`out/contracts.json`: 실어 나르는 값의 뜻, 레지스터 단 수와 ready 관계)이 있음,
+             하위 모듈 수 상한(max_modules, P11 R6 재생성)을 넘지 않음.
+계약은 스케줄러가 그 연결의 양쪽 모듈 Author와 Repair에게 준다 (형제 모듈을 따로 쓰는 Author들이 같은 뜻과 시점을 쓰게).
 """
 from __future__ import annotations
 
@@ -44,7 +47,14 @@ TASK = """\
    `l1`(Block Top의 포트, 파라미터, 프로토콜의 해석), `timing`(지연, 처리율, 사이클 시점), `reset`(리셋 동작),
    `spec_gap`(SPEC이 정하지 않거나 미정의로 둔 동작을 정함). 모듈 안의 배분만 정한 것(모듈 경계, 하위 모듈 사이 포트)은 `[]`.
    `affects`가 비지 않은 가정은 사람이 검토한다.
-5. `python3 tools/pl.py validate out/ir/{top}.ir.json --lib out/ir`가 `"ok": true`가 될 때까지 고친다.
+5. 하위 모듈끼리 잇는 연결(양쪽이 모두 `self`가 아닌 것)마다 계약을 `out/contracts.json`에
+   `{{"contracts": [{{"from": "<인스턴스>.<포트나 번들>", "to": "<인스턴스>.<포트나 번들>", "carries": "...", "timing": "..."}}, ...]}}`로 쓴다.
+   두 모듈은 Author가 따로 쓰고, 각 Author는 이 계약과 자기 L1만 보고 경계를 맞춘다. 그러니 둘이 다르게 읽을 수 없게 쓴다.
+   - `carries`: 실어 나르는 값의 뜻. 필드마다 무엇인지(원시 입력 그대로인지, 처리한 결과인지), 끝 표시나 오류 플래그가 언제 1인지.
+   - `timing`: 보내는 모듈이 Block Top 입력을 받은 사이클에서 몇 사이클 뒤에 이 연결로 내는지(레지스터 단 수),
+     받는 모듈이 받은 뒤 몇 사이클 뒤에 내는지, ready가 valid나 다른 입력에 조합으로 걸리는지, 몇 개까지 보관하는지.
+   SPEC의 지연(6절)을 두 모듈에 어떻게 나눴는지가 여기서 드러나야 한다. 하위 모듈이 하나면 `{{"contracts": []}}`.
+6. `python3 tools/pl.py validate out/ir/{top}.ir.json --lib out/ir`가 `"ok": true`가 될 때까지 고친다.
    하위 모듈은 아직 동작이 없으므로 `validate`로 검사하지 않는다.
 
 ## 규칙
@@ -60,6 +70,10 @@ TASK = """\
   도메인마다 동기화한 리셋이 따로 나오므로, 두 도메인이 리셋 포트 하나를 함께 쓰면 연결할 수 없다.
 - Block Top에 inout 포트가 있으면 Block Top에 `tristate` 블록을 두고(`guide.md`의 blocks 표), 하위 모듈은 inout 대신
   `<이름>_o`, `<이름>_oe`(출력), `<이름>_i`(입력) 포트를 둔다. Block Top은 이 셋을 wire 신호로 받아 `tristate`의 o, oe, i에 잇는다.
+{limit}"""
+
+LIMIT = """- 하위 모듈(role `module`)은 {n}개 이하로 둔다. 이 블록은 크지 않아 나누면 모듈 사이 계약만 늘어난다.
+  하나면 Block Top 아래 하위 모듈 하나에 동작을 모두 둔다.
 """
 
 
@@ -73,12 +87,16 @@ REVISE = """
 위 할 일을 다시 하되, 충돌한 요구사항을 만족시키는 데 필요한 상태와 결정이 한 모듈 안에 있도록 모듈 경계나 하위 모듈 사이 인터페이스를
 바꾼다 (모듈을 합치거나, 경계를 옮기거나, 필요한 신호를 인터페이스에 더함). 충돌과 관계없는 부분은 그대로 둔다.
 무엇을 왜 바꿨는지 `out/assumptions.json`의 가정 목록 맨 앞에 적는다. Block Top의 L1은 이번에도 바꾸지 않는다.
+경계가 남는 연결의 계약(`out/contracts.json`)도 다시 쓴다. 충돌이 계약의 뜻이나 시점을 두 모듈이 다르게 읽어서 생겼으면
+그 부분을 더 분명하게 쓴다 (`current/contracts.json`이 지금 계약).
 """
 
 
-def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict, conflicts: list[dict]) -> Task:
-    """lead의 근본 원인 수정 요청: 지금 트리(tree: {"top", "children"})와 충돌 경위를 받아 모듈 트리를 다시 정한다."""
-    t = make_task(name, block_top_l1, spec)
+def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict, conflicts: list[dict],
+                     max_modules: int | None = None) -> Task:
+    """lead의 근본 원인 수정 요청: 지금 트리(tree: {"top", "children", "contracts"})와 충돌 경위를 받아 모듈 트리를 다시 정한다."""
+    t = make_task(name, block_top_l1, spec, max_modules)
+    t.inputs["current/contracts.json"] = json.dumps({"contracts": tree.get("contracts", [])}, ensure_ascii=False, indent=1)
     t.inputs[f"current/{tree['top']['module']}.ir.json"] = json.dumps(tree["top"], ensure_ascii=False, indent=1)
     for n, ir in tree["children"].items():
         t.inputs[f"current/{n}.ir.json"] = json.dumps(ir, ensure_ascii=False, indent=1)
@@ -87,11 +105,13 @@ def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict
     return t
 
 
-def make_task(name: str, block_top_l1: dict, spec: str | Path) -> Task:
+def make_task(name: str, block_top_l1: dict, spec: str | Path, max_modules: int | None = None) -> Task:
+    """max_modules: 하위 모듈 수 상한 (P11 R6 재생성에서 원본 모듈 수로 정함). None이면 제한 없음."""
     inputs = {"spec.md": Path(spec), "block_top.json": json.dumps(block_top_l1, ensure_ascii=False, indent=1),
               "guide.md": GUIDE, "examples/pkt_rx_top.ir.json": EXAMPLE_TOP, "examples/pkt_parser.ir.json": EXAMPLE_MOD}
     top = block_top_l1["module"]
-    return Task("architect", name, TASK.format(top=top), inputs=inputs,
+    text = TASK.format(top=top, limit=LIMIT.format(n=max_modules) if max_modules else "")
+    return Task("architect", name, text, inputs=inputs,
                 outputs=[f"out/ir/{top}.ir.json", "out/assumptions.json"], write_scope=["out/"])
 
 
@@ -109,6 +129,35 @@ def read_tree(work: Path, top: str) -> tuple[dict, dict[str, dict], list[str]]:
 
 
 AFFECTS = {"l1", "timing", "reset", "spec_gap"}
+CONTRACTS = "out/contracts.json"
+
+
+def read_contracts(work: Path) -> list[dict]:
+    p = Path(work) / CONTRACTS
+    raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return [c for c in raw.get("contracts", []) if isinstance(c, dict)] if isinstance(raw, dict) else []
+
+
+def sibling_links(top_ir: dict) -> list[tuple[str, str]]:
+    """하위 모듈끼리 잇는 연결 (양쪽 끝점이 모두 self가 아님)."""
+    return [(c["from"], c["to"]) for c in top_ir.get("connections", [])
+            if not str(c.get("from", "self")).startswith("self") and not str(c.get("to", "self")).startswith("self")]
+
+
+def contracts_for(contracts: list[dict], top_ir: dict, module: str) -> list[dict]:
+    """이 모듈의 인스턴스가 한쪽 끝인 계약."""
+    insts = {i["name"] for i in top_ir.get("instances", []) if i["module"] == module}
+    return [c for c in contracts if str(c.get("from", "")).split(".")[0] in insts or str(c.get("to", "")).split(".")[0] in insts]
+
+
+def contract_errors(top_ir: dict, contracts: list[dict]) -> list[str]:
+    have = {(c.get("from"), c.get("to")) for c in contracts}
+    errs = [f"[계약] {a} → {b}: out/contracts.json에 계약이 없음 (carries, timing)" for a, b in sibling_links(top_ir) if (a, b) not in have]
+    for c in contracts:
+        for k in ("carries", "timing"):
+            if not str(c.get(k, "")).strip():
+                errs.append(f"[계약] {c.get('from')} → {c.get('to')}: {k}가 비어 있음")
+    return errs
 
 
 def needs_review(a: dict) -> bool:
@@ -147,7 +196,7 @@ def packed_ports(top_ir: dict, children: dict[str, dict]) -> list[str]:
     return sorted(set(out))
 
 
-def check(block_top_l1: dict):
+def check(block_top_l1: dict, max_modules: int | None = None):
     top = block_top_l1["module"]
 
     def _check(work: Path) -> list[str]:
@@ -169,6 +218,13 @@ def check(block_top_l1: dict):
         used = {i["module"] for i in top_ir.get("instances", [])}
         errs += [f"쓰이지 않는 하위 모듈: {n}" for n in children if n not in used]
         errs += packed_ports(top_ir, children)
+        try:
+            errs += contract_errors(top_ir, read_contracts(work))
+        except json.JSONDecodeError as e:
+            errs.append(f"{CONTRACTS}를 읽을 수 없음: {e}")
+        n_mod = sum(1 for c in children.values() if c.get("role") == "module")
+        if max_modules and n_mod > max_modules:
+            errs.append(f"하위 모듈(role module)이 {n_mod}개: {max_modules}개 이하로 둔다")
         if not assumptions:
             errs.append("가정 목록이 비어 있음 (SPEC이 정하지 않아 정한 것을 적음)")
         for a in assumptions:

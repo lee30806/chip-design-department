@@ -51,7 +51,9 @@ TASK = """\
 BLOCK = """
 ## 형제 모듈
 이 모듈은 Block Top `{top}` 안에서 형제 모듈 {siblings}와 함께 검증된다. 불일치는 Block Top의 출력에서 관측된 것이다.
-`block.json`에 Block Top의 인스턴스와 연결, 형제 모듈의 L1이 있다. 실패 리포트의 팬인은 Block Top의 출력을 구동하는 인스턴스까지다.
+`block.json`에 Block Top의 인스턴스와 연결, 형제 모듈의 L1, Architect가 정한 모듈 사이 계약(`contracts`: 실어 나르는 값의 뜻,
+레지스터 단 수와 ready 관계)이 있다. 계약은 형제 모듈도 지키므로 이 모듈을 고칠 때 계약을 바꾸지 않는다. 실패가 계약을 어긴 쪽에서
+났으면 그 모듈을 지목한다. 실패 리포트의 팬인은 Block Top의 출력을 구동하는 인스턴스까지다.
 원인이 이 모듈이 아니라 형제 모듈에 있다고 판단되면 patch 대신 `{out}`에
 `[{{"op": "suspect_module", "module": "<형제 모듈 이름>", "reason": "..."}}]`를 쓴다.
 """
@@ -66,7 +68,7 @@ LEAD = """
 
 def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: list[dict], block: dict | None = None,
               lead: dict | None = None) -> Task:
-    """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}}.
+    """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}, "contracts": [...]}.
     lead: lead가 이 모듈을 고칠 곳으로 지정한 결정 {"id", "note", "chain", "claims"}."""
     inputs = {"ir.json": json.dumps(ir, ensure_ascii=False, indent=1), "spec.md": Path(spec), "guide.md": GUIDE,
               "failure.json": json.dumps(failure, ensure_ascii=False, indent=1),
