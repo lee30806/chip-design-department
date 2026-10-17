@@ -28,6 +28,7 @@ from pipeline.importer.sources import Inputs
 from pipeline.scheduler.run import STUB_CELLS, Run
 
 STAGES = ("r1", "r2", "r3", "r5", "r6", "package", "done")
+RESUMABLE = ("waiting_approval", "paused_quota", "budget_exceeded")   # 재생성 실행을 같은 디렉터리에서 이어 갈 수 있는 상태
 
 
 class Budget(RuntimeError):
@@ -229,38 +230,66 @@ class PortRun:
         return True
 
     # ------------------------------------------------------------------ R6
-    def step_r6(self) -> bool:
+    def step_r6(self) -> bool | None:
+        """True: 끝남 (같음 또는 regen_defect 판정), False: 실패, None: 재생성 실행이 사람 결정을 기다림."""
         r1 = self.r1()
         ported = self.irs("ported")
         top = ported[r1["top"]]
         rounds = self.state["r6"]["rounds"]
         limit = self.limit("spec_revise", 3)
         while True:
-            k = len(rounds)
-            regen_dir = self.dir / "r6" / f"regen_{k}"
+            # 재생성 실행이 사람 결정(기댓값 수정 승인, Repair 충돌)이나 한도 때문에 멈췄으면 같은 실행을 이어 간다
+            if rounds and rounds[-1]["regen_status"] in RESUMABLE:
+                rounds.pop()
             spec = self.dir / "spec.md"
-            status, regen, tbs, n_runs = self.regen_fn(spec, regen_dir)
-            self.state["agent_runs"] += n_runs
-            rnd = {"round": k, "spec_version": self.state.get("spec_version", 0), "regen_status": status}
-            rounds.append(rnd)
-            self.save()
-            if status != "pass":
-                self.review("R6_REGEN_FAILED", f"SPEC으로 다시 만들기가 끝나지 않음 ({status}). {regen_dir}/report.json 참고")
-                return False
-            res = r6.run(top, regen, r1, self.dir / "r6" / f"cmp_{k}", self.cells, **self.r6_kw)
-            rnd.update(compare=res["status"], timing=res.get("timing"), structure=res.get("structure"))
-            if tbs:
+            last = rounds[-1] if rounds else None
+            if last and ((last["regen_status"] != "pass" and not last.get("handled"))
+                         or (last.get("judge_pending") and not last.get("verdict"))):
+                # 앞 실행에서 재생성 뒤 판정 전에 멈춤 (실패, 예산, 한도): 재생성을 다시 돌리지 않고 그 결과로 이어 감
+                rnd = last
+                k = rnd["round"]
+                status = rnd["regen_status"]
+                regen = r6.load_regen(self.dir / "r6" / f"regen_{k}") if status == "pass" else {}
+                tbs = rnd.get("tbs") or []
+            else:
+                k = len(rounds)
+                regen_dir = self.dir / "r6" / f"regen_{k}"
+                status, regen, tbs, n_runs = self.regen_fn(spec, regen_dir)
+                self.state["agent_runs"] += n_runs
+                rnd = {"round": k, "spec_version": self.state.get("spec_version", 0), "regen_status": status, "tbs": tbs}
+                rounds.append(rnd)
+                self.save()
+            regen_dir = self.dir / "r6" / f"regen_{k}"
+            if status in RESUMABLE:
+                self.review("R6_REGEN_WAITING", f"SPEC으로 다시 만들기가 멈춤 ({status}). 결정은 "
+                                                f"`python3 -m pipeline.scheduler.approve {regen_dir} list`로 보고 내린 뒤 resume")
+                return None
+            res = {"status": "not_run"}
+            if status == "pass":
+                res = r6.run(top, regen, r1, self.dir / "r6" / f"cmp_{k}", self.cells, **self.r6_kw)
+                rnd.update(compare=res["status"], timing=res.get("timing"), structure=res.get("structure"))
+            if tbs and "verifier_on_ref" not in rnd:
                 rnd["verifier_on_ref"] = r6.verifier_on_ref(tbs, top, r1, self.dir / "r6" / f"vref_{k}")
             self.save()
             failed_ref = [v for v in rnd.get("verifier_on_ref", []) if not v["ok"]]
+            if status != "pass" and not failed_ref:
+                # 재생성이 끝나지 않았는데 그 테스트가 원본에서 통과하면 SPEC이 아니라 재생성 쪽 문제
+                self.review("R6_REGEN_FAILED", f"SPEC으로 다시 만들기가 끝나지 않음 ({status}). {regen_dir}/report.json 참고")
+                return False
             if res["status"] == "equal" and not failed_ref:
                 return True
             if res["status"] == "error":
                 self.review("R6_ERROR", f"R6 비교 시뮬레이션 실패: {res.get('error', '')[:300]}")
                 return False
+            rnd["handled"] = True
+            # 재생성이 실패했어도, SPEC만 보고 쓴 Verifier 테스트가 원본에서 실패하면 SPEC이 원본과 어긋난 것이므로 판정으로 넘긴다
             judge = r6.judge_input(res) if res["status"] == "differ" else \
-                {"verifier_failures_on_original": failed_ref, "note": "재생성 실행의 Verifier 테스트가 원본 RTL에서 실패함"}
+                {"verifier_failures_on_original": failed_ref, "regen_status": status,
+                 "note": "SPEC만 보고 쓴 Verifier 테스트가 원본 RTL(기준)에서 실패함. 테스트의 기댓값이 SPEC 해석에서 나왔으므로, "
+                         "SPEC이 원본 동작을 정하지 않았거나 원본과 다르게 정했는지 본다"}
             (self.dir / "r6" / f"judge_{k}.json").write_text(json.dumps(judge, ensure_ascii=False, indent=1), encoding="utf-8")
+            rnd["judge_pending"] = True
+            self.save()
             v = self.agent("arbiter", arbiter.make_r6_task(f"r6/judge_{k}", spec, judge), arbiter.check_r6(spec), f"r6/judge_{k}")
             verdict = json.loads(Path(v.workdir, arbiter.OUT).read_text(encoding="utf-8")) if v.ok else None
             rnd["verdict"] = verdict
@@ -345,7 +374,11 @@ class PortRun:
                 self.state["status"] = "paused"
                 return self.status()
             if self.state["stage"] == "r6":
-                if not self.step_r6():
+                done = self.step_r6()
+                if done is None:
+                    self.state["status"] = "waiting_regen"
+                    return self.status()
+                if not done:
                     self.state["status"] = "failed"
                     self.step_package()
                     return self.status()

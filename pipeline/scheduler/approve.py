@@ -72,15 +72,23 @@ def decide(run_dir: Path, ids: list[str], decision: str, by: str, note: str = ""
     return new
 
 
+def _reqs(p: dict) -> str:
+    """요구사항 ID (Repair 충돌은 Repair마다 목록이라 펼친다)."""
+    out = []
+    for r in p.get("reqs") or []:
+        out += r if isinstance(r, list) else [r]
+    return ",".join(dict.fromkeys(out))
+
+
 def _summary(p: dict) -> str:
     ff = p.get("first_failure") or {}
     if p["kind"] == "repair_conflict":
         left = "  남은 Repair " + ", ".join(f"{m} {n}" for m, n in p["remaining"].items()) if p.get("remaining") else ""
-        return (f"{p['id']}  Repair 충돌  {p['group']} 후보 {p['c']}  {','.join(p.get('reqs') or [])}  {ff.get('reason', '')}{left}\n"
+        return (f"{p['id']}  Repair 충돌  {p['group']} 후보 {p['c']}  {_reqs(p)}  {ff.get('reason', '')}{left}\n"
                 + "\n".join(f"    {x['module']}" + (f" → {x['suspects']}" if x.get('suspects') else "") + f": {x['reason'][:160]}" for x in p["claims"]))
     where = ff.get("property") or ff.get("stream") or ff.get("bundle") or ""
     cs = ",".join(str(c) for c in [p["c"]] + [x["c"] for x in p.get("also", [])])   # 같은 실패로 묶인 후보들
-    return (f"{p['id']}  {p['group']} 후보 {cs}  Verifier {p['verifier']}  {','.join(p.get('reqs') or [])}  "
+    return (f"{p['id']}  {p['group']} 후보 {cs}  Verifier {p['verifier']}  {_reqs(p)}  "
             f"{ff.get('check', '')} {where}\n    수정안: {(p.get('proposal') or '')[:200]}")
 
 

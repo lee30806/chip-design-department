@@ -256,7 +256,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("pysim"); p.add_argument("ir"); p.add_argument("--lib"); p.add_argument("--stim")
     p.add_argument("--cycles", type=int, default=20); p.add_argument("--seed", type=int, default=1)
     p = sub.add_parser("porteq"); p.add_argument("ir"); p.add_argument("--lib"); p.add_argument("--ref", required=True)
-    p.add_argument("--seed", type=int, default=1); p.add_argument("--cycles", type=int, default=800)
+    p.add_argument("--seed", type=int, default=1); p.add_argument("--cycles", type=int, default=1500)   # R4와 같은 길이
     p = sub.add_parser("spec_gate"); p.add_argument("spec"); p.add_argument("--tables", required=True); p.add_argument("--top", required=True)
     a = ap.parse_args(argv)
     res = globals()[f"cmd_{a.cmd}"](a)
