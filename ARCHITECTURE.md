@@ -52,7 +52,7 @@ flowchart TB
 
   subgraph EXEC[실행 계층 · RTL 생성 파이프라인]
     SCH[결정론적 스케줄러]
-    AG[Architect · Author · Verifier · Repair · Arbiter<br/>headless coding agent]
+    AG[Architect · Author · Verifier · Repair · Arbiter<br/>이식: Porter · SpecWriter<br/>headless coding agent]
     TL[Validator · Emitter · Verify · Classifier]
   end
 
@@ -170,6 +170,56 @@ flowchart LR
 
 쓰기 범위는 프롬프트가 아니라 patch 적용 툴, Validator V11(동결 해시 비교), 실행 전후의 작업 디렉터리 비교가 강제합니다.
 
+### 4.5 원본 RTL에서 IR과 SPEC 만들기 (이식 흐름)
+
+검증된 원본 RTL이 있는 블록은 이 흐름으로 IR과 SPEC을 함께 만듭니다. 결과는 golden 블록과 같은 묶음(`ir/*.ir.json`, `spec.md`, 생성 하니스, `golden.json`)입니다. 이 묶음은 일반 파이프라인에 그대로 넣을 수 있습니다. 묶음의 정본은 원본과 모듈 구조가 1:1인 이식 IR입니다. SPEC만으로 다시 만든 재생성 IR은 SPEC 충실도 판정에만 쓰고, 묶음에는 리포트로만 남깁니다. 세부는 [IMPLEMENTATION.md P11](./IMPLEMENTATION.md)을 따릅니다.
+
+```mermaid
+flowchart LR
+  SRC[원본 RTL<br/>.v · .sv · 헤더 · define] --> R1[R1 구조 추출<br/>pyslang elaborate]
+  R1 --> R2{R2 L1 확정<br/>사용자 답}
+  R2 --> R3[[R3 Porter<br/>모듈별 1:1 이식]]
+  R3 --> R4[R4 사이클 등가<br/>원본 대 방출 RTL]
+  R4 -- 차이 --> R3
+  R4 -- 모든 모듈 같음 --> R5[[R5 SpecWriter<br/>2~4절은 L1에서]]
+  R5 --> R6[R6 SPEC만으로 재생성<br/>일반 파이프라인]
+  R6 --> CMP[원본과 트랜잭션 비교<br/>Verifier 테스트를 원본에]
+  CMP -- 차이 --> JUD[[Arbiter 판정]]
+  JUD -- spec_gap --> REV[[SpecWriter 고치기<br/>refsim · 실패 테스트 자극]]
+  REV --> R6
+  CMP -- 같음 --> PKG[묶음<br/>이식 IR · SPEC · 하니스]
+  JUD -- regen_defect --> PKG
+```
+
+| 단계 | 하는 일 | 방식 | 통과 조건 |
+| --- | --- | --- | --- |
+| R1 구조 추출 | 고정한 파라미터와 define으로 elaborate해 모듈 트리, 포트, 파라미터, 도메인 후보, 번들 후보를 뽑고, 모듈마다 L1과 L0 초안을 냅니다. Verilog와 SV를 섞어 받고, 헤더와 매크로, `generate`, Block Top 경계의 inout(`tristate`)을 처리합니다 | 결정론 | 초안 L1이 V1~V3 통과. 표현할 수 없는 구문은 거부 목록으로 |
+| R2 L1 확정 | 도구로 알 수 없는 것(주파수, 도메인 관계, 프로토콜 태그)과 R1 검토 항목을 사용자에게 묻고 멈춥니다. 에이전트는 추정하지 않습니다 | 사람 | 모든 항목에 답, 반영한 L1이 V1~V3 통과 |
+| R3 동작 이식 | Porter가 원본 모듈의 동작을 L2/L3으로 옮깁니다. 모듈 이름, 계층, 인스턴스, 포트는 원본과 1:1이고 Architect를 거치지 않습니다 | 에이전트 | Validator 통과, L1과 트리가 R2 결과와 같음 |
+| R4 이식 등가 | 아래 모듈부터 원본 RTL과 방출 RTL에 같은 자극을 넣고 모든 출력을 사이클 단위로 비교합니다. 차이는 Porter 고치기 과제로 돌아갑니다 | 결정론 + 에이전트 | 모든 모듈 `equal` (리셋 직후만 다르면 `reset_only`, 검토 항목) |
+| R5 SPEC 작성 | 2~4절은 L1에서 만들고, 나머지 절은 SpecWriter가 원본 RTL과 이식 IR을 읽고 씁니다. 원본을 읽어 짐작한 동작은 `refsim`으로 원본에서 확인한 값으로 씁니다 | 결정론 + 에이전트 | SPEC 검사 게이트, SPEC에서 만든 L1 = IR의 L1 |
+| R6 SPEC 충실도 | SPEC만 입력으로 일반 파이프라인을 돌려 재생성하고, 재생성 RTL과 원본 RTL을 트랜잭션 단위로 비교합니다. 재생성 실행의 Verifier 테스트도 원본에 돌립니다 | 일반 파이프라인 + 결정론 + 에이전트 | 트랜잭션 차분 없음, Verifier 테스트가 원본에서 통과 |
+
+**R6 규칙.**
+- **재생성 분할 상한.** 재생성 실행의 Architect는 원본 모듈 수(top 빼고, 적어도 1)를 넘게 나누지 못합니다. 상한은 실행 상태에 남아 재구성과 이어 가기에도 같게 적용됩니다. 작은 블록을 둘로 나눌 때마다 모듈 사이 계약이 어긋났기 때문입니다.
+- **판정.** 비교가 다르거나, 재생성이 실패했어도 그 Verifier 테스트가 원본에서 실패하면 Arbiter가 판정합니다. 판정은 둘 중 하나입니다.
+  - `spec_gap`: SPEC이 그 동작을 정하지 않았거나 두 가지로 읽힙니다. SPEC을 고칩니다.
+  - `regen_defect`: SPEC이 분명히 정했는데 재생성 설계가 어겼습니다. 일반 파이프라인 결함으로 리포트하고 끝냅니다.
+- **SPEC 고치기.** SpecWriter는 이전 SPEC, 판정, 원본에서 실패한 테스트의 자극을 받습니다. 자극은 하니스가 테스트마다 기록한 것으로, `refsim` 형식(받힌 입력, 사이클별 valid/ready/리셋)입니다. SpecWriter는 그 자극을 원본에 다시 넣어, 테스트 기대와 처음 어긋나는 출력이 어느 입력에서 나왔는지 찾은 뒤 문장을 고칩니다. 상한은 `spec_revise`이고, 남은 차이는 사람이 검토합니다.
+- **멈춤과 이어 가기.** 재생성 실행이 사람 결정(기댓값 수정, Repair 충돌)이나 한도로 멈추면 실패로 보지 않습니다. `waiting_regen`으로 두었다가 `resume`에서 같은 실행을 이어 갑니다. 판정 뒤 SPEC을 고치기 전에 멈춘 실행은 상한을 올려 이어 가면 SPEC 고치기부터 합니다.
+
+**이식 흐름의 에이전트 경계.**
+
+| 에이전트 | 볼 수 있는 것 | 쓸 수 있는 것 | 도구 |
+| --- | --- | --- | --- |
+| Porter | 확정한 L1 초안, 원본 모듈과 헤더, 이식한 자식 IR, R4 차이(고치기 때) | 자기 모듈 IR의 L2, L3 | `porteq` (원본과 사이클 비교) |
+| SpecWriter | 원본 RTL, 이식 IR, L1에서 만든 2~4절, 추출 메모, 원본 시뮬레이션 묶음. 고치기 때는 이전 SPEC, 판정, 실패한 테스트의 자극 | SPEC | `refsim` (원본에 정한 자극을 넣고 출력 트랜잭션과 사이클을 봄), `spec_gate` |
+| Arbiter (R6 판정) | SPEC, 비교 결과 또는 원본에서 실패한 Verifier 테스트 | 판정과 근거 요구사항 ID | 없음 |
+
+SpecWriter는 재생성 IR을 보지 않습니다. 판정 근거로 줄인 자극과 그때의 양쪽 출력만 받습니다. 재생성 실행은 SPEC만 보므로 원본 RTL을 볼 수 없습니다.
+
+실제 에이전트(Claude Code, Haiku)로 `axis_cobs_decode`를 끝까지 돌렸습니다. SPEC을 다섯 번 고친 끝에 재생성 RTL이 원본과 같아졌습니다 (출력 644개, 지연 차이 0, 에이전트 실행 193회). 결정적이었던 것은 실패한 테스트의 자극을 SpecWriter가 원본에 다시 넣어 보게 한 것입니다.
+
 ## 5. IR
 
 IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다음 네 계층으로 이루어집니다.
@@ -181,11 +231,11 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 | L2 | `types`, `signals` | enum/struct 타입, `reg`/`wire` 신호 |
 | L3 | `blocks` | `comb`, `seq`, `fsm`, `cdc_sync`, `memory` |
 
-- **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
+- **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀, 3상태 구동(`tristate`)만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
 - **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결, 동기화 셀, 신호, 타입입니다.
 - **Validator.** V1 스키마부터 V11 동결까지 11단계로 검사합니다. 사용하는 수단은 JSON Schema, 심볼 테이블, pyslang AST, reads/writes 그래프입니다.
 - **조각 언어.** 모듈의 `lang`이 `sv`(기본)면 조각은 SystemVerilog, `py`면 Python 문법의 사이클 단위 기술입니다. `py` 모듈은 읽을 때 SV 조각으로 낮추므로 Validator, Emitter, 하니스는 같은 경로를 탑니다. 설계 모델(`py` 조각)과 참조 모델(Verifier)은 서로 다른 에이전트가 따로 씁니다. 같은 모델을 RTL의 원천과 기댓값에 함께 쓰지 않습니다 (검증이 순환하므로). 설계 모델 대 RTL 비교는 번역기 검사로만 쓰고, 판정은 늘 RTL 시뮬레이션으로 합니다.
-- **v1 제외.** generate, function/task, inout/tristate, 의도적 래치, 다중 비트 CDC, SVA는 아직 표현하지 못합니다.
+- **v1 제외.** generate, function/task, 하위 모듈 사이의 3상태 버스, 의도적 래치, 다중 비트 CDC, SVA는 아직 표현하지 못합니다. inout은 `top`/`block_top` 경계에서만 `tristate` 블록으로 표현하고, 하위 모듈은 `_o`, `_oe`, `_i` 포트로 나눕니다. 원본 RTL의 generate와 function은 이식할 때 고정한 파라미터로 펼쳐 옮깁니다 (4.5).
 
 ## 6. 계층 간 인터페이스와 환류
 
