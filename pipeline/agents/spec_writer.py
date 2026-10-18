@@ -77,10 +77,19 @@ REVISE = """\
 더하는 문장이 이 사례 하나가 아니라 원본의 규칙과 맞는지 확인한다.
 """
 
+REVISE_STIMS = """
+`r6_stim/`에는 SPEC만 보고 쓴 Verifier 테스트 중 원본에서 실패한 것의 자극이 `refsim` 형식 그대로 있다 (파일 이름은
+`v<Verifier 번호>_<테스트 이름>.json`, 실패 메시지는 `r6.json`의 `verifier_failures_on_original`). `reset`은 도메인별
+사이클마다 리셋(1이면 걸림)이다. 고치기 전에 각 파일을 `refsim ... --stim r6_stim/<파일>`로 돌려 원본 출력을 보고,
+실패 메시지의 기대와 처음 어긋나는 출력이 어떤 입력 바이트와 사이클에서 나왔는지 찾는다. 그 입력에서 짧은 자극을
+`.refsim/`에 만들어 원본 규칙을 확인한 뒤, 기대가 그 출력이 되도록 SPEC 문장을 하나로 정한다.
+"""
+
 
 def make_task(name: str, top: str, tables: str, sources: dict[str, Path], irs: dict[str, dict], notes: dict,
-              prev_spec: Path | None = None, r6: dict | None = None, ref_dir: Path | None = None) -> Task:
-    """ref_dir: `porter.make_ref_dir`로 만든 원본 묶음 (`refsim`이 읽음)."""
+              prev_spec: Path | None = None, r6: dict | None = None, ref_dir: Path | None = None,
+              stims: dict[str, Path] | None = None) -> Task:
+    """ref_dir: `porter.make_ref_dir`로 만든 원본 묶음 (`refsim`이 읽음). stims: 원본에서 실패한 Verifier 테스트의 자극."""
     inputs: dict = {"template.md": TEMPLATE, "tables.md": tables, "notes.json": json.dumps(notes, ensure_ascii=False, indent=1)}
     if ref_dir is not None:
         inputs["ref"] = ref_dir
@@ -93,6 +102,10 @@ def make_task(name: str, top: str, tables: str, sources: dict[str, Path], irs: d
         inputs["spec_prev.md"] = prev_spec
         inputs["r6.json"] = json.dumps(r6 or {}, ensure_ascii=False, indent=1)
         text += REVISE.format(out=OUT)
+        if stims:
+            for n, p in stims.items():
+                inputs[f"r6_stim/{n}"] = p
+            text += REVISE_STIMS
     return Task("spec_writer", name, text, inputs=inputs, outputs=[OUT], write_scope=["out/", ".refsim/"])
 
 

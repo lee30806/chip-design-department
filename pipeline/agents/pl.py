@@ -236,8 +236,8 @@ def cmd_porteq(a) -> dict:
 
 
 def refsim_plan(h: dict, stim: dict) -> dict:
-    """refsim 자극(입력 트랜잭션 목록, 선택으로 사이클별 valid/ready/단독 입력)을 diffsim 자극 계획으로.
-    처음 INIT_RESET 사이클은 리셋, 그 뒤로 리셋 없음. 사이클 번호는 리셋이 풀린 뒤부터 0."""
+    """refsim 자극(입력 트랜잭션 목록, 선택으로 사이클별 valid/ready/단독 입력/도메인별 리셋)을 diffsim 자극 계획으로.
+    처음 INIT_RESET 사이클은 리셋, 그 뒤로는 `reset`에 준 사이클(1이면 리셋을 검)만 리셋. 사이클 번호는 리셋이 풀린 뒤부터 0."""
     from pipeline.tb.diffsim import INIT_RESET
 
     ins = [b for b in h["bundles"] if not b["dut_drives"]]
@@ -253,10 +253,10 @@ def refsim_plan(h: dict, stim: dict) -> dict:
         return int(t.get(f, t.get(f.removeprefix(b["name"] + "_"), 0)))
     queues = {b["name"]: [{f: field(t, b, f) for f in b["data"]} for t in stim.get("inputs", {}).get(b["name"], [])]
               for b in ins}
-    plan = {"probe_at": None, "total": total, "drain": 0, "queues": queues, "probes": {}, "domains": {}}
+    plan = {"probe_at": None, "total": total, "drain": 0, "queues": queues, "probes": {}, "domains": {}, "valid_in_reset": True}
     for d in sorted(h["clocks"]):
         plan["domains"][d] = {
-            "reset": [1] * INIT_RESET + [0] * cycles,
+            "reset": [1] * INIT_RESET + series(stim.get("reset", {}).get(d), 0)[INIT_RESET:],
             "ready": {b["name"]: series(stim.get("ready", {}).get(b["name"]), 1) for b in outs if b["domain"] == d},
             "single": {x: series(stim.get("single", {}).get(x), 0) for x in h["inputs"] if h["port_domains"].get(x) == d},
             "valid": {b["name"]: series(stim.get("valid", {}).get(b["name"]), 1) for b in ins if b["domain"] == d}}
@@ -277,7 +277,8 @@ def cmd_refsim(a) -> dict:
         return {"ok": False, "errors": [f"입력을 읽을 수 없음: {e}"]}
     h = harness_config(Module(pad_view(top_ir)))
     known = {b["name"] for b in h["bundles"]} | set(h["inputs"])
-    unknown = [n for k in ("inputs", "valid", "ready", "single") for n in stim.get(k, {}) if n not in known]
+    unknown = [n for k in ("inputs", "valid", "ready", "single") for n in stim.get(k, {}) if n not in known] \
+        + [d for d in stim.get("reset", {}) if d not in h["resets"]]
     if unknown:
         return {"ok": False, "errors": [f"모르는 번들이나 포트: {', '.join(unknown)}"],
                 "bundles": {b["name"]: {"in": not b["dut_drives"], "fields": b["data"]} for b in h["bundles"]}}

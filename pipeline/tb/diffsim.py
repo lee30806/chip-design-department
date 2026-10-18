@@ -227,8 +227,8 @@ if cocotb is not None:
                     n = b["name"]
                     if probe_at is not None and c == probe_at:
                         q[n], idx[n], cur[n] = plan["probes"][n], 0, None
-                    if p["reset"][c]:
-                        cur[n] = None
+                    if p["reset"][c] and not (plan.get("valid_in_reset") and c >= INIT_RESET):
+                        cur[n] = None   # refsim은 테스트를 되풀이하므로 처음 리셋 뒤의 리셋 사이클에도 기록된 valid를 낸다
                     elif cur[n] is None and p["valid"][n][c] and idx[n] < len(q[n]):
                         cur[n] = q[n][idx[n]]
                         idx[n] += 1

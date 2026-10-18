@@ -119,9 +119,11 @@ def load_regen(run_dir: Path) -> dict[str, dict]:
 
 
 def verifier_on_ref(tbs: list[str], top_ir: dict, r1: dict, work: Path) -> list[dict]:
-    """재생성 실행에서 Verifier가 SPEC만 보고 쓴 테스트를 원본 RTL에 돌린다."""
+    """재생성 실행에서 Verifier가 SPEC만 보고 쓴 테스트를 원본 RTL에 돌린다. 실패한 테스트마다 하니스가 남긴 자극
+    (`pl.py refsim` 형식)을 `work/stim/`에 두고 `stim`에 그 경로를 적는다 (SpecWriter가 원본에 다시 넣어 봄)."""
     from pipeline.ir.model import Module
     from pipeline.tb.gen import harness_source
+    from pipeline.tb.lib import _safe
     from pipeline.verify.run import sim
 
     work = Path(work)
@@ -132,6 +134,13 @@ def verifier_on_ref(tbs: list[str], top_ir: dict, r1: dict, work: Path) -> list[
     out = []
     for k, tb in enumerate(tbs):
         r = sim(files, top, Path(tb).stem, Path(tb).parent, work / f"sim_v{k}", build_args=[*args, "-Wno-fatal"], harness_dir=hdir)
-        out.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
-                                                              for f in r.findings][:10]})
+        findings = [{"test": f.test, "rule": f.rule, "message": f.message[:300]} for f in r.findings][:10]
+        for f in findings:
+            res = next((work / f"sim_v{k}" / "tb_out").glob(f"*/{_safe(f['test'])}.result.json"), None)
+            stim = json.loads(res.read_text(encoding="utf-8")).get("stimulus") if res else None
+            if stim:
+                (work / "stim").mkdir(exist_ok=True)
+                f["stim"] = str(work / "stim" / f"v{k}_{_safe(f['test'])}.json")
+                Path(f["stim"]).write_text(json.dumps(stim), encoding="utf-8")
+        out.append({"verifier": k, "ok": r.ok, "findings": findings})
     return out

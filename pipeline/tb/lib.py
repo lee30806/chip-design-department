@@ -269,6 +269,9 @@ class Harness:
         self.protocol_reqs: dict[str, str] = {}
         self.trace: list[dict] = []
         self._trace_names = self._load_trace_names()
+        # 이 테스트가 넣은 자극을 `pl.py refsim` 형식으로 남긴다 (원본에서 실패한 테스트를 SpecWriter가 원본에 다시 넣어 봄)
+        self.stim: dict = {"inputs": {}, "valid": {}, "ready": {}, "single": {}, "reset": {}}
+        self._waiting: dict[str, list[int]] = {}   # 입력 번들별, 마지막 전송 뒤 valid만 1이던 사이클
         ins = [b for b in cfg["bundles"] if not b["dut_drives"]]
         outs = [b for b in cfg["bundles"] if b["dut_drives"]]
         for b in ins:
@@ -377,7 +380,7 @@ class Harness:
             reqs = req_ids(self.sb.reqs, *[req for _, _, _, req in self.properties if req and self.prop_evals],
                            *[r for c in self.checkers if (r := self.protocol_reqs.get(c.name)) and c.handshakes])
             rec = {"test": self.name, "scoreboard": self.sb.first, "matched": self.sb.matched, "reqs": reqs,
-                   "outputs": self.sb.seen,
+                   "outputs": self.sb.seen, "stimulus": {**self.stim, "cycles": max(self.cycle.values(), default=0)},
                    "protocol": [v for c in self.checkers for v in c.violations], "properties": self.prop_fail}
             name = _safe(self.name)
             (Path(out) / f"{name}.result.json").write_text(json.dumps(rec, indent=1))
@@ -386,6 +389,7 @@ class Harness:
 
     # -- 내부 --
     def _on_input(self, stream: str, txn: dict, cycle: int, domain: str) -> None:
+        self.stim["inputs"].setdefault(stream, []).append(txn)
         if self.model is None:
             return
         for e in self.model.on_input(stream, txn) or []:
@@ -416,12 +420,14 @@ class Harness:
                 d.on_sample()
             # 테스트가 도중에 리셋을 걸면 그 도메인의 입력 큐를 비운다. 리셋 뒤에도 남은 전송이 들어가면
             # 테스트가 리셋 전 프레임의 나머지를 리셋 뒤 출력으로 오해한다 (P8a async_fifo sc02, 두 번)
-            if any(_int(getattr(self.dut, p)) == a for p, a in [*([rst] if rst else []), *extra]):
+            flushed = any(_int(getattr(self.dut, p)) == a for p, a in [*([rst] if rst else []), *extra])
+            if flushed:
                 for d in drivers:
                     if hasattr(d, "flush"):
                         d.flush()
             for s in self.samplers[domain]:
                 s.sample(c)
+            self._record_stim(domain, rst, flushed)
             if self.properties:
                 sample = {n: _int(getattr(self.dut, n)) for n in ports}
                 for name, dom, fn, req in self.properties:
@@ -434,6 +440,34 @@ class Harness:
                 self.trace.append({"domain": domain, "cycle": c,
                                    "values": {n: _int(_handle(self.dut, n)) for n in traced}})
             self.cycle[domain] = c + 1
+
+    def _record_stim(self, domain: str, rst, flushed: bool) -> None:
+        """사이클마다 입력 번들의 valid, 출력 번들의 ready, 단독 입력, 리셋(걸림 1)을 남긴다. 리셋으로 버려져 받히지 않은
+        전송의 valid는 0으로 고친다 (refsim은 받힌 전송만 차례로 넣으므로, 남겨 두면 다음 전송이 앞당겨 들어감)."""
+        clocks = {port for port, _ in self.cfg["clocks"].values()}
+        resets = {port for port, _ in self.cfg["resets"].values()}
+        for b in self.cfg["bundles"]:
+            if b["domain"] != domain:
+                continue
+            if b["dut_drives"]:
+                self.stim["ready"].setdefault(b["name"], []).append(_int(getattr(self.dut, b["ready"])))
+                continue
+            v, r = _int(getattr(self.dut, b["valid"])), _int(getattr(self.dut, b["ready"]))
+            vs, waiting = self.stim["valid"].setdefault(b["name"], []), self._waiting.setdefault(b["name"], [])
+            vs.append(v)
+            if v and r:
+                waiting.clear()
+            elif v:
+                waiting.append(len(vs) - 1)
+            if flushed:
+                for i in waiting:
+                    vs[i] = 0
+                waiting.clear()
+        for x in self.cfg["inputs"]:
+            if self.cfg["port_domains"].get(x) == domain and x not in clocks and x not in resets:
+                self.stim["single"].setdefault(x, []).append(_int(getattr(self.dut, x)))
+        if rst:
+            self.stim["reset"].setdefault(domain, []).append(int(_int(getattr(self.dut, rst[0])) == rst[1]))
 
     def _domain_of(self, bundle: str) -> str:
         return next(b["domain"] for b in self.cfg["bundles"] if b["name"] == bundle)

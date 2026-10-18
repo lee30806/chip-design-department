@@ -141,6 +141,61 @@ def test_refsim_tool(tmp_path):
     assert not out["ok"] and "nope" in out["errors"][0] and "s_axis" in out["bundles"]
 
 
+VTB_RESET = """import cocotb
+from cocotb.triggers import ClockCycles, FallingEdge
+from axis_cobs_decode_harness import make
+
+
+class NoOutput:   # SPEC을 '출력 없음'으로 읽은 Verifier: 원본은 출력을 내므로 실패
+    def on_input(self, stream, txn):
+        return []
+
+
+@cocotb.test()
+async def mid_reset(dut):
+    h = make(dut, NoOutput(), name="mid_reset")
+    h.set_ready("m_axis", [1, 0, 1])
+    await h.start()
+    for d in (3, 17, 34):
+        h.send("s_axis", {"s_axis_tdata": d, "s_axis_tlast": 0, "s_axis_tuser": 0})
+    await h.drain()
+    h.send("s_axis", {"s_axis_tdata": 90, "s_axis_tlast": 0, "s_axis_tuser": 0})
+    await FallingEdge(dut.clk)
+    dut.rst.value = 1
+    await ClockCycles(dut.clk, 2)
+    dut.rst.value = 0
+    for d, last in ((2, 0), (0, 0), (2, 0), (51, 0), (0, 1)):
+        h.send("s_axis", {"s_axis_tdata": d, "s_axis_tlast": last, "s_axis_tuser": 0}, idle=1)
+    await h.drain()
+    h.finish()
+"""
+
+
+def test_verifier_on_ref_stimulus_replays_with_refsim(tmp_path):
+    """원본에서 실패한 Verifier 테스트의 자극(하니스 기록)을 refsim에 넣으면 원본이 그 테스트에서 낸 출력이 그대로 나온다.
+    도중 리셋과 리셋 사이클의 핸드셰이크, 출력 backpressure 포함 (R6 5회차에서 SPEC이 같은 오류를 세 번 놓친 것)."""
+    blk = "axis_cobs_decode"
+    r1 = _golden_r1(tmp_path / "r1", blk)
+    top = json.loads((G / blk / "ir" / f"{blk}.ir.json").read_text())
+    tb = tmp_path / "vtb" / "test_mid_reset.py"
+    tb.parent.mkdir()
+    tb.write_text(VTB_RESET)
+    res = r6.verifier_on_ref([str(tb)], top, r1, tmp_path / "vref")
+    assert not res[0]["ok"] and res[0]["findings"][0]["test"] == "mid_reset"
+    stim_path = res[0]["findings"][0]["stim"]
+    stim = json.loads(open(stim_path).read())
+    assert 1 in stim["reset"]["sys"] and 0 in stim["ready"]["m_axis"]
+    seen = json.loads(next((tmp_path / "vref" / "sim_v0" / "tb_out").glob("*/mid_reset.result.json")).read_text())["outputs"]["m_axis"]
+    work = tmp_path / "w"
+    porter.make_ref_dir(r1, work / "ref")
+    (work / "m.ir.json").write_text(json.dumps(top))
+    r = subprocess.run([sys.executable, str(ROOT / "pipeline" / "agents" / "pl.py"), "refsim", "m.ir.json", "--ref", "ref",
+                        "--stim", stim_path], cwd=work, capture_output=True, text=True,
+                       env={"PL_NO_LOG": "1", "PATH": "/usr/bin:/bin:/opt/homebrew/bin"})
+    out = json.loads(r.stdout)
+    assert out["ok"], r.stdout + r.stderr
+    assert [{k: t[k] for k in seen[0]} for t in out["outputs"]["m_axis"]] == seen and len(seen) >= 3
+
 def test_port_runner_flow_with_fake_agents(tmp_path, monkeypatch):
     """start → R2 대기 → answer → resume: Porter(첫 시도 틀림 → R4 차이 → 고치기) → SpecWriter → R6(1차 차이 → 판정 spec_gap
     → SPEC 고치기 → 2차 같음) → 묶음. R6 첫 재생성은 사람 결정을 기다리다 멈추고(waiting_regen), resume에서 이어 간다."""
@@ -221,6 +276,36 @@ def test_port_runner_regen_failed_but_verifier_fails_on_original(tmp_path):
     judge = json.loads((run_dir / "r6" / "judge_0.json").read_text())
     assert judge["regen_status"] == "failed" and judge["verifier_failures_on_original"]
     assert len(calls) == 2 and "FAKE-99" in calls[1]
+
+
+def test_port_runner_spec_gap_at_limit_then_limit_raised(tmp_path):
+    """spec_gap 판정이 고치기 상한에 걸려 멈춘 뒤 상한을 올려 resume하면, 다시 만들기 전에 그 판정으로 SPEC부터 고친다."""
+    blk = "axis_cobs_decode"
+    cfg = AgentConfig("fake", "Test", "fake", [sys.executable, str(ROOT / "tests" / "fake_port_agent.py")], "m",
+                      env={"FAKE_PORTED": str(G / blk / "ir"), "FAKE_SPEC_BASE": str(G / blk / "block_spec.md")}, timeout_s=120)
+    good = json.loads((G / blk / "ir" / f"{blk}.ir.json").read_text())
+    bad = json.loads(json.dumps(good).replace("m_axis_tuser <= m_axis_tuser_int;", "m_axis_tuser <= !m_axis_tuser_int;", 1))
+    calls = []
+
+    def regen(spec, regen_dir):
+        calls.append(spec.read_text())
+        return "pass", {blk: bad if len(calls) == 1 else good}, [], 0
+
+    run_dir = tmp_path / "run"
+    st = PortRun(run_dir).start(Inputs([G / blk / "upstream" / "rtl" / f"{blk}.v"], blk))
+    PortRun(run_dir).answer({q["id"]: ("100" if q["id"] == "freq.sys" else "ok" if q["id"].startswith("review") else "valid_ready")
+                             for q in st["questions"]})
+    kw = dict(isolate=False, regen_fn=regen, r4_kw=FAST, r6_kw={"cycles": 800, "seeds": (("steady", 1),)})
+    lim = {"agent_retries": 0, "porter_fix": 1}
+    pr = PortRun(run_dir, Roles({"porter": cfg, "spec_writer": cfg, "arbiter": cfg}, {}, {**lim, "spec_revise": 0}), **kw)
+    st = pr.resume()
+    assert st["status"] == "failed" and any(r["code"] == "R6_SPEC_GAP" for r in st["review"]), st
+    pr = PortRun(run_dir, Roles({"porter": cfg, "spec_writer": cfg, "arbiter": cfg}, {}, {**lim, "spec_revise": 1}), **kw)
+    st = pr.resume()
+    assert st["status"] == "pass", st
+    rounds = pr.state["r6"]["rounds"]
+    assert [(r["round"], r["spec_version"], r["compare"]) for r in rounds] == [(0, 0, "differ"), (1, 1, "equal")]
+    assert len(calls) == 2 and "FAKE-99" in calls[1] and "FAKE-99" not in calls[0]
 
 
 def test_pipeline_inout_block_top_harness_and_diffsim(tmp_path):

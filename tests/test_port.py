@@ -274,3 +274,15 @@ def test_simcopy_moves_arrayed_defparam(tmp_path):
     text = Path(out[str((FX / "mixed" / "mix_top.sv").resolve())]).read_text()
     assert "defparam g_acc[1]" not in text and "defparam u_extra.INIT = 5;" in text
     assert "acc #(.INIT(((i == 0) ? 0 : 6)))" in text
+
+
+def test_spec_writer_revise_gets_failed_test_stimuli(tmp_path):
+    """R6 고치기: 원본에서 실패한 Verifier 테스트의 자극을 `r6_stim/`으로 받고, refsim으로 다시 넣어 보라는 지시를 받는다."""
+    prev = tmp_path / "spec_v0.md"
+    prev.write_text("# m SPEC\n")
+    st = tmp_path / "v0_t.json"
+    st.write_text("{}")
+    t = spec_writer.make_task("spec_writer/v1", "m", "", {}, {}, {}, prev_spec=prev, r6={}, stims={"v0_t.json": st})
+    assert t.inputs["r6_stim/v0_t.json"] == st and "r6_stim/" in t.text
+    t = spec_writer.make_task("spec_writer/v1", "m", "", {}, {}, {}, prev_spec=prev, r6={})
+    assert not any(k.startswith("r6_stim/") for k in t.inputs) and "r6_stim/" not in t.text

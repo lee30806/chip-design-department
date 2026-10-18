@@ -249,6 +249,14 @@ class PortRun:
                 rounds.pop()
             spec = self.dir / "spec.md"
             last = rounds[-1] if rounds else None
+            if last and (last.get("verdict") or {}).get("verdict") == "spec_gap" \
+                    and last.get("spec_version") == self.state.get("spec_version", 0):
+                # 앞 실행이 spec_gap 판정 뒤 SPEC을 고치기 전에 멈춤 (고치기 상한, SpecWriter 실패): 다시 만들지 않고 고치기부터
+                k = last["round"]
+                judge = json.loads((self.dir / "r6" / f"judge_{k}.json").read_text(encoding="utf-8"))
+                if not self._revise_spec(last, judge, last["verdict"], limit):
+                    return False
+                continue
             if last and ((last["regen_status"] != "pass" and not last.get("handled"))
                          or (last.get("judge_pending") and not last.get("verdict"))):
                 # 앞 실행에서 재생성 뒤 판정 전에 멈춤 (실패, 예산, 한도): 재생성을 다시 돌리지 않고 그 결과로 이어 감
@@ -306,22 +314,35 @@ class PortRun:
             if verdict["verdict"] == "regen_defect":
                 self.review("R6_REGEN_DEFECT", f"SPEC은 원본 동작을 정했는데 재생성 설계가 어김 ({verdict.get('reqs')}): {verdict['reason']}")
                 return True
-            if k >= limit:
-                self.review("R6_SPEC_GAP", f"SPEC 고치기 {limit}회 뒤에도 차이가 남음: {verdict['reason']}")
+            if not self._revise_spec(rnd, judge, verdict, limit):
                 return False
-            prev = self.dir / f"spec_v{self.state.get('spec_version', 0)}.md"
-            task = spec_writer.make_task(f"spec_writer/v{k + 1}", r1["top"], spec_tables.tables_md(top),
-                                         {f"{n}.sv": self.dir / "r1" / "source" / f"{n}.sv" for n in r1["order"]}, ported,
-                                         self._spec_notes(r1), prev_spec=prev, r6={**judge, "verdict": verdict},
-                                         ref_dir=self.ref_dir(r1))
-            res2 = self.agent("spec_writer", task, spec_writer.check(top, prev.read_text(encoding="utf-8")), f"spec_writer/v{k + 1}")
-            if not res2.ok:
-                self.review("SPEC_WRITER_FAILED", f"R6 SPEC 고치기 실패: {res2.errors[:3]}")
-                return False
-            self.state["spec_version"] = k + 1
-            shutil.copy(res2.outputs[spec_writer.OUT], self.dir / f"spec_v{k + 1}.md")
-            shutil.copy(res2.outputs[spec_writer.OUT], self.dir / "spec.md")
-            self.save()
+
+    def _revise_spec(self, rnd: dict, judge: dict, verdict: dict, limit: int) -> bool:
+        """한 회차의 spec_gap 판정으로 SPEC을 고친다. 상한에 걸리거나 SpecWriter가 실패하면 False.
+        원본에서 실패한 Verifier 테스트의 자극을 SpecWriter에 넘겨, refsim으로 원본에 다시 넣어 보게 한다."""
+        k = rnd["round"]
+        stims = {Path(f["stim"]).name: Path(f["stim"]) for v in rnd.get("verifier_on_ref", []) for f in v["findings"]
+                 if f.get("stim") and Path(f["stim"]).exists()}
+        r1 = self.r1()
+        ported = self.irs("ported")
+        top = ported[r1["top"]]
+        if k >= limit:
+            self.review("R6_SPEC_GAP", f"SPEC 고치기 {limit}회 뒤에도 차이가 남음: {verdict['reason']}")
+            return False
+        prev = self.dir / f"spec_v{self.state.get('spec_version', 0)}.md"
+        task = spec_writer.make_task(f"spec_writer/v{k + 1}", r1["top"], spec_tables.tables_md(top),
+                                     {f"{n}.sv": self.dir / "r1" / "source" / f"{n}.sv" for n in r1["order"]}, ported,
+                                     self._spec_notes(r1), prev_spec=prev, r6={**judge, "verdict": verdict},
+                                     ref_dir=self.ref_dir(r1), stims=stims)
+        res2 = self.agent("spec_writer", task, spec_writer.check(top, prev.read_text(encoding="utf-8")), f"spec_writer/v{k + 1}")
+        if not res2.ok:
+            self.review("SPEC_WRITER_FAILED", f"R6 SPEC 고치기 실패: {res2.errors[:3]}")
+            return False
+        self.state["spec_version"] = k + 1
+        shutil.copy(res2.outputs[spec_writer.OUT], self.dir / f"spec_v{k + 1}.md")
+        shutil.copy(res2.outputs[spec_writer.OUT], self.dir / "spec.md")
+        self.save()
+        return True
 
     def _regen(self, spec: Path, regen_dir: Path):
         """SPEC만 입력으로 일반 파이프라인을 돌린다. Architect의 하위 모듈 수는 원본 모듈 수(top 빼고, 적어도 1)를 넘지 않게 한다:
