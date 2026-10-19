@@ -146,7 +146,7 @@ LLM 없이 스키마의 표현력과 Emitter의 정확성을 확인합니다. �
 - 시뮬레이션: Verilator 5.052와 cocotb 2.1.0으로, 방출한 `pkt_parser`를 SPEC 기반 Python 참조 모델과 사이클 단위로 비교합니다. 정상 패킷, 잡음, 간격, 연속 패킷, 무작위 입력 3종이 통과합니다. 조각에 버그를 하나 넣은 변이는 3종 모두 실패합니다(`tests/sim/`). 시뮬레이션은 저장소의 `.venv`에서 돌립니다.
 
 ```bash
-uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python cocotb pyslang==10.0.0 jsonschema pytest
+uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e ".[dev]"   # 의존성은 pyproject.toml
 .venv/bin/python -m pytest tests            # 시뮬레이션 포함
 ```
 

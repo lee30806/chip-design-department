@@ -37,3 +37,6 @@ experiments/p0/local/pi-judge/*
 !experiments/p0/local/pi-judge/models.json
 experiments/p0/x3_seat/rig/work/*
 !experiments/p0/x3_seat/rig/work/README.txt
+
+# pip install -e . 이 만드는 파일
+*.egg-info/
