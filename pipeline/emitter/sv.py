@@ -11,6 +11,11 @@
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
 - inout 포트는 `inout wire`로 선언하고, `tristate` 블록은 `assign pad = oe ? o : 'z; assign i = pad;`로 낸다
   (open_drain은 `oe ? '0 : 'z`, oe가 pad와 같은 폭이면 비트마다).
+- `functions`는 신호 선언 뒤에 `function automatic`/`task automatic`으로 낸다 (지역 변수 `vars`는 본문 앞에 선언).
+- `assertions`는 모듈 끝에 `` `ifndef SYNTHESIS `` 안에서 `<id>: assert property (@(<도메인 에지> <클럭>) disable iff (<리셋>) (<expr>))`로
+  낸다. 리셋은 `<도메인>_sva_rst` wire로 옮겨 쓴다 (비동기 리셋 포트를 속성에 바로 쓰면 Verilator SYNCASYNCNET 경고).
+  실패하면 시뮬레이션을 멈추지 않고 `[SVA] FAIL module=<모듈> id=<id> kind=<kind>` 줄을 낸다 (Verify가 로그에서 읽어 그 테스트의 실패로 냄).
+  `cover`는 방출만 한다 (Verilator 커버리지 빌드에서 user 항목으로 셈).
 - 노드마다 `// @ir <노드>` 주석을 달고, 소스맵(노드 → 줄 범위)을 함께 낸다.
   `lang: py` 모듈의 조각은 문장마다 `py_line`(조각 안의 Python 줄)을 단 세부 항목을 더 낸다.
   IR 값이 그대로 놓인 줄(조각 본문, 전이 조건, 신호 타입, 리셋값, 파라미터와 포트 선언, 연결로 정해진 핀)은
@@ -211,6 +216,32 @@ def _instance_nets(m: Module, library: dict[str, Module]) -> tuple[dict[tuple[st
     return nets, wires
 
 
+def function_head(f: dict) -> str:
+    """`function automatic <ret> name(input <type> a, ...);` 또는 `task automatic name(...);`."""
+    args = ", ".join(f'{a["dir"]} {a["type"]} {a["name"]}' for a in f["args"])
+    kw = f'function automatic {f["ret"]}' if f["kind"] == "function" else "task automatic"
+    return f'{kw} {f["name"]}({args});'
+
+
+def function_tail(f: dict) -> str:
+    return "endfunction" if f["kind"] == "function" else "endtask"
+
+
+SVA_FAIL = "[SVA] FAIL"   # 실패 보고 줄의 머리. pipeline/verify/run.py가 로그에서 찾는다
+
+
+def assertion_lines(m: Module, a: dict) -> list[str]:
+    """속성 한 줄(과 실패 보고). 클럭 에지와 disable iff는 도메인에서."""
+    from pipeline.validator.checks import sva_reset
+    dom = m.domains[a["domain"]]
+    edge = "posedge" if dom["edge"] == "pos" else "negedge"
+    dis = f" disable iff ({sva_reset(a['domain'])})" if dom.get("reset") and a.get("reset_disable", True) else ""
+    head = f'{a["id"]}: {a["kind"]} property (@({edge} {dom["clock"]}){dis} ({a["expr"]}))'
+    if a["kind"] == "cover":
+        return [f"{head};"]
+    return [f"{head}", f'  else begin $display("{SVA_FAIL} module={m.name} id={a["id"]} kind={a["kind"]} at %m"); $fflush(); end']
+
+
 def storage_or_port_type(m: Module, name: str) -> str:
     st = m.storage().get(name)
     if st is not None:
@@ -266,6 +297,15 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     for type_, name, cid in wires:
         w.line(f"  {_decl(type_, name)}", frag=f"connections/{cid}")
     w.line()
+    for f in m.functions:
+        node = f'functions/{f["name"]}'
+        with w.node(node):
+            w.line(f"  {function_head(f)}", frag=node)
+            for v in f.get("vars", []):
+                w.line(f'    {_decl(v["type"], v["name"])}', frag=node)
+            w.line(_indent(f["body"], 4), frag=f"{node}/body", py=m.py_lines.get(f"{node}/body"))
+            w.line(f"  {function_tail(f)}")
+        w.line()
 
     for d in m.domains.values():
         if (d.get("reset") or {}).get("synchronize"):
@@ -354,6 +394,19 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
             for i, (c, src) in enumerate(conns):
                 w.line("    " + c + ("," if i < len(conns) - 1 else ""), frag=src)
             w.line("  );")
+        w.line()
+    if m.assertions:
+        from pipeline.validator.checks import sva_reset
+        w.line("`ifndef SYNTHESIS")
+        for d in sorted({a["domain"] for a in m.assertions if m.domains[a["domain"]].get("reset")}):
+            r = m.domains[d]["reset"]
+            act = " || ".join([_reset_cond(m.domains[d]), *([_extra_cond(m.domains[d])] if r.get("extra") else [])])
+            w.line(f"  wire {sva_reset(d)} = {act};")
+        for a in m.assertions:
+            node = f'assertions/{a["id"]}'
+            with w.node(node):
+                w.line("\n".join("  " + x for x in assertion_lines(m, a)), frag=node)
+        w.line("`endif")
         w.line()
     w.line("endmodule")
     return Emitted(m.name, "\n".join(w.lines) + "\n", w.map)

@@ -33,7 +33,7 @@ TYPES = {
     "candidate_disagreement": ("후보 간 불일치", "verifier"),
 }
 _L1 = {"module", "role", "params", "domains", "power_domains", "ports", "instances"}
-_SECTIONS = _L1 | {"types", "signals", "blocks", "connections"}
+_SECTIONS = _L1 | {"types", "signals", "blocks", "connections", "functions", "assertions"}
 _USAGE_RULES = {"UNUSEDSIGNAL", "UNUSED", "UNDRIVEN", "UNUSEDPARAM"}
 
 
@@ -85,6 +85,12 @@ def classify_findings(findings, sourcemaps: dict[str, list[dict]], roles: dict[s
     out = []
     for f in findings:
         if f.severity not in ("error", "warning"):
+            continue
+        if f.tool == "sva":
+            # IR의 SVA 실패: assert는 RTL이 설계 의도를 어김 (Repair), assume은 테스트 입력이 가정을 어김 (Verifier)
+            t = "tb_error" if f.rule == "SVA_ASSUME" else "sim_mismatch"
+            out.append(Classified.of(t, Path(f.file).stem if f.file else None, f.message.split(" ", 1)[0],
+                                     f"{f.test}: [SVA] {f.message}" if f.test else f"[SVA] {f.message}", f))
             continue
         if f.tool == "cocotb":
             # T1_INIT: 초기값에 따라 결과가 달라짐. 리셋이 빠진 레지스터 같은 RTL 문제다.

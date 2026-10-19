@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pipeline.ir.model import Module
 from pipeline.ir.pysim import supported
+from pipeline.tb.gen import pad_top
 from pipeline.verify.run import sim
 
 TB_DIR = Path(__file__).resolve().parent
@@ -49,7 +50,8 @@ def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Pa
     cfg.write_text(json.dumps({"top": top, "library": {n: m.source_raw for n, m in library.items()},
                                "cycles": max(1, cycles // len(ph)), "phases": ph, "seed": seed, "reset_cycles": RESET_CYCLES, "reset_prob": RESET_PROB, "out": str(out.resolve())},
                               ensure_ascii=False), encoding="utf-8")
-    r = sim([Path(f) for f in files], top, "pyequiv_tb", TB_DIR, build_dir, env={"PYEQUIV_CFG": str(cfg.resolve())})
+    pads, sim_top = pad_top(library[top].raw, build_dir / "pad")   # inout top은 하니스와 같은 패드 래퍼를 top으로
+    r = sim([*map(Path, files), *pads], sim_top, "pyequiv_tb", TB_DIR, build_dir, env={"PYEQUIV_CFG": str(cfg.resolve())})
     if out.exists():
         return json.loads(out.read_text(encoding="utf-8"))
     return {"ok": False, "error": "; ".join(f.message[:300] for f in r.findings) or "결과 파일이 없음"}

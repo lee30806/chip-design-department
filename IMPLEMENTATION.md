@@ -77,7 +77,7 @@ flowchart LR
   P8 --> P9[P9 · Web UI 2·3차<br/>운영 안정화]
 ```
 
-P2와 P3은 병렬로 진행할 수 있고, P6과 P7도 병렬로 진행할 수 있습니다. P8a(Python 동작 조각)는 P8 뒤에 사용자 결정으로 더한 단계이고, P10(다중 클럭과 리셋)과 P11(원본 RTL에서 IR과 SPEC 만들기)도 그 뒤에 더한 단계입니다.
+P2와 P3은 병렬로 진행할 수 있고, P6과 P7도 병렬로 진행할 수 있습니다. P8a(Python 동작 조각)는 P8 뒤에 사용자 결정으로 더한 단계이고, P10(다중 클럭과 리셋), P11(원본 RTL에서 IR과 SPEC 만들기), P12(v1 제외 항목 확장)도 그 뒤에 더한 단계입니다.
 
 ---
 
@@ -420,7 +420,7 @@ IR 구조는 JSON 그대로 두고, 동작 조각을 SV 대신 Python(사이클 
 - **Web UI 2차.** 대시보드, 환류 관리, 리포트
 - **Web UI 3차.** 조직과 Seat(Seat 상태, 대화, lead에게 작업 지시. 지시 입력은 lead에게만 노출. 대화는 게이트웨이가 OpenRig 데몬 API로 Seat에 전달하고 transcript로 응답을 보여 줌. X6 결과를 따름), 설정(역할별 모델, 후보 개수, 예산, 라이선스 대기열)
 - **SSO 연동**
-- **v1 제외 항목 확장.** 이식 시험과 P8에서 실제로 필요하다고 드러난 것만 추가합니다. 후보는 generate, function/task, inout, 다중 비트 CDC, SVA입니다.
+- **v1 제외 항목 확장.** 이식 시험과 P8에서 실제로 필요하다고 드러난 것만 추가합니다. 후보는 generate, function/task, inout, 다중 비트 CDC, SVA입니다. (inout은 P11, 다중 비트 CDC는 P10, function/task와 SVA는 P12에서 추가)
 - **EPC 스위칭 활동 정보.** 출처를 정하고 연동합니다.
 
 ---
@@ -463,7 +463,7 @@ Validator는 셀의 읽기·쓰기와 도메인을 알고(V3, V5, V8), SDC는 �
 
 **4. 설계 모델 실행기 다중 도메인.** `PySim`이 도메인마다 주기를 받아 시간 순서로 에지를 처리합니다. 같은 시각에 오르는 도메인은 한꺼번에 갱신합니다 (RTL의 non-blocking과 같음). `cdc_sync`(`2ff`, `gray`, `pulse`), `cdc_fifo`, `rst_sync`, 추가 리셋을 표준 셀 RTL과 같은 의미로 실행합니다. 번역기 검사(`pyequiv_tb`)는 클럭을 직접 움직여 RTL과 실행기의 에지 시각을 맞추고, 클럭 그룹마다 기준 클럭의 하강 에지에서 입력을 바꾸고, 사건마다 모든 출력을 비교합니다. 그룹마다 기준 클럭의 반주기를 서로 다른 홀수 ns로 두어(예: 5ns, 7ns) 입력을 바꾸는 시각이 어느 그룹의 상승 에지와도 겹치지 않게 하고, 조합 세 가지로 위상을 바꿔 가며 봅니다.
 
-**하지 않는 것:** 하강 에지 도메인(SPEC에서 L1로 옮길 때 지금처럼 상승 에지 고정), 블록 안 클럭 생성과 클럭 게이팅, 분주 관계의 사슬, 비동기 추가 리셋.
+**하지 않는 것:** 하강 에지 도메인(SPEC에서 L1로 옮길 때 지금처럼 상승 에지 고정. P12에서 추가), 블록 안 클럭 생성과 클럭 게이팅, 분주 관계의 사슬, 비동기 추가 리셋.
 
 ### 작업
 
@@ -642,7 +642,7 @@ python3 -m pipeline.scheduler.port resume --run-dir <dir> [--until r4|r5|r6]
 - **Verilog 키워드.** Verilog 파일은 먼저 그대로(SV 문법으로) 읽고, 오류가 날 때만 1364-2005 키워드로 감쌉니다. 감싸면 Verilator가 `$error` 같은 SV 시스템 태스크를 거부하기 때문입니다. 감싼 파일은 `import.json`의 `wrapped`에 남기고 R4/R6의 원본 시뮬레이션도 같게 감쌉니다.
 - **리셋 찾기.** 동기 리셋은 always 블록의 첫 문장 `if (rst) 상수 else ...`뿐 아니라 끝 문장 `if (rst) 상수`(끝에서 덮어쓰는 Verilog 관행, verilog-axis 전부)도 봅니다. 같은 리셋 포트를 동기와 비동기로 함께 쓰면 많이 쓴 쪽으로 합치고 검토 항목으로 남깁니다 (`axis_async_fifo`: 리셋 동기화 플롭만 비동기).
 - **하위 모듈 파라미터 기본값.** 인스턴스에서 elaborate한 값(고정한 설정)을 기본값으로 둡니다. 펼친 `generate` 구조와 맞고, 모듈 단위 R4에서 원본에 같은 값을 줄 수 있습니다. 인스턴스 대입은 원문 식(부모 파라미터)을 쓰고, genvar나 `defparam`으로 정해진 값은 숫자로 씁니다.
-- **R1이 더 거부하는 것.** 블록 안에서 만든 클럭, 하위 모듈 리셋에 내부 신호를 연결한 것(아래 리셋 동기화기 패턴 제외), 하강 에지 클럭, 인스턴스 배열. 처음에는 조합 모듈과 리셋 없는 도메인도 거부했으나 아래 추가 작업으로 옮길 수 있게 함.
+- **R1이 더 거부하는 것.** 블록 안에서 만든 클럭, 하위 모듈 리셋에 내부 신호를 연결한 것(아래 리셋 동기화기 패턴 제외), 하강 에지 클럭(P12부터는 하강 에지 도메인으로 옮김), 인스턴스 배열. 처음에는 조합 모듈과 리셋 없는 도메인도 거부했으나 아래 추가 작업으로 옮길 수 있게 함.
 - **원문.** pyslang 위치는 바이트 단위라 원문을 바이트로 잘라 읽습니다 (한글 주석이 있으면 문자열 인덱스와 다름).
 - **R4 비교 범위.** DUT가 내는 번들의 data는 valid=1인 사이클만 비교합니다 (`strict`면 모두). 리셋 구간과 풀린 뒤 4사이클 안의 차이만 있으면 `reset_only`로 통과시키고 검토 항목으로 남깁니다. R4 불일치는 Repair 대신 Porter 고치기 과제(`prev.ir.json`과 첫 차이)로 넘깁니다. Porter는 SPEC 없이 원본만 보므로 기존 Repair 과제(SPEC과 실패 리포트 기반)가 맞지 않습니다.
 - **inout 패드 모델.** 하니스는 inout 포트 P를 `P_pad_o`, `P_pad_oe`(바깥 장치), `P_pad_val`(패드 값) 세 포트로 바꾼 래퍼를 top으로 씁니다. 바깥 장치는 약한 구동(weak)이라 DUT가 구동하면 DUT 값이 이기고, 패드마다 풀업이 있습니다 (Verilator의 세기 해석으로 확인). 그래서 동시 구동 충돌은 따로 세지 않습니다. 포트를 나눈 하위 모듈은 이식 IR을 다시 inout으로 합치는 래퍼로 감싸 원본과 모듈 단위로 비교합니다.
@@ -650,7 +650,7 @@ python3 -m pipeline.scheduler.port resume --run-dir <dir> [--until r4|r5|r6]
 - **R5 왕복 비교**에서 role(이식 IR의 top은 role module일 수 있음)과 파라미터 허용 범위(SpecWriter가 채움)는 뺍니다.
 - **R6 판정**은 Arbiter의 새 과제(`spec_gap` / `regen_defect`)이고, 재생성 실행의 Verifier 테스트를 원본 RTL에도 돌려 실패하면 같은 판정에 넘깁니다.
 - 래퍼 모듈 이름은 `<모듈>_ref_top`, `<모듈>_pad_top`입니다 (Verilator가 `__`를 바꿔 씀). 원본 포트 이름이 SV 예약어면 래퍼에서 이스케이프 식별자로 잇습니다.
-- **남은 것.** 하강 에지 클럭, 패드 동시 구동 충돌 검출(4-state 시뮬레이터 필요), pysim의 `tristate` 실행은 보류했습니다 (2026-10-16 사용자 결정).
+- **남은 것.** 하강 에지 클럭, 패드 동시 구동 충돌 검출(4-state 시뮬레이터 필요), pysim의 `tristate` 실행은 보류했습니다 (2026-10-16 사용자 결정). 세 가지 모두 P12에서 구현했습니다 (충돌 검출은 4-state 시뮬레이터 없이).
 
 **추가 작업: 제약 해소 (2026-10-16 사용자 결정, 같은 날 구현).**
 
@@ -735,6 +735,36 @@ Claude Code CLI, 모든 역할 `claude-haiku-5-5`, effort medium (`config/roles.
 - **테스트 자극 기록.** 하니스가 테스트마다 넣은 자극(받힌 입력 트랜잭션, 사이클별 valid/ready/단독 입력, 도메인별 리셋)을 `refsim` 형식으로 결과 파일(`stimulus`)에 남깁니다. 리셋으로 버려져 받히지 않은 전송의 valid는 0으로 고칩니다 (`tb/lib.py`).
 - **`refsim` 도중 리셋.** 자극에 `reset`(도메인별 사이클 값)을 넣을 수 있고, 리셋 사이클에도 기록된 valid를 냅니다 (`agents/pl.py`, `tb/diffsim.py`의 `valid_in_reset`). 5회차 Verifier 테스트 26개의 기록을 `refsim`으로 다시 넣으면 원본이 그 테스트에서 낸 출력이 모두 그대로 나옵니다.
 - **SPEC 고치기에 자극 넘기기.** `verifier_on_ref`가 원본에서 실패한 테스트마다 자극 파일을 남기고, SpecWriter 고치기 과제가 `r6_stim/`으로 받아 `refsim`으로 돌려 보게 합니다 (`importer/r6.py`, `agents/spec_writer.py`).
+
+---
+
+## P12. v1 제외 항목 확장 (2026-10-19 사용자 지시, 같은 날 구현)
+
+사용자 결정으로 보류·제외했던 항목 가운데 VC SpyGlass(E3)를 뺀 다섯 가지를 구현했습니다. generate, 하위 모듈 사이의 3상태 버스, 의도적 래치는 이번 범위가 아닙니다.
+
+| 항목 | 방법 | 위치 |
+| --- | --- | --- |
+| 하강 에지 도메인 | 스키마에 있던 `edge: neg`를 끝까지 씁니다. V2: 분주 관계(`div` > 1), 동기화 셀, `reset.synchronize`는 상승 에지 도메인에만 두고, `domain_map`은 에지가 같은 도메인끼리 잇습니다. 하니스와 차분 시뮬레이션은 그 도메인의 입력을 상승 에지에서 바꾸고 표본을 읽습니다(설정 `neg_edge`). 설계 모델 실행기는 하강 에지 시각에 그 도메인을 진행합니다(`schedule`의 `falling`). R1은 `negedge clk`를 하강 에지 도메인(`<클럭>_neg`)으로 옮기고, 클럭 포트가 같은 도메인을 `sync_to` div 1로 묶습니다. SPEC 2절에 선택 열 "클럭 에지"를 두었습니다 | `validator/checks.py`, `tb/gen.py`, `tb/lib.py`, `tb/diffsim.py`, `ir/pysim.py`, `verify/pyequiv_tb.py`, `importer/extract.py`, `spec/l1.py`, `importer/spec_tables.py`, SPEC 작성 템플릿 |
+| 패드 동시 구동 충돌 | 하니스의 패드 체커가 바깥 장치가 구동하는 표본(`P_pad_oe=1`)에서 패드 값이 바깥 장치의 값과 다르면 T2로 실패시킵니다. 바깥 구동이 약한 구동이라 충돌하면 블록의 값이 보이므로, 보류 사유였던 4-state 시뮬레이터 없이 잡힙니다 | `tb/lib.py`(`PadChecker`), `tb/gen.py`(`pads`) |
+| 실행기의 `tristate` | 최상위 모듈의 `tristate`를 하니스와 같은 패드 모델 포트(`P_pad_o`, `P_pad_oe` → `P_pad_val`)로 실행합니다. 비트마다 블록 구동 > 바깥 구동 > 풀업입니다. 번역기 검사는 inout top을 패드 래퍼로 감싸 RTL과 비교합니다 | `ir/pysim.py`, `verify/pyequiv.py` |
+| function/task | IR `functions`(module role만)를 automatic function/task로 방출합니다. 본문은 인자, 지역 변수(`vars`), 상수, 앞에 정의한 function만 읽고 씁니다(모듈 신호는 인자로). blocking만 쓰고 타이밍 제어와 재귀는 금지합니다(V4). task는 `comb`에서만 부르고, 출력 인자로 넘긴 신호가 그 조각의 쓰기입니다(V4 읽기·쓰기, V6 래치, 조합 경로). Python 조각에서는 `return e`, 식의 `f(a)`, `comb` 문장 `t(a, out)`로 쓰고, 실행기도 같은 의미로 실행합니다. Repair가 고칠 수 있습니다 | 스키마, `ir/model.py`, `validator/`, `emitter/sv.py`, `ir/pyfrag.py`, `ir/pysim.py`, `patch/apply.py` |
+| SVA | IR `assertions`(assert, assume, cover. module role만)를 Emitter가 도메인 에지와 `disable iff`로 씌우고 `` `ifndef SYNTHESIS ``로 감쌉니다. 리셋은 `<도메인>_sva_rst` wire로 옮겨 씁니다(비동기 리셋 포트를 바로 쓰면 SYNCASYNCNET 경고). 실패하면 `$stop` 대신 `[SVA] FAIL` 줄을 냅니다. E2는 SVA가 있는 RTL만 `--assert`로 빌드하고, 로그에서 실패를 읽어 그 테스트의 결과로 냅니다. assert 실패는 Repair(노드 `assertions/<id>`)로, assume 실패는 Verifier로 갑니다. V2/V4/V8에서 읽기 목록, 대입 금지, 같은 클럭 그룹을 봅니다 | 스키마, `emitter/sv.py`, `validator/`, `verify/run.py`, `classifier/classify.py`, `scheduler/run.py` |
+
+구현하면서 정한 것:
+- **SVA 실패 보고.** 기본 동작(`$error` → `$stop`)은 시뮬레이션을 끝내 남은 테스트까지 모두 실패로 만들었습니다(실험으로 확인). 그래서 실패 줄을 `$display`로 내고 `$fflush`로 cocotb 로그와 순서를 맞춘 뒤, 줄 앞의 `running <테스트>`로 테스트를 정합니다.
+- **`--assert`는 SVA가 있는 RTL에만 씁니다.** 원본 RTL의 `unique case` 같은 검사가 새로 켜지지 않게 하려는 것입니다.
+- **`cover`는 방출만 합니다.** Verilator에서 action 블록이 없어 결과를 읽지 않습니다.
+- **번역기 검사의 입력 시각.** 반주기를 2h ns(h는 홀수)로 두어 모든 에지가 짝수 ns에 오고, 입력은 기준 클럭 하강 에지에서 h ns 뒤(홀수 ns)에 바꿉니다. 하강 에지 도메인이 있어도 입력 변경이 어느 에지와도 겹치지 않습니다.
+- **SPEC 표의 클럭 에지 열**은 하강 에지 도메인이 있을 때만 냅니다 (이전 SPEC과 표가 같게).
+- **패드 체커는 Verifier 테스트에만 적용됩니다.** R4/R6의 차분 시뮬레이션은 패드 값을 출력으로 비교할 뿐 충돌로 실패시키지 않습니다.
+
+검증 (에이전트 없이):
+- 하강 에지: 시험용 원본 `tests/fixtures/negedge/ne.v`가 R1을 통과하고, 손으로 옮긴 IR이 R4 `equal`입니다. 하강 에지 단을 상승 에지로 옮긴 IR은 `differ`입니다. 생성 하니스 테스트가 통과하고, 하니스에서 하강 에지 처리를 빼면 실패합니다. Python 판의 번역기 검사가 통과하고, RTL의 하강 에지 단을 상승 에지로 바꾸면 잡습니다.
+- 패드: `pp_top`, `od_top`의 Python 판 번역기 검사가 통과하고, 패드 구동을 바꾸면 잡습니다. `pp_top`에서 바깥 장치 0, 블록 1이면 충돌을 보고합니다. 기존 `od_top` 하니스 테스트는 그대로 통과합니다(오탐 없음).
+- function/task와 SVA: 시험용 모듈 `tests/fixtures/v1ext/fn_mod`(SV, Python 판)가 Validator와 lint를 통과하고, 번역기 검사도 통과합니다(함수 본문을 바꾸면 잡음). 가정을 지키는 테스트는 깨끗하고, 어기는 테스트에만 assume 실패가 붙습니다. task 본문을 틀리게 바꾸면 두 테스트 모두 `assertions/p_z` 실패가 되고, Classifier가 모듈과 노드를 짚어 Repair로 보냅니다.
+- 시험: `tests/test_v1_ext.py` 24개, `tests/sim/test_v1_ext_sim.py` 8개.
+
+**아직 하지 않은 것.** 실제 에이전트 실행으로는 확인하지 않았습니다. Author가 `functions`, `assertions`를 쓰는지, assume 실패를 받은 Verifier가 어떻게 판단하는지는 다음 실제 실행에서 봅니다.
 
 ---
 

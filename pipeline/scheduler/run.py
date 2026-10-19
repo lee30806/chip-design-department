@@ -596,6 +596,13 @@ class Run:
         rep = mismatch_report(mods[top], json.loads((out / f"{test}.result.json").read_text()),
                               json.loads((out / f"{test}.trace.json").read_text()),
                               self.spec_path.read_text(encoding="utf-8"), mods)
+        sva = [f for f in v["findings"] if f["rule"].startswith("SVA_")]
+        if rep is None and sva:   # 하니스 검사는 통과했지만 IR의 SVA가 실패함: 실패한 속성 노드와 식을 넘긴다
+            node, rest = sva[0]["message"].split(" ", 1)
+            mod = rest.removeprefix("(").split(",", 1)[0]
+            expr = next((a["expr"] for a in lib.get(mod, {}).get("assertions", []) if f'assertions/{a["id"]}' == node), None)
+            rep = {"test": sva[0]["test"], "first_failure": {"check": "sva", "test": sva[0]["test"], "module": mod, "node": node,
+                                                              "expr": expr, "message": sva[0]["message"]}}
         return {"classified": [{"type": _sim_type(f["rule"]),
                                 "test": f["test"], "message": f["message"]} for f in v["findings"]], "report": rep}
 
@@ -1237,8 +1244,9 @@ def _assumption(a: dict) -> str:
 
 
 def _sim_type(rule: str) -> str:
-    """sim 실패 분류. 시간 초과는 RTL이 멈춘 것으로 보고 Repair에 넘긴다."""
-    if rule in ("AssertionError", "T1_INIT"):
+    """sim 실패 분류. 시간 초과는 RTL이 멈춘 것으로 보고 Repair에 넘긴다. IR의 SVA assert 실패는 RTL 쪽(Repair),
+    assume 실패는 테스트 입력이 설계 가정을 어긴 것(Verifier)."""
+    if rule in ("AssertionError", "T1_INIT", "SVA_ASSERT"):
         return "sim_mismatch"
     return "sim_hang" if rule == "SIM_TIMEOUT" else "tb_error"
 

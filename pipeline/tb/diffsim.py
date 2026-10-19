@@ -26,7 +26,7 @@ from pathlib import Path
 try:
     import cocotb
     from cocotb.clock import Clock
-    from cocotb.triggers import FallingEdge, ReadOnly
+    from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 except ImportError:  # compare만 쓸 때 (cocotb 없이)
     cocotb = None
 
@@ -200,13 +200,18 @@ if cocotb is not None:
                     if b["domain"] == d:
                         names += [b["valid"], *b["data"]] if b["dut_drives"] else [b["ready"]]
                 trace_ports[d] = names
+        started = set()
         for d in doms:
             clk, period = h["clocks"][d]
             ps = max(2, round(period * 1000 / 2) * 2)   # 하니스와 같이 ps 단위 짝수 주기
-            cocotb.start_soon(Clock(getattr(dut, clk), ps, unit="ps").start())
+            if clk not in started:   # 클럭 포트를 함께 쓰는 도메인 (같은 클럭, 예: 하강 에지 도메인)
+                started.add(clk)
+                cocotb.start_soon(Clock(getattr(dut, clk), ps, unit="ps").start())
+        neg = set(h.get("neg_edge", ()))
 
         async def run(d):
             p, clk = plan["domains"][d], getattr(dut, h["clocks"][d][0])
+            edge = RisingEdge if d in neg else FallingEdge   # 입력을 바꾸는 에지 (하니스와 같음)
             rport, ractive = h["resets"].get(d, (None, 1))
             dins = [b for b in ins if b["domain"] == d]
             douts = [b for b in outs if b["domain"] == d]
@@ -215,7 +220,7 @@ if cocotb is not None:
             q = {b["name"]: plan["queues"][b["name"]] for b in dins}
             prev = {}
             for c in range(plan["total"]):
-                await FallingEdge(clk)
+                await edge(clk)
                 drv = {}
                 if rport:
                     drv[rport] = ractive if p["reset"][c] else 1 - ractive

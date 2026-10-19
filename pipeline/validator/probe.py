@@ -65,6 +65,14 @@ def build(m: Module, library: dict[str, Module] | None = None) -> Probe:
     for b in m.blocks:
         if b["kind"] == "memory":
             p.add(f'  {b["word_type"]} {b["name"]} [{b["depth"]}];', "V3", f'blocks/{b["id"]}')
+    from pipeline.emitter.sv import function_head, function_tail
+    for f in m.functions:   # 함수 선언 줄이 노드를 정한다 (v3_v4가 선언 시작 줄로 함수를 찾음)
+        node = f'functions/{f["name"]}'
+        p.add("  " + function_head(f), "V4", node)
+        for v in f.get("vars", []):
+            p.add(f'    {v["type"]} {v["name"]};', "V4", node)
+        p.add(f["body"], "V4", node)
+        p.add("  " + function_tail(f), "V4", node)
     # 리셋값은 대상의 타입으로 상수 대입이 되는지 본다.
     for port in m.ports:
         if port.reset is not None:
@@ -81,6 +89,8 @@ def build(m: Module, library: dict[str, Module] | None = None) -> Probe:
             p.add(f'  always_comb begin\n{b["body"]}\n  end', "V4", f'blocks/{b["id"]}')
         elif b["kind"] == "seq":
             p.add(f'  always_ff @(posedge {CLK}) begin\n{b["body"]}\n  end', "V4", f'blocks/{b["id"]}')
+    for a in m.assertions:   # 클럭과 disable iff는 Emitter가 씌우므로 식만 본다
+        p.add(f'  {a["kind"]} property (@(posedge {CLK}) ({a["expr"]}));', "V4", f'assertions/{a["id"]}')
     # 인스턴스 파라미터 값은 자식 모듈의 파라미터 타입으로 검사한다.
     for inst in m.instances:
         child = (library or {}).get(inst["module"])

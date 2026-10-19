@@ -124,7 +124,8 @@ def test_r1_rejects(tmp_path):
     assert {"no_reset", "comb_module"} <= {r["kind"] for r in res["reviews"]}   # 리셋 없는 도메인, 조합 모듈은 옮김
     g = tmp_path / "neg.v"
     g.write_text("module neg(input clk, input rst, output reg q); always @(negedge clk) if (rst) q <= 0; else q <= ~q; endmodule\n")
-    assert "negedge" in {r["kind"] for r in Extractor(Design(Inputs([g], "neg"))).run()["rejects"]}
+    res = Extractor(Design(Inputs([g], "neg"))).run()   # 하강 에지 클럭은 하강 에지 도메인으로 옮김
+    assert not res["rejects"] and res["modules"]["neg"].ir["domains"][0]["edge"] == "neg"
 
 
 def test_tristate_ir_validator_and_emitter():
@@ -178,7 +179,8 @@ def test_r2_relations_and_stop():
 
 
 @pytest.mark.parametrize("path", ["tests/golden/axis_async_fifo/ir/axis_async_fifo.ir.json", "tests/golden/uart/ir/uart.ir.json",
-                                  "tests/fixtures/multiclock/mc_top.ir.json", "tests/fixtures/port/inout/ported/od_top.ir.json"])
+                                  "tests/fixtures/multiclock/mc_top.ir.json", "tests/fixtures/port/inout/ported/od_top.ir.json",
+                                  "tests/fixtures/negedge/ported/ne_top.ir.json"])
 def test_spec_tables_roundtrip(path):
     ir = json.loads((ROOT / path).read_text())
     l1, _ = block_top_l1(parse(f"# {ir['module']} SPEC\n\n" + spec_tables.tables_md(ir)))

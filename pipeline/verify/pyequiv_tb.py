@@ -3,10 +3,13 @@
 같은 무작위 입력(가끔 리셋 포함)을 RTL과 설계 모델 실행기(`pysim`)에 넣고, 사건마다 모든 출력을 비교한다.
 클럭은 이 테스트가 직접 움직여 RTL과 실행기의 에지 시각을 맞춘다 (상승 에지에서 실행기도 그 도메인들을 진행).
 
-클럭 그룹(기준 도메인과 그 분주 도메인)마다 기준 클럭의 반주기를 홀수 ns로 둔다. 상승 에지는 시작 시각(짝수 ns)에서
-반주기의 홀수 배, 하강 에지는 짝수 배라서, 입력을 바꾸는 시각(그룹 기준 클럭의 하강 에지)이 어느 그룹의 상승 에지와도
-겹치지 않는다 (겹치면 RTL에서 경쟁이 되어 비교할 수 없음). 분주 도메인은 기준과 같은 시각에 처음 오르고, 반주기는 기준 × 분주비다.
-`phases`(그룹 기준 도메인 → 반주기 ns)를 차례로 바꿔 가며 도메인 사이 위상을 바꾸고, 실행기와 RTL은 이어서 돌린다.
+클럭 그룹(기준 도메인과 그 분주 도메인)마다 기준 클럭의 반주기를 2h ns(h는 홀수, `phases`의 값)로 둔다. 모든 에지는
+시작 시각(짝수 ns)에서 짝수 ns 떨어진 곳에 있고, 입력은 그룹 기준 클럭의 하강 에지에서 h ns 뒤(홀수 ns)에 바꾸므로 어느
+클럭의 상승·하강 에지와도 겹치지 않는다 (겹치면 RTL에서 경쟁이 되어 비교할 수 없음. 하강 에지 도메인도 있으므로 하강 에지도 피함).
+분주 도메인은 기준과 같은 시각에 처음 오르고, 반주기는 기준 × 분주비다. 상승 에지에서는 상승 에지 도메인을, 하강 에지에서는
+하강 에지 도메인(`edge: neg`)을 실행기에서도 진행한다.
+`phases`(그룹 기준 도메인 → h)를 차례로 바꿔 가며 도메인 사이 위상을 바꾸고, 실행기와 RTL은 이어서 돌린다.
+inout 포트가 있는 top은 하니스와 같은 패드 모델 포트(P_pad_o, P_pad_oe, P_pad_val)로 비교한다 (RTL 쪽은 패드 래퍼).
 첫 불일치를 결과 파일에 쓰고 실패한다.
 """
 import json
@@ -48,29 +51,29 @@ async def pyequiv(dut):
         resets.setdefault(r["port"], (0 if r["active"] == "low" else 1, True))
         for x in r.get("extra", []):
             resets.setdefault(x["port"], (0 if x["active"] == "low" else 1, False))
-    outs = [p.name for p in top.ports if p.dir == "output"]
-    ports = {}   # 클럭 포트 → (그룹 기준 도메인, 분주비, 그 클럭의 도메인)
+    outs = list(sim.outputs())
+    ports = {}   # 클럭 포트 → (그룹 기준 도메인, 분주비, 그 클럭의 상승 에지 도메인, 하강 에지 도메인)
     for d, dd in top.domains.items():
         root, div = top.clock_root(d)
-        ports.setdefault(dd["clock"], (root, div, []))[2].append(d)
+        ports.setdefault(dd["clock"], (root, div, [], []))[3 if dd["edge"] == "neg" else 2].append(d)
 
     mismatch = None
     t0, now, cyc = 0, 0, {r: 0 for r in groups}
     for phase in cfg["phases"]:
-        half = {p: phase[root] * div for p, (root, div, _) in ports.items()}   # ns
+        half = {p: 2 * phase[root] * div for p, (root, div, _, _) in ports.items()}   # ns
         fast = min(phase[r] for r in groups)
-        end = t0 + 2 * fast * cfg["cycles"]
+        end = t0 + 4 * fast * cfg["cycles"]
         events: dict[int, tuple[set, set, set]] = {}   # 시각 → (오르는 포트, 내리는 포트, 입력을 바꾸는 그룹)
-        for p, (root, div, _) in ports.items():
-            h0 = phase[root]
+        for p, (root, div, _, _) in ports.items():
+            h0 = 2 * phase[root]
             t = t0 + h0                 # 첫 상승: 기준과 같은 시각
             while t <= end:
                 events.setdefault(t, (set(), set(), set()))[0].add(p)
                 if t + half[p] <= end:
                     events.setdefault(t + half[p], (set(), set(), set()))[1].add(p)
                 t += 2 * half[p]
-        for r in groups:
-            for t in range(t0, end + 1, 2 * phase[r]):
+        for r in groups:   # 기준 클럭의 하강 에지(짝수 ns)에서 h ns 뒤 (홀수 ns)
+            for t in range(t0 + phase[r], end + 1, 4 * phase[r]):
                 events.setdefault(t, (set(), set(), set()))[2].add(r)
         for p in ports:
             getattr(dut, p).value = 0
@@ -100,14 +103,15 @@ async def pyequiv(dut):
                     getattr(dut, n).value = v
                 sim.set(vals)
                 sim.settle()
-            if up:
-                sim.step({d for p in up for d in ports[p][2]})
+            active = {d for p in up for d in ports[p][2]} | {d for p in down for d in ports[p][3]}
+            if active:
+                sim.step(active)
             await ReadOnly()
             for o in outs:
                 got = int(getattr(dut, o).value)
                 if got != sim.val[o]:
                     mismatch = {"time_ns": t, "phase": phase, "output": o, "rtl": got, "py": sim.val[o],
-                                "rising": sorted(d for p in up for d in ports[p][2]),
+                                "rising": sorted(active),
                                 "inputs": {n: sim.val[n] for n in ins}}
                     break
             if mismatch:

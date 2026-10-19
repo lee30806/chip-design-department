@@ -112,6 +112,21 @@ def v1_schema(m: Module) -> list[Issue]:
         claim(s.name, f"blocks/{s.name}")
     for i in m.instances:
         claim(i["name"], f'instances/{i["name"]}')
+    for f in m.functions:
+        claim(f["name"], f'functions/{f["name"]}')
+    for d in sorted({a["domain"] for a in m.assertions if a["domain"] in m.domains and m.domains[a["domain"]].get("reset")}):
+        claim(sva_reset(d), f"domains/{d}")   # Emitter가 SVA disable iff에 쓰는 리셋 wire
+    for f in m.functions:   # 인자와 지역 변수: 함수 안에서 겹치지 않고, 모듈 이름을 가리지 않는다
+        local: set[str] = set()
+        for v in [*f["args"], *f.get("vars", [])]:
+            node = f'functions/{f["name"]}/{v["name"]}'
+            if v["name"] in SV_KEYWORDS:
+                out.append(Issue("V1", node, f'SV 예약어는 이름으로 쓸 수 없음: {v["name"]}'))
+            elif v["name"] in local:
+                out.append(Issue("V1", node, f'인자·지역 변수 이름 중복: {v["name"]}'))
+            elif v["name"] in names:
+                out.append(Issue("V1", node, f'인자·지역 변수 이름이 모듈의 이름과 겹침: {v["name"]} ({names[v["name"]]})'))
+            local.add(v["name"])
     ids: set[str] = set()
     for b in m.blocks:
         for nid in [b["id"]] + [t["id"] for t in b.get("transitions", [])]:
@@ -122,7 +137,17 @@ def v1_schema(m: Module) -> list[Issue]:
         if c["id"] in ids:
             out.append(Issue("V1", f'connections/{c["id"]}', f'id 중복: {c["id"]}'))
         ids.add(c["id"])
+    for a in m.assertions:
+        if a["id"] in ids:
+            out.append(Issue("V1", f'assertions/{a["id"]}', f'id 중복: {a["id"]}'))
+        ids.add(a["id"])
     return out
+
+
+def sva_reset(dom: str) -> str:
+    """SVA `disable iff`에 쓰는 리셋 wire (리셋이 걸리면 1). 비동기 리셋 포트를 속성에 바로 쓰면 Verilator가
+    SYNCASYNCNET 경고를 내므로 wire로 옮겨 쓴다."""
+    return f"{dom}_sva_rst"
 
 
 # ---------------------------------------------------------------- V2
@@ -157,6 +182,11 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
             out.append(Issue("V2", node, f"정의되지 않은 도메인: {d}"))
 
     out += _domain_relations(m)
+    for b in m.blocks:   # 표준 셀(stubs/)은 상승 에지로만 동작한다
+        if b["kind"] in ("cdc_sync", "cdc_fifo"):
+            negs = [b[k] for k in ("src_domain", "dst_domain") if m.domains.get(b.get(k) or "", {}).get("edge") == "neg"]
+            if negs:
+                out.append(Issue("V2", f'blocks/{b["id"]}', f"동기화 셀은 상승 에지 도메인 사이에만 둠 (하강 에지 도메인: {negs})"))
     tri = {}
     for b in m.blocks:
         if b["kind"] == "tristate":
@@ -250,6 +280,12 @@ def v2_refs(m: Module, library: dict[str, Module]) -> list[Issue]:
             for st in [b["reset_state"]] + [x for t in b["transitions"] for x in (t["from"], t["to"])]:
                 if members and st not in members:
                     out.append(Issue("V2", node, f"상태 타입에 없는 상태: {st}"))
+    for a in m.assertions:
+        node = f'assertions/{a["id"]}'
+        dom(a["domain"], node)
+        for r in a["reads"]:
+            if r not in readable:
+                out.append(Issue("V2", node, f"reads의 신호가 없음: {r}"))
     for inst in m.instances:
         node = f'instances/{inst["name"]}'
         child = library.get(inst["module"])
@@ -296,6 +332,9 @@ def _domain_relations(m: Module) -> list[Issue]:
                 out.append(Issue("V2", node, f'분주의 사슬은 쓰지 않음: {s["domain"]}도 sync_to가 있음. 기준 도메인에서 바로 나눈 분주비를 씀'))
             elif d.get("freq_mhz") and ref.get("freq_mhz") and abs(d["freq_mhz"] * s["div"] - ref["freq_mhz"]) > 1e-6 * ref["freq_mhz"]:
                 out.append(Issue("V2", node, f'freq_mhz({d["freq_mhz"]})가 {s["domain"]}({ref["freq_mhz"]}) / {s["div"]}와 다름'))
+            if ref is not None and s["div"] > 1 and "neg" in (d["edge"], ref["edge"]):
+                out.append(Issue("V2", node, "분주 관계는 상승 에지 도메인끼리만 씀 (분주 클럭은 상승 에지 정렬). "
+                                             "하강 에지 도메인은 같은 클럭(div 1)으로만 묶음"))
         for o in d.get("async_to", []):
             if o in m.domains and m.same_clock(d["name"], o):
                 out.append(Issue("V2", node, f"같은 클럭 그룹의 도메인을 async_to에 넣음: {o}"))
@@ -303,6 +342,8 @@ def _domain_relations(m: Module) -> list[Issue]:
         if r is None:
             continue   # 리셋 없는 도메인
         if r.get("synchronize"):
+            if d["edge"] == "neg":
+                out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 상승 에지 도메인에만 씀 (표준 셀 rst_sync는 상승 에지)"))
             if m.role not in ("top", "block_top"):
                 out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 top과 block_top에만 둠 (하위 모듈은 동기화한 리셋을 받음)"))
             if not r["async"]:
@@ -330,6 +371,8 @@ def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> li
         pd = dm.get(cd)
         if pd not in m.domains:
             continue
+        if d["edge"] != m.domains[pd]["edge"]:   # 자식은 자기 에지로 클럭 포트를 받으므로 부모 도메인과 에지가 같아야 함
+            out.append(Issue("V2", node, f'자식 도메인 {cd}({d["edge"]} 에지)를 에지가 다른 도메인 {pd}({m.domains[pd]["edge"]} 에지)에 연결함'))
         pr, cr = m.domains[pd].get("reset"), d.get("reset")
         if cr and not pr:
             out.append(Issue("V2", node, f"리셋이 있는 자식 도메인 {cd}를 리셋 없는 도메인 {pd}에 연결함"))
@@ -360,10 +403,59 @@ def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> li
 # ---------------------------------------------------------------- V3, V4
 _FORBIDDEN = {"DelayControl": "지연(#)", "ProceduralForceStatement": "force", "ProceduralReleaseStatement": "release",
               "ProceduralAssignStatement": "procedural assign", "ProceduralDeassignStatement": "deassign"}
+# function/task 본문에서만 따로 보는 구문 (블록의 always_ff 자체가 타이밍 제어 문장이라 공통 목록에 넣지 않음)
+_FN_FORBIDDEN = {"TimingControlStatement": "타이밍 제어(@, #)", "WaitStatement": "wait", "WaitForkStatement": "wait fork"}
 
 
-def _block_usage(node) -> tuple[set[str], set[str], set[str], list[str]]:
-    """(쓰는 이름, 읽는 이름, 대입 종류, 금지 구문) — 구문 트리에서 직접 뽑는다."""
+def _kinds_in(node, kinds: dict[str, str]) -> list[str]:
+    found = []
+
+    def visit(n):
+        k = str(getattr(n, "kind", "")).removeprefix("SyntaxKind.")
+        if k in kinds:
+            found.append(kinds[k])
+        return pyslang.VisitAction.Advance
+
+    node.visit(visit)
+    return found
+
+
+def invocations(node) -> list[tuple[str, object]]:
+    """구문 트리 안의 호출 (이름, InvocationExpression). 시스템 함수($...)는 뺀다."""
+    out = []
+
+    def visit(n):
+        if str(getattr(n, "kind", "")).endswith("InvocationExpression"):
+            left = n.left
+            if hasattr(left, "identifier"):
+                out.append((left.identifier.valueText, n))
+        return pyslang.VisitAction.Advance
+
+    node.visit(visit)
+    return out
+
+
+def call_args(inv) -> list:
+    """호출의 위치 인자 식 (구문 노드). 인자는 속성 식(SimplePropertyExpr, SimpleSequenceExpr)으로 감싸여 있어 벗긴다."""
+    out = []
+    for a in (inv.arguments.parameters if inv.arguments is not None else []):
+        if not str(getattr(a, "kind", "")).endswith("OrderedArgument"):
+            continue
+        e = a.expr
+        while str(e.kind).endswith(("SimplePropertyExpr", "SimpleSequenceExpr")):
+            e = e.expr
+        out.append(e)
+    return out
+
+
+def task_outputs(inv, dirs: list[str]) -> list:
+    """task 호출의 출력 인자 식 (구문 노드)."""
+    return [e for e, d in zip(call_args(inv), dirs) if d == "output"]
+
+
+def _block_usage(node, tasks: dict[str, list[str]] | None = None) -> tuple[set[str], set[str], set[str], list[str]]:
+    """(쓰는 이름, 읽는 이름, 대입 종류, 금지 구문) — 구문 트리에서 직접 뽑는다.
+    tasks(이름 → 인자 방향)를 주면 task 호출의 출력 인자도 쓰기로 본다."""
     # 대입 왼쪽의 범위. 그 안의 이름은 쓰기다. 단 왼쪽 안의 인덱스(`[...]`)에 나오는 이름은 읽기다.
     # 왼쪽이 연결(`{a, b} <= ...`)이어도 각 원소가 쓰기가 된다.
     lhs: list[tuple[int, int]] = []
@@ -379,6 +471,10 @@ def _block_usage(node) -> tuple[set[str], set[str], set[str], list[str]]:
             kinds.add("nonblocking" if k.startswith("Nonblocking") else "blocking")
             r = n.left.sourceRange
             lhs.append((r.start.offset, r.end.offset))
+        elif k == "InvocationExpression" and tasks and hasattr(n.left, "identifier") and n.left.identifier.valueText in tasks:
+            kinds.add("blocking")   # task의 출력 인자는 task가 끝날 때 blocking으로 복사된다
+            for e in task_outputs(n, tasks[n.left.identifier.valueText]):
+                lhs.append((e.sourceRange.start.offset, e.sourceRange.end.offset))
         elif k == "ElementSelect" and within(n.sourceRange.start.offset, lhs):
             selects.append((n.sourceRange.start.offset, n.sourceRange.end.offset))
         elif k in ("IdentifierName", "IdentifierSelectName"):
@@ -398,11 +494,20 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
     tree, diags = probe.compile_probe(pr)
     out = [Issue(d.stage, d.node, d.message) for d in diags]
     blocks = {f'blocks/{b["id"]}': b for b in m.blocks}
+    funcs = {f'functions/{f["name"]}': (i, f) for i, f in enumerate(m.functions)}
+    order = {f["name"]: i for i, f in enumerate(m.functions)}
+    tasks = m.tasks()
     sm = tree.sourceManager
     signal_names = m.readable()
+    module_names = signal_names | set(m.storage())
 
     def visit(n):
         k = str(getattr(n, "kind", "")).removeprefix("SyntaxKind.")
+        if k in ("FunctionDeclaration", "TaskDeclaration"):
+            _, node = pr.nodes[sm.getLineNumber(n.sourceRange.start) - 1]
+            if node in funcs:
+                out.extend(_function_checks(m, node, *funcs[node], n, order, tasks, module_names))
+            return pyslang.VisitAction.Skip
         if k not in ("AlwaysCombBlock", "AlwaysFFBlock"):
             return pyslang.VisitAction.Advance
         line = sm.getLineNumber(n.sourceRange.start)
@@ -410,10 +515,13 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
         b = blocks.get(node)
         if b is None:
             return pyslang.VisitAction.Skip
-        writes, reads, kinds, forbidden = _block_usage(n.statement)
+        writes, reads, kinds, forbidden = _block_usage(n.statement, tasks)
         for f in forbidden:
             out.append(Issue("V4", node, f"금지 구문: {f}"))
-        if b["kind"] == "seq" and "blocking" in kinds:
+        called = {name for name, _ in invocations(n.statement)}
+        if b["kind"] != "comb" and called & set(tasks):
+            out.append(Issue("V4", node, f"task는 comb 블록에서만 부름 (seq는 function을 씀): {sorted(called & set(tasks))}"))
+        elif b["kind"] == "seq" and "blocking" in kinds:
             out.append(Issue("V4", node, "seq 블록에 blocking 대입(=)이 있음. non-blocking(<=)만 허용"))
         if b["kind"] == "comb" and "nonblocking" in kinds:
             out.append(Issue("V4", node, "comb 블록에 non-blocking 대입(<=)이 있음. blocking(=)만 허용"))
@@ -437,6 +545,42 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
             undeclared = sorted((reads & signal_names) - set(b["reads"]))
             if undeclared:
                 out.append(Issue("V4", f'blocks/{b["id"]}/transitions/{tr["id"]}', f"reads에 없는 신호를 읽음: {undeclared}"))
+    # SVA 식: 대입 없이 reads 안에서만 읽는다
+    for a in m.assertions:
+        node = f'assertions/{a["id"]}'
+        t = pyslang.SyntaxTree.fromText(f"module __a; logic __c; assert property (@(posedge __c) ({a['expr']})); endmodule")
+        writes, reads, kinds, forbidden = _block_usage(t.root, tasks)
+        if writes or kinds or forbidden:
+            out.append(Issue("V4", node, f"SVA 식에 대입이나 금지 구문이 있음 ({sorted(writes)} {forbidden})"))
+        if {name for name, _ in invocations(t.root)} & set(tasks):
+            out.append(Issue("V4", node, "SVA 식에서 task를 부를 수 없음 (function만)"))
+        undeclared = sorted((reads & signal_names) - set(a["reads"]))
+        if undeclared:
+            out.append(Issue("V4", node, f"reads에 없는 신호를 읽음: {undeclared}"))
+    return out
+
+
+def _function_checks(m: Module, node: str, idx: int, f: dict, n, order: dict[str, int], tasks: dict, module_names: set[str]) -> list[Issue]:
+    """function/task 본문: 금지 구문, blocking만, 모듈 신호를 직접 읽거나 쓰지 않음, 앞에 정의한 function만 부름 (재귀 없음)."""
+    out = []
+    writes, reads, kinds, forbidden = _block_usage(n, tasks)
+    for x in forbidden + _kinds_in(n, _FN_FORBIDDEN):
+        out.append(Issue("V4", node, f"금지 구문: {x}"))
+    if "nonblocking" in kinds:
+        out.append(Issue("V4", node, f'{f["kind"]} 본문은 blocking(=)만 씀'))
+    local = {v["name"] for v in [*f["args"], *f.get("vars", [])]}
+    touched = sorted(((writes | reads) & module_names) - local)
+    if touched:
+        out.append(Issue("V4", node, f'{f["kind"]} 본문이 모듈 신호를 직접 읽거나 씀 (인자로 넘김): {touched}'))
+    ins = {a["name"] for a in f["args"] if a["dir"] == "input"}
+    if writes & ins:
+        out.append(Issue("V4", node, f"입력 인자에 씀: {sorted(writes & ins)}"))
+    for name, _ in invocations(n):
+        if name == f["name"] or (name in order and order[name] > idx):
+            out.append(Issue("V4", node, f"앞에 정의한 function만 부름 (재귀 없음): {name}"))
+        elif name in tasks:
+            if f["kind"] == "function":
+                out.append(Issue("V4", node, f"function에서 task를 부를 수 없음: {name}"))
     return out
 
 

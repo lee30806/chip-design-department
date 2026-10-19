@@ -17,6 +17,13 @@
 
 클럭: 분주 도메인(`clock_sync`)의 주기는 기준 클럭 주기(ps) × 분주비로 맞추고, 모든 클럭이 시각 0에 함께 올라가므로
 상승 에지가 정렬된다. 클럭 포트를 함께 쓰는 도메인은 클럭을 하나만 띄운다.
+하강 에지 도메인(`neg_edge`)은 위의 하강·상승을 바꿔 읽는다: 상승 에지에서 입력을 바꾸고, 하강 에지에서 DUT가 받는다.
+그 도메인의 사이클 0은 리셋을 푼 상승 에지다.
+
+inout 포트(`pads`, 패드 모델 포트 P_pad_o/P_pad_oe/P_pad_val)는 패드 체커가 본다: 바깥 장치가 구동하는데(P_pad_oe=1)
+패드 값이 바깥 장치의 값과 다르면 DUT가 같은 패드를 다른 값으로 구동한 것이다 (동시 구동 충돌, T2). 바깥 장치는
+약한 구동이라 충돌해도 DUT 값이 보이므로 2-state 시뮬레이터에서도 잡힌다. open-drain 버스에서 바깥 장치가 1을 낼 때는
+구동하지 않고(P_pad_oe=0) 풀업에 맡긴다.
 추가 동기 리셋(`extra_resets`)은 시작할 때 풀어 두고, 테스트가 걸면 주 리셋처럼 그 도메인의 입력 큐를 비운다.
 
 Verify 툴은 환경 변수로 결과 위치를 준다.
@@ -32,7 +39,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly
+from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
 
 
 def _handle(dut, name: str):
@@ -186,6 +193,24 @@ class ValidReadyChecker:
         self.handshakes += int(v == 1 and r == 1)
 
 
+class PadChecker:
+    """T2. inout 패드의 동시 구동 충돌: 바깥 장치가 구동하는 사이클에 패드 값이 바깥 장치의 값과 다른 비트."""
+
+    def __init__(self, dut, pad: str, domain: str):
+        self.name, self.domain = pad, domain
+        self.o, self.oe, self.val = (getattr(dut, f"{pad}{s}") for s in ("_pad_o", "_pad_oe", "_pad_val"))
+        self.violations: list[dict] = []
+        self.handshakes = 0   # 프로토콜 요구사항 집계(cover_protocol)와 같은 자리를 쓰려고 둠
+
+    def sample(self, cycle: int) -> None:
+        if _int(self.oe) != 1:
+            return
+        o, v = _int(self.o), _int(self.val)
+        if None not in (o, v) and o != v:
+            self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
+                                    "rule": f"패드 동시 구동 충돌 (바깥 장치 {o:#x}, 패드 {v:#x}, 다른 비트 {o ^ v:#x})"})
+
+
 class Scoreboard:
     """T3. stream마다 기댓값과 실제값을 순서대로 비교하고 첫 불일치를 남긴다.
 
@@ -292,6 +317,10 @@ class Harness:
             c = ValidReadyChecker(dut, b, cfg["resets"].get(b["domain"]), cfg.get("extra_resets", {}).get(b["domain"], ()))
             self.checkers.append(c)
             self.samplers[b["domain"]].append(c)
+        for pad in cfg.get("pads", []):
+            c = PadChecker(dut, pad, cfg["port_domains"][f"{pad}_pad_val"])
+            self.checkers.append(c)
+            self.samplers[c.domain].append(c)
 
     @staticmethod
     def _load_trace_names() -> dict:
@@ -325,7 +354,7 @@ class Harness:
         for d, (clk, _) in self.cfg["clocks"].items():
             await ClockCycles(getattr(self.dut, clk), reset_cycles)
         for d in self.cfg["clocks"]:
-            await FallingEdge(getattr(self.dut, self.cfg["clocks"][d][0]))
+            await self._drive_edge(d)
             if d in self.cfg["resets"]:   # 리셋 없는 도메인은 풀 리셋이 없음
                 getattr(self.dut, self.cfg["resets"][d][0]).value = 1 - self.cfg["resets"][d][1]
             # 리셋을 푼 바로 그 사이클부터 표본을 읽는다. 리셋이 빠진 레지스터의 초기값이 여기서 보인다(T1).
@@ -357,10 +386,10 @@ class Harness:
             if not any(d.busy for d in self.drivers.values()) and not self.sb.pending:
                 break
             await FallingEdge(clk)
-        for d, (port, _) in self.cfg["clocks"].items():
+        for d in self.cfg["clocks"]:
             start = self.cycle[d]
             while self.cycle[d] < start + extra:
-                await FallingEdge(getattr(self.dut, port))
+                await self._drive_edge(d)
         await FallingEdge(clk)
 
     def finish(self) -> None:
@@ -398,8 +427,12 @@ class Harness:
     def _on_output(self, stream: str, txn: dict, cycle: int, domain: str) -> None:
         self.sb.got(stream, txn, cycle, domain)
 
-    async def _loop(self, domain: str) -> None:
+    def _drive_edge(self, domain: str):
+        """입력을 바꾸는 에지: 상승 에지 도메인은 하강 에지, 하강 에지 도메인은 상승 에지."""
         clk = getattr(self.dut, self.cfg["clocks"][domain][0])
+        return RisingEdge(clk) if domain in self.cfg.get("neg_edge", ()) else FallingEdge(clk)
+
+    async def _loop(self, domain: str) -> None:
         drivers = [d for n, d in self.drivers.items() if self._domain_of(n) == domain]
         # 속성 표본에는 그 도메인의 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 클럭은 넣지 않는다.
         extra = self.cfg.get("extra_resets", {}).get(domain, [])
@@ -410,7 +443,7 @@ class Harness:
         first = True
         while True:
             if not first:
-                await FallingEdge(clk)
+                await self._drive_edge(domain)
             first = False
             for d in drivers:
                 d.on_falling()

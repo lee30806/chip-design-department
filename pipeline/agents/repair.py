@@ -39,10 +39,13 @@ TASK = """\
    - `{{"op": "set", "target": "blocks/<id>", "field": "body", "value": "..."}}`
    - `{{"op": "set", "target": "blocks/<id>/transitions/<id>", "field": "cond", "value": "..."}}`
    - `{{"op": "add", "target": "signals", "value": {{...}}}}`, `{{"op": "remove", "target": "signals/<name>"}}`
+   - `{{"op": "set", "target": "functions/<name>", "field": "body", "value": "..."}}`, `{{"op": "set", "target": "assertions/<id>", "field": "expr", "value": "..."}}`
 3. `python3 tools/pl.py patch ir.json {out}`가 `"ok": true`가 될 때까지 고친다. 이 도구는 patch를 적용해 보고 검사만 한다.
 
 ## 규칙
-- 고칠 수 있는 것은 types, signals, blocks, connections이다. L1(ports, params, domains)과 인스턴스는 고칠 수 없다.
+- 고칠 수 있는 것은 types, signals, blocks, functions, assertions, connections이다. L1(ports, params, domains)과 인스턴스는 고칠 수 없다.
+- 실패가 IR의 SVA(`assertions/<id>`)이면 RTL이 그 성질을 어긴 것이다. 먼저 SPEC과 비교해 성질이 맞는지 보고, 맞으면 동작 블록을 고치고
+  성질이 SPEC과 다르면 그 속성을 고친다. 테스트를 통과시키려고 속성을 지우거나 약하게 만들지 않는다.
   L1을 바꿔야 한다고 판단되면 patch 대신 `{out}`에 `[{{"op": "request_interface_change", "reason": "..."}}]`를 쓴다.
 - lint waiver나 검사를 끄는 주석을 넣지 않는다.
 - `{out}` 외의 파일은 만들거나 고치지 않는다.

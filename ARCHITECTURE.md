@@ -229,13 +229,16 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 | L0 | `instances`, `connections` | 인스턴스(파라미터 바인딩, `domain_map`)와 연결 |
 | L1 | `params`, `domains`, `ports` | 파라미터, 클럭/리셋/전력 도메인, 포트 또는 프로토콜 번들 |
 | L2 | `types`, `signals` | enum/struct 타입, `reg`/`wire` 신호 |
-| L3 | `blocks` | `comb`, `seq`, `fsm`, `cdc_sync`, `memory` |
+| L3 | `blocks`, `functions`, `assertions` | `comb`, `seq`, `fsm`, `cdc_sync`, `cdc_fifo`, `memory`, `tristate`. 도움 함수(function, task)와 SVA 속성(assert, assume, cover) |
 
 - **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀, 3상태 구동(`tristate`)만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
 - **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결, 동기화 셀, 신호, 타입입니다.
 - **Validator.** V1 스키마부터 V11 동결까지 11단계로 검사합니다. 사용하는 수단은 JSON Schema, 심볼 테이블, pyslang AST, reads/writes 그래프입니다.
 - **조각 언어.** 모듈의 `lang`이 `sv`(기본)면 조각은 SystemVerilog, `py`면 Python 문법의 사이클 단위 기술입니다. `py` 모듈은 읽을 때 SV 조각으로 낮추므로 Validator, Emitter, 하니스는 같은 경로를 탑니다. 설계 모델(`py` 조각)과 참조 모델(Verifier)은 서로 다른 에이전트가 따로 씁니다. 같은 모델을 RTL의 원천과 기댓값에 함께 쓰지 않습니다 (검증이 순환하므로). 설계 모델 대 RTL 비교는 번역기 검사로만 쓰고, 판정은 늘 RTL 시뮬레이션으로 합니다.
-- **v1 제외.** generate, function/task, 하위 모듈 사이의 3상태 버스, 의도적 래치, 다중 비트 CDC, SVA는 아직 표현하지 못합니다. inout은 `top`/`block_top` 경계에서만 `tristate` 블록으로 표현하고, 하위 모듈은 `_o`, `_oe`, `_i` 포트로 나눕니다. 원본 RTL의 generate와 function은 이식할 때 고정한 파라미터로 펼쳐 옮깁니다 (4.5).
+- **도메인 에지.** 도메인은 상승 에지(`pos`)나 하강 에지(`neg`)입니다. 하강 에지 도메인은 같은 클럭의 상승 에지 도메인과 한 클럭 그룹으로 묶어(반주기 경로) 서로 읽을 수 있습니다. 분주 관계, 동기화 셀, 리셋 동기화는 상승 에지 도메인에만 둡니다. 하니스와 차분 시뮬레이션은 하강 에지 도메인의 입력을 상승 에지에서 바꾸고, 설계 모델 실행기는 하강 에지 시각에 그 도메인을 진행합니다.
+- **function과 SVA.** `functions`는 모듈 안의 automatic function/task입니다. 본문은 인자와 지역 변수만 읽고 쓰므로(모듈 신호는 인자로) 조각의 읽기·쓰기 분석이 그대로 맞습니다. task는 `comb`에서만 부르고 출력 인자로 넘긴 신호가 그 조각의 쓰기입니다. `assertions`는 SVA 속성이고, Emitter가 도메인 클럭과 `disable iff`를 씌워 합성에서 빠지게 냅니다. 시뮬레이션에서 실패하면 멈추지 않고 보고 줄을 내며, Verify가 이를 그 테스트의 실패로 읽어 assert는 Repair로, assume은 Verifier로 보냅니다.
+- **inout 패드.** 하니스와 설계 모델 실행기는 inout 포트 P를 바깥 장치의 `P_pad_o`, `P_pad_oe`와 패드 값 `P_pad_val`로 다룹니다 (블록 구동 > 바깥 구동 > 풀업). 바깥 장치가 구동하는데 패드 값이 다르면 블록이 같은 패드를 다른 값으로 구동한 것이므로, 하니스가 동시 구동 충돌로 실패시킵니다 (2-state 시뮬레이터에서도 잡힘).
+- **v1 제외.** generate, 하위 모듈 사이의 3상태 버스, 의도적 래치는 아직 표현하지 못합니다. inout은 `top`/`block_top` 경계에서만 `tristate` 블록으로 표현하고, 하위 모듈은 `_o`, `_oe`, `_i` 포트로 나눕니다. 원본 RTL의 generate는 이식할 때 고정한 파라미터로 펼쳐 옮깁니다 (4.5).
 
 ## 6. 계층 간 인터페이스와 환류
 

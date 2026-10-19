@@ -52,6 +52,10 @@ def section2(l1: dict) -> str:
         p = pds.get(pd, {})
         rows.append([d["name"], d["clock"], _freq(d.get("freq_mhz")), ", ".join(ports), ", ".join(acts), sync, ", ".join(rel),
                      pd or "없음", p.get("isolation", "없음"), p.get("retention", "없음")])
+    if any(d["edge"] == "neg" for d in doms):   # 하강 에지 도메인이 있을 때만 클럭 에지 열을 넣는다
+        head = SEC2_HEAD[:2] + ["클럭 에지"] + SEC2_HEAD[2:]
+        rows = [r[:2] + ["하강" if d["edge"] == "neg" else "상승"] + r[2:] for r, d in zip(rows, doms)]
+        return _table(head, rows)
     return _table(SEC2_HEAD, rows)
 
 

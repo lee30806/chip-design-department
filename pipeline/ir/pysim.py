@@ -9,20 +9,25 @@ Python 조각을 SV와 같은 의미로 실행한다. 판정은 늘 방출한 RT
 - `comb`는 blocking, `seq`와 `fsm`은 클럭 에지에서 한꺼번에 갱신(non-blocking)한다. 리셋이 있는 `seq`는 리셋 중에
   리셋값을 넣는다. 비동기 리셋은 리셋이 걸린 동안 바로 리셋값을 유지한다.
 - 조합 논리는 값이 더 바뀌지 않을 때까지 되풀이해 계산한다 (조합 루프는 Validator V6이 막음).
-- 클럭 도메인이 여럿이면 `step(도메인 집합)`으로 그 시각에 상승 에지가 있는 최상위 도메인을 한꺼번에 진행한다
+- 클럭 도메인이 여럿이면 `step(도메인 집합)`으로 그 시각에 동작 에지가 있는 최상위 도메인을 한꺼번에 진행한다
   (같은 시각의 에지는 RTL의 non-blocking처럼 에지 직전 값으로 계산해 함께 갱신). 에지 시각은 부르는 쪽이 정한다
-  (`schedule`). `step()`은 모든 도메인을 함께 진행한다.
+  (`schedule`). `step()`은 모든 도메인을 함께 진행한다. 하강 에지 도메인(`edge: neg`)의 동작 에지는 클럭의 하강 에지다
+  (`schedule`의 falling). 실행기 안에서는 상승 에지 도메인과 같게 다룬다.
 - 추가 동기 리셋은 에지에서 주 리셋 다음으로 리셋값을 넣는다. `reset.synchronize` 도메인은 `rst_sync` 셀을 거친 리셋을 쓴다.
 - 표준 셀(`cdc_sync`의 `2ff`/`gray`/`pulse`, `cdc_fifo`, `rst_sync`)은 `pipeline/emitter/stubs/`의 RTL과 같은 의미로
   실행한다. 셀 내부 레지스터는 `<인스턴스 경로>u_<id>.<레지스터>`로 값 표에 둔다.
 
-지원 범위: `comb`/`seq`/`fsm`/`memory`(inferred)/`cdc_sync`/`cdc_fifo` 블록, 인스턴스와 연결(계층). struct, signed는 아직 없다.
+지원 범위: `comb`/`seq`/`fsm`/`memory`(inferred)/`cdc_sync`/`cdc_fifo`/`tristate` 블록, 인스턴스와 연결(계층). struct, signed는 아직 없다.
 메모리 워드는 `<이름>[<주소>]` 키로 값 표에 둔다 (쓴 적 없는 워드는 0).
-조각이 SV인 모듈(`lang: sv`)은 동작 블록이 셀과 메모리뿐일 때만(구조만 있는 Block Top) 실행할 수 있다.
+조각이 SV인 모듈(`lang: sv`)은 동작 블록이 셀, 메모리, `tristate`뿐일 때만(구조만 있는 Block Top) 실행할 수 있다.
+- `tristate`(최상위 모듈의 inout 포트 P): 하니스의 패드 모델과 같은 포트로 바깥과 만난다. 입력 P_pad_o, P_pad_oe(바깥 장치),
+  출력 P_pad_val(패드 값). 패드 비트는 블록이 구동하면 블록 값, 아니면 바깥 장치가 구동하면 그 값, 둘 다 아니면 풀업으로 1이다
+  (하니스 래퍼의 약한 바깥 구동과 풀업과 같음). `i`는 패드 값이다. 최상위가 아닌 모듈의 `tristate`는 실행하지 않는다.
 """
 from __future__ import annotations
 
 import ast
+import types
 
 from pipeline.ir.model import Module
 from pipeline.ir.pyfrag import FragError, Widths, mask, operand_w, parse_body, parse_expr, parse_literal, type_width, w_val
@@ -32,7 +37,15 @@ class SimError(Exception):
     pass
 
 
+class _Ret(Exception):
+    """function 본문의 return."""
+
+    def __init__(self, v: int):
+        self.v = v
+
+
 CELLS = ("cdc_sync", "cdc_fifo")
+PAD_SUFFIX = ("_pad_o", "_pad_oe", "_pad_val")   # 하니스의 패드 모델 포트 (pipeline/tb/gen.py와 같음)
 
 
 def _bin2gray(v: int) -> int:
@@ -47,12 +60,14 @@ def _gray2bin(g: int) -> int:
     return b
 
 
-def schedule(periods: dict[str, int], until: int) -> list[tuple[int, set[str]]]:
-    """도메인별 주기(ps)로 시각 0부터 until까지의 상승 에지: [(시각, 그 시각에 오르는 도메인)]. 모든 클럭이 시각 0에 함께 오른다."""
+def schedule(periods: dict[str, int], until: int, falling=()) -> list[tuple[int, set[str]]]:
+    """도메인별 주기(ps)로 시각 0부터 until까지의 동작 에지: [(시각, 그 시각에 동작하는 도메인)]. 모든 클럭이 시각 0에
+    함께 오른다. falling의 도메인(하강 에지 도메인)은 반주기 뒤의 하강 에지에서 동작한다."""
     times: dict[int, set[str]] = {}
     for d, per in periods.items():
-        for k in range(until // per + 1):
-            times.setdefault(k * per, set()).add(d)
+        off = per // 2 if d in falling else 0
+        for k in range((until - off) // per + 1 if until >= off else 0):
+            times.setdefault(k * per + off, set()).add(d)
     return sorted(times.items())
 
 
@@ -61,11 +76,13 @@ class _Scope:
 
     def __init__(self, sim: "PySim", m: Module, prefix: str, params: dict[str, str]):
         self.sim, self.m, self.prefix = sim, m, prefix
-        if m.lang != "py" and any(b["kind"] not in ("memory", *CELLS) for b in m.blocks):
+        if m.lang != "py" and any(b["kind"] not in ("memory", "tristate", *CELLS) for b in m.blocks):
             raise SimError(f"{m.name}: SV 조각 모듈은 실행할 수 없음 (lang: py만)")
         for b in m.blocks:
-            if b["kind"] not in ("comb", "seq", "fsm", "memory", *CELLS):
+            if b["kind"] not in ("comb", "seq", "fsm", "memory", "tristate", *CELLS):
                 raise SimError(f'{m.name}: 실행기가 아직 모르는 블록 {b["kind"]}')
+            if b["kind"] == "tristate" and prefix:
+                raise SimError(f'{m.name}: tristate는 최상위 모듈에서만 실행함 (inout은 top과 block_top 경계)')
         try:
             self.wd = Widths.of(m.source_raw, params)
         except FragError as e:
@@ -78,12 +95,15 @@ class _Scope:
         self.seqs: list[tuple[str, list[ast.stmt], list[tuple[str, int]]]] = []
         self.fsms: list[tuple[str, str, int, dict[int, list[tuple[ast.expr, int]]]]] = []
         self.cells: list[dict] = []
+        self.tris: list[dict] = []
         for b in m.blocks:
             sb = src.get(b["id"], b)
             if b["kind"] == "comb":
                 self.combs.append(parse_body(sb["body"]))
             elif b["kind"] == "memory":
                 continue
+            elif b["kind"] == "tristate":
+                self.tris.append(b)
             elif b["kind"] in CELLS:
                 self.cells.append(b)
             elif b["kind"] == "seq":
@@ -95,6 +115,15 @@ class _Scope:
                 for t in sb["transitions"]:
                     trs.setdefault(self.consts[t["from"]], []).append((parse_expr(t["cond"]), self.consts[t["to"]]))
                 self.fsms.append((b["domain"], f'{b["state_name"]}_q', self.consts[b["reset_state"]], trs))
+        # function/task: 본문마다 인자와 지역 변수만 가진 이름 공간 (모듈 신호는 인자로만 들어옴. 재귀는 Validator가 막음)
+        self.fns: dict[str, tuple[dict, list[ast.stmt], _Scope]] = {}
+        srcf = {f["name"]: f for f in m.source_raw.get("functions", [])}
+        for f in m.functions:
+            fsc = _Scope.__new__(_Scope)
+            fsc.sim, fsc.m, fsc.prefix = types.SimpleNamespace(val={}), m, ""
+            fsc.wd = self.wd.fn_scope(f["name"])
+            fsc.consts, fsc.width, fsc.fns = fsc.wd.consts, fsc.wd.width, self.fns
+            self.fns[f["name"]] = (f, parse_body(srcf.get(f["name"], f)["body"]), fsc)
         for n, w in self.width.items():
             sim.width[prefix + n] = w
             sim.val.setdefault(prefix + n, 0)
@@ -171,6 +200,8 @@ class _Scope:
             return (base >> i) & 1 & m
         if isinstance(n, ast.Call):
             f, a = n.func.id, n.args
+            if f in self.fns:
+                return self.call(f, a, env) & m
             if f == "u":
                 return self._ci(a[1], env) & m
             if f == "cat":
@@ -195,6 +226,23 @@ class _Scope:
     def truth(self, n: ast.expr, env: dict[str, int]) -> bool:
         return bool(self.ev(n, env, operand_w(self._w(n, env))))
 
+    def call(self, name: str, args: list[ast.expr], env: dict[str, int]) -> int | dict[str, int]:
+        """function/task 실행. 입력 인자는 인자 폭으로 계산해 넘긴다. function은 반환값, task는 끝났을 때의 지역 값."""
+        f, body, fsc = self.fns[name]
+        loc: dict[str, int] = {v["name"]: 0 for v in f.get("vars", [])}
+        for a, x in zip(f["args"], args):
+            aw = fsc.width[a["name"]]
+            loc[a["name"]] = self.ev(x, env, max(aw, self._w(x, env))) & mask(aw) if a["dir"] == "input" else 0
+        fsc.sim.val = loc
+
+        def write(n, fn):
+            loc[n] = fn(loc.get(n, 0)) & mask(fsc.width[n])
+        try:
+            fsc.run(body, {}, write)
+        except _Ret as r:
+            return r.v
+        return 0 if f["kind"] == "function" else loc
+
     # -- 문장 --
     def run(self, body: list[ast.stmt], env: dict[str, int], write) -> None:
         """write(이름, 새 값 함수): comb는 바로, seq는 모아 두었다가 에지에서 쓴다."""
@@ -215,6 +263,15 @@ class _Scope:
                 lo, hi = (args[0], args[1]) if len(args) == 2 else (0, args[0])
                 for i in range(lo, hi):
                     self.run(s.body, {**env, s.target.id: i}, write)
+            elif isinstance(s, ast.Return):
+                rw = w_val(self.wd.ret, self.consts)
+                raise _Ret(self.ev(s.value, env, max(rw, self._w(s.value, env))) & mask(rw))
+            elif isinstance(s, ast.Expr) and isinstance(s.value, ast.Call) and getattr(s.value.func, "id", None) in self.fns:
+                name = s.value.func.id   # task: 출력 인자의 값을 대입 대상에 쓴다
+                loc = self.call(name, s.value.args, env)
+                for a, x in zip(self.fns[name][0]["args"], s.value.args):
+                    if a["dir"] == "output":
+                        self.assign(x, ast.Constant(loc[a["name"]]), env, write)
             # pass와 설명 문자열은 아무것도 하지 않음
 
     def assign(self, t: ast.expr, val: ast.expr, env: dict[str, int], write) -> None:
@@ -305,6 +362,13 @@ class PySim:
             if p.derived:   # 최상위 클럭과 리셋
                 self.width[p.name] = 1
                 self.val.setdefault(p.name, 0)
+        self.pads: dict[str, dict] = {}   # inout 포트 → tristate 블록 (패드 모델 포트로 실행)
+        for b in self.scopes[0].tris:
+            w = self.scopes[0].wid(b["i"])
+            self.pads[b["pad"]] = b
+            for sfx, pw in zip(PAD_SUFFIX, (w, 1, w)):
+                self.width[b["pad"] + sfx] = pw
+                self.val.setdefault(b["pad"] + sfx, 0)
 
     def _build(self, m: Module, prefix: str, params: dict[str, str], dmap: dict[str, str],
                parent: tuple[str, dict[str, str]] | None) -> None:
@@ -471,6 +535,16 @@ class PySim:
                     nxt = (val[k + "rbin"] + 1) & mask(a + 1)
                     pending[k + "rbin"], pending[k + "rgray"] = nxt, _bin2gray(nxt)
 
+    def _pad_comb(self, b: dict) -> None:
+        """패드 값: 블록 구동 > 바깥 장치 구동 > 풀업(1). 비트마다."""
+        val, pad = self.val, b["pad"]
+        w = self.width[pad + "_pad_val"]
+        oe = val[b["oe"]] if self.width.get(b["oe"], 1) == w and w > 1 else (mask(w) if val[b["oe"]] & 1 else 0)
+        drive = val[b["o"]] if b["style"] == "push_pull" else 0
+        ext = val[pad + "_pad_o"] if val[pad + "_pad_oe"] else mask(w)   # 바깥이 놓으면 풀업
+        v = (drive & oe) | (ext & ~oe & mask(w))
+        val[pad + "_pad_val"] = val[b["i"]] = v
+
     # -- 실행 --
     def set(self, values: dict[str, int]) -> None:
         for k, v in values.items():
@@ -490,6 +564,8 @@ class PySim:
             self._reset_ports()
             for dst, src in self.links:
                 self.val[dst] = self.val[src] & mask(self.width[dst])
+            for b in self.pads.values():
+                self._pad_comb(b)
             for sc in self.scopes:
                 for b in sc.cells:
                     self._cell_comb(sc, b)
@@ -515,16 +591,20 @@ class PySim:
         self.settle()
 
     def outputs(self) -> dict[str, int]:
-        return {p.name: self.val[p.name] for p in self.top.ports if p.dir == "output"}
+        """최상위 출력 포트 (inout 포트는 패드 값 P_pad_val)."""
+        out = {p.name: self.val[p.name] for p in self.top.ports if p.dir == "output"}
+        return out | {f"{pad}_pad_val": self.val[f"{pad}_pad_val"] for pad in self.pads}
 
     def inputs(self) -> dict[str, int]:
-        """최상위 입력 포트와 폭 (클럭 제외, 리셋 포함)."""
+        """최상위 입력 포트와 폭 (클럭 제외, 리셋 포함). inout 포트는 바깥 장치의 P_pad_o, P_pad_oe."""
         clocks = {d["clock"] for d in self.top.domains.values()}
-        return {p.name: self.width[p.name] for p in self.top.ports if p.dir == "input" and p.name not in clocks}
+        out = {p.name: self.width[p.name] for p in self.top.ports if p.dir == "input" and p.name not in clocks}
+        return out | {pad + sfx: self.width[pad + sfx] for pad in self.pads for sfx in PAD_SUFFIX[:2]}
 
     def input_domains(self) -> dict[str, str | None]:
         """최상위 입력 포트 → 도메인 (비동기 입력은 None). 리셋 포트는 그 리셋을 쓰는 첫 도메인."""
         out = {p.name: p.domain for p in self.top.ports if p.dir == "input" and not p.derived}
+        out |= {pad + sfx: b["domain"] for pad, b in self.pads.items() for sfx in PAD_SUFFIX[:2]}
         for d in self.top.domains:
             for port in self.top.reset_ports(d):
                 out.setdefault(port, d)

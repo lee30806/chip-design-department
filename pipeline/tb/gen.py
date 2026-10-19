@@ -66,8 +66,10 @@ def _bundle(p: dict) -> dict:
 
 
 def harness_config(m: Module) -> dict:
-    """L1만 읽는다. inout 포트가 있으면 패드 모델 뷰(pad_view)로 바꿔 읽는다 (DUT 자리에는 pad_top_sv 래퍼를 둠)."""
-    if inout_ports(m.raw):
+    """L1만 읽는다. inout 포트가 있으면 패드 모델 뷰(pad_view)로 바꿔 읽는다 (DUT 자리에는 pad_top_sv 래퍼를 둠).
+    pads는 패드 체커(동시 구동 충돌)가 볼 inout 포트 이름이다."""
+    pads = [p["name"] for p in inout_ports(m.raw)]
+    if pads:
         m = Module(pad_view(m.raw))
     clocks = {d["name"]: (d["clock"], round(1000.0 / d["freq_mhz"], 3) if d.get("freq_mhz") else DEFAULT_PERIOD_NS)
               for d in m.domains.values()}
@@ -90,6 +92,11 @@ def harness_config(m: Module) -> dict:
            "inputs": inputs, "port_domains": port_domains}
     if clock_sync:   # 단일 클럭 블록의 하니스는 예전과 같게 둔다
         cfg["clock_sync"] = clock_sync
+    neg = [d["name"] for d in m.domains.values() if d["edge"] == "neg"]
+    if neg:   # 하강 에지 도메인: 입력은 상승 에지에서 바꾸고 DUT는 하강 에지에서 받는다
+        cfg["neg_edge"] = neg
+    if pads:
+        cfg["pads"] = pads
     if extra_resets:
         cfg["extra_resets"] = extra_resets
     return cfg

@@ -36,7 +36,7 @@ TASK = """\
 
 ## 할 일
 1. `guide.md`를 읽는다.
-2. L1을 그대로 포함하고 L2(types, signals, 출력 포트의 kind/reset)와 L3(blocks)를 채운 IR 전체를 `{out}`에 JSON으로 쓴다.
+2. L1을 그대로 포함하고 L2(types, signals, 출력 포트의 kind/reset)와 L3(blocks, 필요하면 functions와 assertions)를 채운 IR 전체를 `{out}`에 JSON으로 쓴다.
 3. `python3 tools/pl.py validate {out} --l1 l1.json{lib_arg}`가 `"ok": true`가 될 때까지 고친다.
 
 ## 규칙

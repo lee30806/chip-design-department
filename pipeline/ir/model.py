@@ -12,6 +12,8 @@ IR 파일 하나가 모듈 하나다. 구조(L0~L2)는 JSON이고 동작(L3)은 
 - `fsm` 블록은 `<state_name>_q` 레지스터를 노출한다.
 - `memory` 블록은 배열 `name`을 노출한다. 쓰기 포트 도메인의 seq 블록이 쓰고, 읽기 포트 도메인의 블록이 읽는다.
 - inout 포트(top, block_top만)는 `tristate` 블록만 구동하고 읽는다. 조각에서 읽거나 쓸 수 없다.
+- `functions`(function, task)는 조각에서 부르는 이름이다. 신호가 아니라 reads에 적지 않는다. task의 출력 인자로 넘긴 신호는 쓰기다.
+- `assertions`(SVA)는 신호를 읽기만 한다. 구동이나 동작에 영향이 없다.
 """
 from __future__ import annotations
 
@@ -59,6 +61,7 @@ class Module:
             self._init(raw)
         except (KeyError, TypeError, AttributeError):
             self.params, self.domains, self.types, self.blocks = [], {}, [], []
+            self.functions, self.assertions = [], []
             self.instances, self.connections, self.bundles, self.ports, self.signals = [], [], {}, [], []
 
     def _init(self, raw: dict) -> None:
@@ -66,6 +69,8 @@ class Module:
         self.domains: dict[str, dict] = {d["name"]: d for d in raw.get("domains", [])}
         self.types: list[dict] = raw.get("types", [])
         self.blocks: list[dict] = raw.get("blocks", [])
+        self.functions: list[dict] = raw.get("functions", [])
+        self.assertions: list[dict] = raw.get("assertions", [])
         self.instances: list[dict] = raw.get("instances", [])
         self.connections: list[dict] = raw.get("connections", [])
         self.bundles: dict[str, dict] = {}
@@ -167,6 +172,10 @@ class Module:
 
     def type_names(self) -> set[str]:
         return {t["name"] for t in self.types}
+
+    def tasks(self) -> dict[str, list[str]]:
+        """task 이름 → 인자 방향 목록 (input | output). 출력 인자로 넘긴 신호는 그 조각의 쓰기다."""
+        return {f["name"]: [a["dir"] for a in f["args"]] for f in self.functions if f["kind"] == "task"}
 
 
 IMPL_PORT_FIELDS = ("kind", "reset")

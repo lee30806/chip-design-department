@@ -34,9 +34,11 @@ IR에서 방출한 RTL이 원본과 **사이클 단위로 같은 출력**을 내
 
 ## 할 일
 1. `guide.md`를 읽고, 원본 모듈을 읽는다.
-2. 초안을 그대로 포함하고 L2(types, signals, 출력 포트의 kind/reset)와 L3(blocks)를 채운 IR 전체를 `{out}`에 쓴다.
+2. 초안을 그대로 포함하고 L2(types, signals, 출력 포트의 kind/reset)와 L3(blocks, 필요하면 functions와 assertions)를 채운 IR 전체를 `{out}`에 쓴다.
    - 원본의 `always @(posedge ...)`는 `seq` 블록(도메인의 클럭과 리셋은 Emitter가 씌움), 조합 로직은 `comb` 블록,
-     상태 머신은 `fsm` 또는 `seq`로 옮긴다. 원본의 `function`은 조각 안에 풀어 쓴다.
+     상태 머신은 `fsm` 또는 `seq`로 옮긴다. 원본의 `function`/`task`(지연 없음)는 `functions`로 옮긴다 (본문이 모듈 신호를
+     읽거나 쓰면 인자로 바꿈). 원본의 concurrent assertion(`assert property`)은 `assertions`로 옮긴다.
+     `always @(negedge clk ...)`는 초안의 하강 에지 도메인(`edge: neg`)의 `seq` 블록이다.
    - `generate`는 이미 고정한 파라미터로 고른 갈래만 옮긴다 (`generate for`의 로직은 조각 안 `for` 루프).
    - 한 `always`에 리셋이 있는 레지스터와 없는 레지스터가 섞여 있으면 `seq` 블록을 둘로 나눈다 (V7).
    - 리셋이 없고 초기값(`reg x = v`)만 있는 레지스터는 같은 블록의 다른 레지스터에 맞춰 리셋값 v를 준다.

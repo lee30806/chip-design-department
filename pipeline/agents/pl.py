@@ -153,7 +153,8 @@ def cmd_model(a) -> dict:
 def cmd_pysim(a) -> dict:
     """lang: py IR의 설계 모델을 사이클마다 실행한다. stim은 사이클마다 입력 값 dict의 목록이고, 빠진 입력은 0,
     리셋 포트를 주지 않으면 첫 2사이클만 주 리셋을 건다 (추가 리셋은 풀어 둠). 사이클마다 입력과 출력(에지 직전 값)을 낸다.
-    도메인이 여럿이면 행 하나가 상승 에지가 있는 시각 하나이고, 행에 시각(t_ps)과 그때 오르는 도메인(rising)을 함께 낸다."""
+    도메인이 여럿이면 행 하나가 동작 에지가 있는 시각 하나이고, 행에 시각(t_ps)과 그때 동작하는 도메인(rising)을 함께 낸다
+    (하강 에지 도메인은 클럭의 하강 에지에서 동작)."""
     import random
 
     from pipeline.ir.model import Module
@@ -175,14 +176,14 @@ def cmd_pysim(a) -> dict:
             resets.setdefault(x["port"], (0 if x["active"] == "low" else 1, False))
     stim = json.loads(Path(a.stim).read_text(encoding="utf-8")) if a.stim else None
     rng = random.Random(a.seed)
-    # 도메인이 여럿이면 행 하나가 상승 에지가 있는 시각 하나다 (주기는 freq_mhz, 없으면 10ns. 분주 도메인은 기준 주기 × 분주비)
+    # 도메인이 여럿이면 행 하나가 동작 에지가 있는 시각 하나다 (주기는 freq_mhz, 없으면 10ns. 분주 도메인은 기준 주기 × 분주비)
     multi = len(m.domains) > 1
     if multi:
         from pipeline.ir.pysim import schedule
         per = {n: round(1e6 / d["freq_mhz"]) if d.get("freq_mhz") else 10000 for n, d in m.domains.items()}
         per.update({n: per[m.clock_root(n)[0]] * m.clock_root(n)[1] for n in m.domains})
         n_rows = len(stim) if stim else a.cycles
-        events = schedule(per, max(per.values()) * n_rows)[:n_rows]
+        events = schedule(per, max(per.values()) * n_rows, {n for n, d in m.domains.items() if d["edge"] == "neg"})[:n_rows]
     rows = []
     for c in range(len(stim) if stim else a.cycles):
         vals = {n: (stim[c].get(n, 0) if stim else rng.getrandbits(w)) for n, w in sim.inputs().items()}

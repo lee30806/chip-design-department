@@ -11,7 +11,7 @@ import re
 import pyslang
 
 from pipeline.ir.model import Module, frozen_l1
-from pipeline.validator.checks import Issue, _block_usage, _endpoint_ports
+from pipeline.validator.checks import Issue, _block_usage, _endpoint_ports, call_args, task_outputs
 
 
 # ---------------------------------------------------------------- 공통: 조합 경로
@@ -27,11 +27,12 @@ def _ids(node) -> set[str]:
     return out
 
 
-def assign_deps(body: str) -> dict[str, set[str]]:
+def assign_deps(body: str, tasks: dict[str, list[str]] | None = None) -> dict[str, set[str]]:
     """comb 조각의 대입 대상별 의존 신호: 오른쪽 식의 신호와 블록 안 조건식(if, case)의 신호.
 
     조건식은 블록 전체에서 모아 모든 대입에 붙인다(보수적). 블록 단위 reads→writes보다 정밀해서,
     `s_ready = 1'b1`처럼 입력에 의존하지 않는 대입에는 경로를 만들지 않는다.
+    task 호출(tasks: 이름 → 인자 방향)은 출력 인자마다 입력 인자의 신호에 의존한다.
     """
     t = pyslang.SyntaxTree.fromText(f"module __d; always_comb begin\n{body}\nend endmodule")
     conds: set[str] = set()
@@ -48,6 +49,18 @@ def assign_deps(body: str) -> dict[str, set[str]]:
             lhs = left.identifier.valueText if hasattr(left, "identifier") else next(iter(_ids(left)), None)
             if lhs:
                 assigns.append((lhs, _ids(n.right)))
+        elif k.endswith("InvocationExpression") and tasks and hasattr(n.left, "identifier") and n.left.identifier.valueText in tasks:
+            dirs = tasks[n.left.identifier.valueText]
+            outs = task_outputs(n, dirs)
+            out_at = {o.sourceRange.start.offset for o in outs}
+            ins = set()
+            for e in call_args(n):
+                if e.sourceRange.start.offset not in out_at:
+                    ins |= _ids(e)
+            for o in outs:
+                lhs = o.identifier.valueText if hasattr(o, "identifier") else next(iter(_ids(o)), None)
+                if lhs:
+                    assigns.append((lhs, ins))
         return pyslang.VisitAction.Advance
 
     t.root.visit(visit)
@@ -62,7 +75,7 @@ def _comb_edges(m: Module, library: dict[str, Module]) -> dict[str, set[str]]:
     edges: dict[str, set[str]] = {}
     for b in m.blocks:
         if b["kind"] == "comb":
-            for w, deps in assign_deps(b["body"]).items():
+            for w, deps in assign_deps(b["body"], m.tasks()).items():
                 for r in deps & set(b["reads"]):
                     edges.setdefault(r, set()).add(w)
     for inst in m.instances:
@@ -154,23 +167,41 @@ def _top_level_items(body: str):
     return found
 
 
+def _first_full_writes(body: str, tasks: dict[str, list[str]]) -> dict[str, bool]:
+    """신호 → 처음 쓰는 최상위 문장이 무조건 전체 대입인지. task 호출의 출력 인자(이름 하나)도 전체 대입이다
+    (task 본문이 출력 인자를 먼저 무조건 대입하는지는 task 쪽에서 본다)."""
+    first: dict[str, bool] = {}
+    for item in _top_level_items(body):
+        writes, _, _, _ = _block_usage(item, tasks)
+        plain: set[str] = set()
+        if str(item.kind).endswith("ExpressionStatement"):
+            e = item.expr
+            if str(e.kind).endswith("AssignmentExpression") and str(e.left.kind).endswith("IdentifierName"):
+                plain = {e.left.identifier.valueText}
+            elif str(e.kind).endswith("InvocationExpression") and hasattr(e.left, "identifier") and e.left.identifier.valueText in tasks:
+                plain = {o.identifier.valueText for o in task_outputs(e, tasks[e.left.identifier.valueText])
+                         if str(o.kind).endswith("IdentifierName")}
+        for w in writes:
+            first.setdefault(w, w in plain)
+    return first
+
+
 def v6_latch_loop(m: Module, library: dict[str, Module]) -> list[Issue]:
     out: list[Issue] = []
+    tasks = m.tasks()
     for b in m.blocks:
         if b["kind"] != "comb":
             continue
-        first: dict[str, bool] = {}  # 신호 → 처음 쓰는 최상위 문장이 무조건 전체 대입인지
-        for item in _top_level_items(b["body"]):
-            writes, _, _, _ = _block_usage(item)
-            plain = None
-            if str(item.kind).endswith("ExpressionStatement") and str(item.expr.kind).endswith("AssignmentExpression") \
-                    and str(item.expr.left.kind).endswith("IdentifierName"):
-                plain = item.expr.left.identifier.valueText
-            for w in writes:
-                first.setdefault(w, w == plain)
+        first = _first_full_writes(b["body"], tasks)
         for w in b["writes"]:
             if not first.get(w, False):
                 out.append(Issue("V6", f'blocks/{b["id"]}', f"래치 위험: {w}에 본문 최상위의 무조건 대입이 먼저 있어야 함"))
+    for f in m.functions:   # task의 출력 인자도 같은 규칙 (comb 블록에서 부르므로)
+        if f["kind"] == "task":
+            first = _first_full_writes(f["body"], tasks)
+            for a in f["args"]:
+                if a["dir"] == "output" and not first.get(a["name"], False):
+                    out.append(Issue("V6", f'functions/{f["name"]}', f'래치 위험: 출력 인자 {a["name"]}에 본문 최상위의 무조건 대입이 먼저 있어야 함'))
     # 조합 루프
     edges = _comb_edges(m, library)
     color: dict[str, int] = {}
@@ -331,6 +362,14 @@ def v8_domain(m: Module, library: dict[str, Module]) -> list[Issue]:
             for r in reads:
                 if ASYNC in dom.get(r, set()):
                     out.append(Issue("V8", node, f"비동기 신호는 cdc_sync의 src로만 읽을 수 있음: {r}"))
+    for a in m.assertions:   # SVA는 도메인 클럭으로 표본을 뜨므로 같은 클럭 그룹의 신호만 읽는다 (리셋 포트는 예외)
+        node = f'assertions/{a["id"]}'
+        for r in a["reads"]:
+            ds = dom.get(r, set())
+            if r in resets or r in mems:
+                continue
+            if ASYNC in ds or (ds and not all(m.same_clock(d, a["domain"]) for d in ds - {None})):
+                out.append(Issue("V8", node, f'다른 클럭 그룹이나 비동기 신호를 읽음: {r} ({sorted(map(str, ds))}), 속성 도메인 {a["domain"]}'))
     return out
 
 

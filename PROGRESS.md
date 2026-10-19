@@ -17,6 +17,9 @@
 | P8 첫 Block Top End-to-End | **완료 (2026-10-13)** | 신규 블록 `axis_crc_append` RTL Freeze (실행 674c). agy Seat, 오픈소스 대체 EDA. 커밋 `34b2205` |
 | P8a Python 동작 조각 | **완료 (2026-10-14)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 비교 4블록 모두 통과 (adapter, cobs, crc는 두 언어 후보 모두, async_fifo는 방출기 수정 뒤 재검증에서 Python 후보). 범위: 후보 하나만 Python (후보 0 SV, 후보 1 Python) |
 | P9 운영 안정화 | **진행 중 (2026-10-14 사용자 지시로 재개)** | Web UI 2차(대시보드, 환류 관리, 리포트), 3차(설정, Seat 대화와 작업 지시) 구현. SSO와 EPC는 조건 대기 |
+| P10 다중 클럭과 리셋 확장 | **완료 (2026-10-16)** | 시험용 Block Top(`mc_top`). SDC는 문자열로만 확인 (SDC 검사 도구에는 넣지 않음) |
+| P11 원본 RTL에서 IR과 SPEC 만들기 | **진행 중** | 구현과 가짜 에이전트 시험 완료. 실제 에이전트로는 golden 4블록 중 `axis_cobs_decode`만 R6까지 원본과 같아짐 (2026-10-18) |
+| P12 v1 제외 항목 확장 | **완료 (2026-10-19, 에이전트 없이)** | 하강 에지 도메인, 패드 동시 구동 충돌, 실행기 `tristate`, function/task, SVA. 실제 에이전트 실행은 아직 |
 
 ## 제외 항목 (사용자 결정)
 
@@ -52,6 +55,17 @@
 | 하니스에서 설계 모델로 Verifier 테스트 실행 (RTL 전 빠른 실행) | P8a | 실제 비교에서 Repair 반복 비용이 크게 나올 때 |
 
 ## 진행 기록
+
+### 2026-10-19 P12 v1 제외 항목 확장 (사용자 지시)
+
+사용자 결정으로 보류·제외했던 항목 중 SpyGlass(E3)를 뺀 다섯 가지를 구현했다. 자세한 방법과 결정은 IMPLEMENTATION.md P12.
+- **하강 에지 도메인:** Validator 규칙(분주·동기화 셀·리셋 동기화는 상승 에지만, `domain_map` 에지 일치), 하니스와 차분 시뮬레이션(상승 에지에서 입력), 실행기와 번역기 검사(하강 에지 시각), R1(`<클럭>_neg` 도메인, 같은 클럭 포트는 `sync_to` div 1), SPEC "클럭 에지" 열.
+- **패드 동시 구동 충돌:** 하니스 패드 체커(T2). 4-state 시뮬레이터 없이 잡힌다.
+- **실행기 `tristate`:** 패드 모델 포트로 실행. 번역기 검사가 inout top을 패드 래퍼로 비교.
+- **function/task:** IR `functions`. Validator(본문 순수성, blocking, 재귀·타이밍 제어 금지, task는 comb에서만, 출력 인자는 쓰기), Emitter, Python 조각과 실행기, Repair patch.
+- **SVA:** IR `assertions`. 실패는 `[SVA] FAIL` 줄로 내고 Verify가 그 테스트의 실패로 읽음 (assert → Repair, assume → Verifier).
+- 시험: `tests/test_v1_ext.py` 24개, `tests/sim/test_v1_ext_sim.py` 8개. 기존 시험 함께 통과.
+- 남은 것: 실제 에이전트 실행으로는 확인하지 않음. generate, 하위 모듈 사이 3상태 버스, 의도적 래치는 범위 밖.
 
 ### 2026-10-14 P9 운영 안정화 재개 (사용자 지시)
 

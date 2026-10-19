@@ -617,14 +617,16 @@ Architect는 L0와 L1과 함께 가정 목록을 반드시 출력합니다. 하�
 
 ## v1 제외 항목과 구현 시 필요한 입력
 
-v1 스키마는 아래 여섯 가지를 표현하지 못하며, 이식 시험에서 필요한 형태를 확인한 뒤 추가합니다.
+v1 스키마는 아래 여섯 가지를 표현하지 못했고, 필요한 형태를 확인한 것부터 추가했습니다.
 
 - generate (인스턴스 반복, 조건부 생성). P11 원본 이식은 고정한 파라미터로 펼쳐 옮김
-- function과 task. 조각 안에 풀어 씀
-- inout과 tristate. P11에서 Block Top 경계의 `tristate` 블록으로 추가함 (하위 모듈 사이의 3상태 버스는 여전히 제외)
+- function과 task. P12에서 모듈의 `functions`로 추가함 (automatic, 본문은 인자와 지역 변수만 읽고 씀. task는 `comb`에서만 부름)
+- inout과 tristate. P11에서 Block Top 경계의 `tristate` 블록으로 추가함 (하위 모듈 사이의 3상태 버스는 여전히 제외). P12에서 하니스의 동시 구동 충돌 검사와 설계 모델 실행기의 `tristate` 실행을 더함
 - 의도적 래치
 - 다중 비트 CDC (async FIFO, 핸드셰이크). P10에서 `cdc_fifo`로 추가함
-- SVA
+- SVA. P12에서 모듈의 `assertions`(assert, assume, cover)로 추가함
+
+하강 에지 클럭도 P12에서 도메인의 `edge: neg`로 끝까지 쓸 수 있게 했습니다 (같은 클럭의 상승 에지 도메인과 한 클럭 그룹, 분주·동기화 셀 없음).
 
 구현을 시작하려면 아래 입력이 필요합니다.
 

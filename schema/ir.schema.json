@@ -113,6 +113,20 @@
           }
         }
       }
+    },
+    "functions": {
+      "description": "L3 도움 함수 (function, task). 모듈 안에서만 쓰는 automatic 함수로 방출한다. 본문은 인자와 지역 변수(vars), 상수(파라미터, enum), 앞에 정의한 function만 읽고 쓴다 (모듈 신호는 인자로 넘김). function은 입력 인자만 받고 값을 돌려주며 어느 조각에서나 부른다. task는 입력·출력 인자를 받아 출력 인자에 쓰고, comb 블록에서 문장으로만 부른다 (타이밍 제어 없음). module role만",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/function"
+      }
+    },
+    "assertions": {
+      "description": "SVA 속성 (assert, assume, cover). 방출할 때 도메인의 클럭과 리셋(disable iff)을 씌우고 합성에서 빠지게 감싼다. expr은 모듈 lang과 관계없이 SVA property 식이다. module role만",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assertion"
+      }
     }
   },
   "allOf": [
@@ -133,7 +147,9 @@
           "signals": false,
           "blocks": false,
           "instances": false,
-          "connections": false
+          "connections": false,
+          "functions": false,
+          "assertions": false
         }
       },
       "else": {
@@ -170,7 +186,9 @@
                 }
               ]
             }
-          }
+          },
+          "functions": false,
+          "assertions": false
         }
       }
     }
@@ -1113,6 +1131,158 @@
           }
         }
       ]
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "args",
+        "body"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ident"
+        },
+        "kind": {
+          "enum": [
+            "function",
+            "task"
+          ]
+        },
+        "ret": {
+          "description": "function의 반환 타입",
+          "$ref": "#/$defs/sv"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "dir",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/ident"
+              },
+              "dir": {
+                "enum": [
+                  "input",
+                  "output"
+                ]
+              },
+              "type": {
+                "$ref": "#/$defs/sv"
+              }
+            }
+          }
+        },
+        "vars": {
+          "description": "지역 변수 (본문 앞에 선언)",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/ident"
+              },
+              "type": {
+                "$ref": "#/$defs/sv"
+              }
+            }
+          }
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "function"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "ret"
+            ],
+            "properties": {
+              "args": {
+                "items": {
+                  "properties": {
+                    "dir": {
+                      "const": "input"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "ret": false
+            }
+          }
+        }
+      ]
+    },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "domain",
+        "reads",
+        "expr"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/node_id"
+        },
+        "kind": {
+          "enum": [
+            "assert",
+            "assume",
+            "cover"
+          ]
+        },
+        "domain": {
+          "$ref": "#/$defs/ident"
+        },
+        "reads": {
+          "$ref": "#/$defs/ident_list"
+        },
+        "expr": {
+          "description": "SVA property 식 (클럭과 disable iff는 Emitter가 씌움). 예: s_valid && !s_ready |=> s_valid && $stable(s_data)",
+          "type": "string",
+          "minLength": 1
+        },
+        "reset_disable": {
+          "description": "false면 리셋 중에도 검사한다 (기본 true: 도메인 리셋이 걸리면 끔)",
+          "type": "boolean"
+        },
+        "req": {
+          "description": "이 속성이 확인하는 SPEC 요구사항 ID",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

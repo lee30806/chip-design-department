@@ -3,6 +3,10 @@
 결과 한 건은 (툴, 규칙, 파일, 줄, 메시지)다. E3(VC SpyGlass)은 사내 실행 템플릿과 리포트 형식이 정해지면
 같은 형식으로 추가한다. 파이프라인 밖 툴의 리포트도 이 형식으로 바꿔 Classifier에 넣는다.
 
+IR의 SVA(`assertions`)가 방출된 RTL이면 E2는 `--assert`로 빌드한다. 속성이 실패하면 RTL이 `[SVA] FAIL ...` 줄을 내고
+시뮬레이션은 이어진다. 그 줄을 테스트 로그에서 읽어, 실패한 속성마다 결과 한 건(툴 `sva`, 규칙 `SVA_ASSERT`/`SVA_ASSUME`,
+파일 `<모듈>.sv`, 메시지 첫 낱말이 IR 노드 `assertions/<id>`)을 그 테스트의 실패로 낸다. cocotb 테스트가 통과해도 실패다.
+
     python3 -m pipeline.verify.run lint --top pkt_parser out/*.sv
     python3 -m pipeline.verify.run sim  --top pkt_parser --tests tb_pkt_parser --test-dir tests/sim out/*.sv
 """
@@ -123,6 +127,27 @@ def parse_coverage(paths: list[Path]) -> dict:
 
 
 SIM_TIMEOUT_S = float(os.environ.get("CHIPDEPT_SIM_TIMEOUT", "900"))
+SVA_MARK = "[SVA] FAIL"   # pipeline/emitter/sv.py의 SVA_FAIL과 같음
+_SVA_LINE = re.compile(r"\[SVA\] FAIL module=(\S+) id=(\S+) kind=(\S+) at (\S+)")
+_RUNNING = re.compile(r"running \S+?\.(\S+) \(")
+
+
+def parse_sva(log: str) -> list[Finding]:
+    """테스트 로그의 SVA 실패 줄 → 결과 (테스트, 모듈, 속성)마다 한 건. 줄이 속한 테스트는 앞의 `running <테스트>` 줄이다
+    (RTL은 보고 줄마다 $fflush 하므로 cocotb 로그와 순서가 맞음)."""
+    test, seen, out = None, {}, []
+    for ln in log.splitlines():
+        if mo := _RUNNING.search(ln):
+            test = mo.group(1)
+        elif mo := _SVA_LINE.search(ln):
+            mod, aid, kind, where = mo.groups()
+            key = (test, mod, aid)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] == 1:
+                out.append([test, mod, aid, kind, where])
+    return [Finding("sva", "SVA_ASSUME" if kind == "assume" else "SVA_ASSERT", f"{mod}.sv", None,
+                    f"assertions/{aid} ({mod}, {where}) {kind} 실패 {seen[(test, mod, aid)]}회", test=test)
+            for test, mod, aid, kind, where in out]
 
 
 def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir: Path,
@@ -146,6 +171,8 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     build_dir.mkdir(parents=True, exist_ok=True)
     build_log = build_dir / "build.log"
     runner = get_runner("verilator")
+    # IR의 SVA가 있는 RTL만 --assert로 빌드한다 (원본 RTL의 unique case 같은 검사가 새로 켜지지 않게)
+    sva = any(SVA_MARK in Path(f).read_text(errors="replace") for f in files)
     # cocotb는 빌드 환경의 PYTHONPATH를 이 프로세스의 sys.path로 둔다. 빌드 중 make가 부르는 python3가 다른 버전이면
     # 그 표준 라이브러리를 잘못 읽어 죽으므로, 이 인터프리터의 python3를 PATH 맨 앞에 둔다
     py_bin = str(Path(sys.executable).parent)
@@ -154,7 +181,8 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     try:
         # runner는 test 전에 같은 객체에서 build를 불러야 한다. 다시 쓸 때는 always=False로 소스가 바뀌었을 때만 빌드한다
         runner.build(sources=[Path(f) for f in files], hdl_toplevel=top, build_dir=build_dir,
-                     build_args=[*(build_args or []), *(RANDOM_INIT_BUILD if seeds else []), *(COVERAGE_BUILD if coverage else [])],
+                     build_args=[*(build_args or []), *(["--assert"] if sva else []), *(RANDOM_INIT_BUILD if seeds else []),
+                                 *(COVERAGE_BUILD if coverage else [])],
                      always=rebuild or not (build_dir / top).exists(),
                      log_file=build_log, timescale=timescale)
     except (Exception, SystemExit):
@@ -193,7 +221,8 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         finally:
             watchdog.cancel()
             sys.path[:] = saved
-        logs.append(test_log.read_text(errors="replace")[-20000:] if test_log.exists() else "")
+        full_log = test_log.read_text(errors="replace") if test_log.exists() else ""
+        logs.append(full_log[-20000:])
         if timed_out.is_set():
             running = re.findall(r"running \S+?\.(\S+) \(", logs[-1])
             last = running[-1] if running else None
@@ -206,7 +235,7 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         total, findings = parse_cocotb_results(results)
         if total == 0:
             findings = [Finding("cocotb", "NO_TESTS", None, None, f"{test_module}에서 실행된 테스트가 없음")]
-        per_seed[s] = findings
+        per_seed[s] = findings + (parse_sva(full_log) if sva else [])
     findings = list(dict.fromkeys(f for fs in per_seed.values() for f in fs))
     failed_sets = {frozenset(f.test for f in fs) for fs in per_seed.values()}
     if len(failed_sets) > 1:

@@ -15,6 +15,10 @@
   워드의 일부는 워드를 신호에 받은 뒤 고른다. 주소가 깊이를 넘으면 쓰기는 무시하고 읽기는 0이다 (SV에서는 X).
 - 도움 함수: `cat(a, b, ...)` → `{a, b}`, `rep(n, x)` → `{n{x}}`, `u(w, v)` → 폭 w의 상수,
   `any_bits(x)` → `|x`, `all_bits(x)` → `&x`, `parity(x)` → `^x`.
+- 모듈의 `functions`: function은 식에서 `f(a, b)`로 부르고 반환 타입의 폭을 가진다. task는 `comb`에서 문장 `t(a, out)`으로
+  부르고, 출력 인자 자리에는 대입 대상(신호나 그 비트 선택, 인자와 폭이 같음)을 쓴다. 인자는 위치로 넘기고, 입력 인자는
+  인자 폭으로 계산해 넘긴다. 본문은 같은 문장을 쓰되 이름은 인자와 지역 변수(`vars`), 상수, 앞에 정의한 function뿐이고
+  모두 blocking(`=`)이다. function 본문은 `return e`로 값을 돌려준다.
 
 의미 (부호 없는 값만):
 - 폭은 IEEE 1800 규칙을 따른다. + - * & | ^ ~ 와 조건식은 문맥 폭(대입 대상과 피연산자 중 가장 넓은 폭)으로 계산하고,
@@ -227,6 +231,8 @@ class Widths:
     params: set[str] = field(default_factory=set)
     mems: dict[str, SymW] = field(default_factory=dict)     # 메모리 이름 → 워드 폭
     depth: dict[str, int] = field(default_factory=dict)     # 메모리 이름 → 깊이
+    fns: dict[str, dict] = field(default_factory=dict)      # function/task 이름 → {"kind", "ret", "args": [(이름, 방향, 폭)], "vars"}
+    ret: SymW | None = None                                  # function 본문을 옮길 때 반환 폭
 
     def type_sym(self, t: str) -> SymW:
         t = t.strip()
@@ -272,6 +278,21 @@ class Widths:
             elif b.get("kind") == "memory":
                 w.mems[b["name"]] = w.type_sym(b["word_type"])
                 w.depth[b["name"]] = const_int(ast.parse(str(b["depth"]).strip(), mode="eval").body, w.consts)
+        for f in raw.get("functions", []):
+            if f["name"] in HELPERS:
+                raise FragError(f'function 이름 {f["name"]}가 도움 함수와 겹침')
+            w.fns[f["name"]] = {"kind": f["kind"], "ret": w.type_sym(f["ret"]) if f.get("ret") else None,
+                                "args": [(a["name"], a["dir"], w.type_sym(a["type"])) for a in f["args"]],
+                                "vars": [(v["name"], w.type_sym(v["type"])) for v in f.get("vars", [])]}
+        w.width = {n: w_val(s, w.consts) for n, s in w.sym.items()}
+        return w
+
+    def fn_scope(self, name: str) -> "Widths":
+        """function/task 본문의 이름 공간: 인자와 지역 변수만 (모듈 신호와 메모리는 없음). 상수와 앞에 정의한 function은 그대로."""
+        f = self.fns[name]
+        names = list(self.fns)
+        w = Widths(sym={n: s for n, _, s in f["args"]} | dict(f["vars"]), consts=self.consts, const_sym=self.const_sym,
+                   enums=self.enums, params=self.params, fns={k: self.fns[k] for k in names[:names.index(name)]}, ret=f["ret"])
         w.width = {n: w_val(s, w.consts) for n, s in w.sym.items()}
         return w
 
@@ -310,6 +331,10 @@ class Widths:
             return w_const(1)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
             f, a = n.func.id, n.args
+            if f in self.fns:
+                if self.fns[f]["kind"] != "function":
+                    raise FragError(f"task {f}는 식에서 부를 수 없음 (comb의 문장으로)", n.lineno)
+                return self.fns[f]["ret"]
             if f in ("cat", "rep"):
                 parts = a if f == "cat" else a[1:2]
                 ws = [self.self_sym(x, loops) for x in parts]
@@ -473,11 +498,31 @@ class _Tr:
             return f"{base}[{idx.value}]"
         return f"{base}[{self.expr(idx, operand_sym(self.sw(idx)))}]"
 
+    def args_sv(self, f: str, n: ast.Call) -> str:
+        """function/task 호출의 인자: 입력은 인자 폭으로 계산해 넘기고, 출력은 같은 폭의 대입 대상."""
+        spec = self.wd.fns[f]["args"]
+        if len(n.args) != len(spec) or n.keywords:
+            raise FragError(f"{f}의 인자는 위치로 {len(spec)}개", n.lineno)
+        out = []
+        for (an, ad, aw), x in zip(spec, n.args):
+            if ad == "output":
+                lhs, lw = self.target(x)
+                if not w_eq(lw, aw):
+                    raise FragError(f"{f}의 출력 인자 {an}에 폭이 다른 대상을 넘김", n.lineno)
+                out.append(lhs)
+                continue
+            ctx = w_max(aw, self.sw(x))
+            sv = self.expr(x, ctx)
+            out.append(sv if w_eq(ctx, aw) else f"{w_cast(aw)}'({sv})")
+        return ", ".join(out)
+
     def call(self, n: ast.Call) -> str:
         ln = n.lineno
         f = n.func.id if isinstance(n.func, ast.Name) else None
+        if f in self.wd.fns and self.wd.fns[f]["kind"] == "function":
+            return f"{f}({self.args_sv(f, n)})"
         if f not in HELPERS or n.keywords:
-            raise FragError(f"호출할 수 있는 것은 {sorted(HELPERS)} 뿐", ln)
+            raise FragError(f"호출할 수 있는 것은 {sorted(HELPERS)}와 모듈의 function 뿐", ln)
         a = n.args
         if f == "cat":
             if len(a) < 2:
@@ -514,7 +559,7 @@ class _Tr:
         raise FragError("대입 대상은 신호 이름이나 그 비트 선택", getattr(t, "lineno", None))
 
     def assign(self, t: ast.expr, val: ast.expr, pad: str) -> None:
-        op = "=" if self.kind == "comb" else "<="
+        op = "<=" if self.kind == "seq" else "="   # comb, function, task 본문은 blocking
         lhs, lw = self.target(t)
         ctx = w_max(lw, self.sw(val))
         rhs = self.expr(val, ctx)
@@ -570,6 +615,20 @@ class _Tr:
             self.stmts(s.body, depth + 1)
             self.out.append(f"{pad}end")
             self.loops.pop()
+        elif isinstance(s, ast.Return):
+            if self.kind != "function" or s.value is None:
+                raise FragError("return e 는 function 본문에서만", s.lineno)
+            ctx = w_max(self.wd.ret, self.sw(s.value))
+            sv = self.expr(s.value, ctx)
+            if not w_eq(ctx, self.wd.ret):
+                sv = f"{w_cast(self.wd.ret)}'({sv})"   # 문맥 폭이 반환 폭보다 넓으면 명시적으로 자름
+            self.out.append(f"{pad}return {sv};")
+        elif isinstance(s, ast.Expr) and isinstance(s.value, ast.Call) and isinstance(s.value.func, ast.Name) \
+                and s.value.func.id in self.wd.fns:
+            f = s.value.func.id
+            if self.wd.fns[f]["kind"] != "task" or self.kind not in ("comb", "task"):
+                raise FragError(f"문장으로 부를 수 있는 것은 comb 블록과 task 본문의 task 뿐: {f}", s.lineno)
+            self.out.append(f"{pad}{f}({self.args_sv(f, s.value)});")
         elif isinstance(s, ast.Pass):
             self.out.append(f"{pad};")
         elif isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant) and isinstance(s.value.value, str):
@@ -610,6 +669,15 @@ def lower_module(raw: dict) -> tuple[dict, list[tuple[str, str]], dict[str, list
         wd = Widths.of(raw)
     except (FragError, KeyError, TypeError, AttributeError) as e:
         return out, [("types", f"Python 조각의 폭을 정할 수 없음: {e}")], maps
+    for f in out.get("functions", []):
+        node = f'functions/{f.get("name")}'
+        try:
+            tr = _Tr(f["kind"], wd.fn_scope(f["name"]))
+            tr.stmts(parse_body(f["body"]), 0)
+            f["body"] = "\n".join(tr.out)
+            maps[f"{node}/body"] = tr.map
+        except FragError as e:
+            errs.append((node, str(e)))
     for b in out.get("blocks", []):
         if not isinstance(b, dict):
             continue

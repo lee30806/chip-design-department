@@ -8,7 +8,7 @@ patch 하나는 `{op, target, field, value}`이다. 노드는 배열 인덱스�
     {"op": "add",    "target": "blocks/k_fsm/transitions", "value": {"id": "tr4", ...}}
     {"op": "remove", "target": "signals/x"}
 
-- 쓸 수 있는 곳: `module`의 L2(`types`, `signals`), L3(`blocks`), 연결(`connections`).
+- 쓸 수 있는 곳: `module`의 L2(`types`, `signals`), L3(`blocks`, `functions`, `assertions`), 연결(`connections`).
   `top`과 `block_top`은 전부 동결 범위라 쓸 수 없다. `external`도 아무것도 쓸 수 없다.
 - lint waiver나 검사를 끄는 주석, 전처리 지시어(`` `ifdef ``, `` `line ``, `` `define `` 등)가 들어간 값은 거부한다.
 - 하나라도 거부되면 아무것도 적용하지 않는다.
@@ -31,9 +31,9 @@ from pathlib import Path
 
 from pipeline.ir.model import Module, load_library
 
-KEY = {"types": "name", "signals": "name", "blocks": "id", "connections": "id",
+KEY = {"types": "name", "signals": "name", "blocks": "id", "connections": "id", "functions": "name", "assertions": "id",
        "ports": "name", "params": "name", "domains": "name", "instances": "name", "transitions": "id"}
-WRITABLE = {"module": {"types", "signals", "blocks", "connections"},
+WRITABLE = {"module": {"types", "signals", "blocks", "connections", "functions", "assertions"},
             "top": set(), "block_top": set(), "external": set()}
 _WAIVER = re.compile(r"lint_off|spyglass\s*(disable|waive)|translate_off|synthesis\s+off|\bwaive", re.I)
 # `ifdef VERILATOR로 검사를 피하거나 `line으로 위치를 바꾸거나 `define으로 다른 파일에 새는 것을 막는다.

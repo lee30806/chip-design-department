@@ -3,6 +3,7 @@
 모듈 구조는 원본과 1:1이다 (모듈 이름, 계층, 인스턴스 이름, 포트). 동작(L2, L3)은 R3 Porter가 쓴다.
 
 - 도메인: `always @(posedge clk [or posedge/negedge rst])`, `always_ff`의 sensitivity와 첫 `if`의 리셋 분기에서 찾는다.
+  `negedge clk`는 하강 에지 도메인이다 (같은 클럭의 상승 에지 도메인과는 다른 도메인, 이름은 `<클럭>_neg`).
   비동기 리셋은 sensitivity에 있는 신호, 동기 리셋은 첫 `if` 조건이 입력 포트 하나이고 그 갈래가 상수만 대입하는 경우.
   하위 인스턴스의 도메인도 부모 도메인을 만든다 (domain_map).
 - 포트 도메인: 그 포트를 쓰거나 읽는 seq 블록(조합 경로와 하위 인스턴스를 거쳐)의 도메인.
@@ -164,14 +165,14 @@ class Extractor:
         rsync, procs = self._reset_syncs(procs, input_ports, top, name, body)
         sync_keys: set[tuple] = set()
         keys: dict[tuple, list] = {}
-        clocks: dict[str, str] = {}
+        clocks: dict[tuple[str, str], None] = {}   # (클럭, 에지). 같은 클럭의 상승·하강 에지는 다른 도메인
         for p in procs:
             if p.kind != "seq":
                 continue
             if p.clock not in input_ports:
                 self._reject(name, p.loc, "internal_clock", f"클럭 {p.clock}이 입력 포트가 아님 (블록 안에서 만든 클럭)")
                 continue
-            clocks.setdefault(p.clock, p.edge)
+            clocks.setdefault((p.clock, p.edge))
             if p.reset:
                 if p.reset[0] in input_ports:
                     keys.setdefault((p.clock, p.edge, *p.reset), []).append(p)
@@ -194,7 +195,7 @@ class Extractor:
                     self._reject(name, loc, "child_clock", f"{iname}의 클럭 {cd['clock']}에 입력 포트가 아닌 것이 연결됨: {ck or '식'}")
                     continue
                 if not cd.get("reset"):   # 리셋 없는 자식 도메인: 같은 클럭의 부모 도메인에 붙임 (아래에서 정함)
-                    clocks.setdefault(ck, cd["edge"])
+                    clocks.setdefault((ck, cd["edge"]))
                     child_maps[iname][cd["name"]] = ("noreset", ck, cd["edge"])
                     continue
                 rs = self._net(c, cd["reset"]["port"])
@@ -206,7 +207,7 @@ class Extractor:
                     key = (ck, cd["edge"], sk[1], sk[2], True)
                     sync_keys.add(key)
                     keys.setdefault(key, [])
-                    clocks.setdefault(ck, cd["edge"])
+                    clocks.setdefault((ck, cd["edge"]))
                     child_maps[iname][cd["name"]] = key
                     continue
                 if rs not in input_ports:
@@ -215,7 +216,7 @@ class Extractor:
                     continue
                 key = (ck, cd["edge"], rs, cd["reset"]["active"], cd["reset"]["async"])
                 keys.setdefault(key, [])
-                clocks.setdefault(ck, cd["edge"])
+                clocks.setdefault((ck, cd["edge"]))
                 child_maps[iname][cd["name"]] = key
                 for x in cd["reset"].get("extra", []):
                     ex = self._net(c, x["port"])
@@ -233,14 +234,14 @@ class Extractor:
                 self._review(name, keys[keep][0].loc, "mixed_reset",
                              f"리셋 {k[2]}을 비동기 {na}개 블록, 동기 {ns}개 블록에서 씀. {'비동기' if keep[4] else '동기'}로 둠 "
                              f"(나머지 블록은 리셋 시점이 원본과 다를 수 있음)")
-        for ck, edge in clocks.items():
-            if not any(k[0] == ck for k in keys):   # 리셋 없는 도메인
+        for ck, edge in clocks:
+            if not any(k[:2] == (ck, edge) for k in keys):   # 리셋 없는 도메인
                 keys[(ck, edge, None, None, None)] = []
                 self._review(name, floc, "no_reset", f"클럭 {ck}의 레지스터에 입력 포트 리셋이 없어 리셋 없는 도메인으로 둠")
         for cmap in child_maps.values():
             for cd, key in cmap.items():
                 if key and key[0] == "noreset":
-                    cmap[cd] = next(k for k in keys if k[0] == key[1])
+                    cmap[cd] = next(k for k in keys if k[:2] == key[1:3])
         if not clocks:   # 조합 모듈: 도메인 없이, 포트 도메인은 부모가 연결한 넷에서 물려받음
             self._review(name, floc, "comb_module", "클럭이 없는 조합 모듈 (도메인 없이 옮김. 포트 도메인은 연결한 넷을 따름)")
         order = {p.name: i for i, p in enumerate(body.portList)}
@@ -249,8 +250,6 @@ class Extractor:
         domains = []
         for key, dn in dnames.items():
             ck, edge, rs, act, asy = key
-            if edge == "neg":
-                self._reject(name, floc, "negedge", f"하강 에지 클럭 {ck} (파이프라인은 상승 에지 도메인만 씀)")
             dom = {"name": dn, "clock": ck, "edge": edge, "reset": {"port": rs, "active": act, "async": asy}}
             if rs is None:
                 del dom["reset"]
@@ -267,12 +266,15 @@ class Extractor:
             if extra and "reset" in dom:
                 dom["reset"]["extra"] = [{"port": e, "active": a} for e, a in extra]
                 self._review(name, keys[key][0].loc, "extra_reset", f"{dn} 도메인의 추가 동기 리셋 후보: {', '.join(e for e, _ in extra)}")
+            same = next((x for x in domains if x["clock"] == ck), None)
+            if same is not None:   # 클럭 포트가 같은 앞 도메인 (리셋이나 에지만 다름): 같은 클럭 (R2도 같게 둠)
+                dom["sync_to"] = {"domain": same["name"], "div": 1}
             domains.append(dom)
-        # 리셋 없는 seq 블록은 같은 클럭의 첫 도메인에 붙인다
+        # 리셋 없는 seq 블록은 같은 클럭, 같은 에지의 첫 도메인에 붙인다
         def dom_of(p: Proc) -> str | None:
             if p.reset:
                 return dnames.get((p.clock, p.edge, *p.reset))
-            return next((dn for k, dn in dnames.items() if k[0] == p.clock), None)
+            return next((dn for k, dn in dnames.items() if k[:2] == (p.clock, p.edge)), None)
         derived = {d["clock"] for d in domains} | {d["reset"]["port"] for d in domains if d.get("reset")} | \
                   {x["port"] for d in domains if d.get("reset") for x in d["reset"].get("extra", [])}
 
@@ -334,6 +336,8 @@ class Extractor:
             base = re.sub(r"(^clk_?|_?clk$|_?clock$|^clock_?)", "", k[0], flags=re.I) or k[0]
             if not re.match(r"^[A-Za-z_]", base):
                 base = k[0]
+            if k[1] == "neg":   # 같은 클럭의 하강 에지 도메인
+                base += "_neg"
             n, i = base, 2
             while n in used or n in SV_KEYWORDS:
                 n, i = f"{base}{i}", i + 1

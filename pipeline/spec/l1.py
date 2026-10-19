@@ -61,7 +61,9 @@ def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
         actives = ["low" if "low" in x.lower() else "high" for x in r["리셋 극성"].split(",")]
         actives += actives[-1:] * (len(rports) - len(actives))   # 극성을 하나만 쓰면 모두 같은 극성
         sync_col = r.get("리셋 동기", "")
-        d = {"name": r["도메인"], "clock": r["클럭 포트"], "edge": "pos",
+        edge_col = r.get("클럭 에지", "").lower()   # 선택 열. 없으면 상승 에지
+        d = {"name": r["도메인"], "clock": r["클럭 포트"],
+             "edge": "neg" if any(w in edge_col for w in ("하강", "neg", "fall")) else "pos",
              "reset": {"port": rports[0], "active": actives[0],
                        "async": "비동기" in sync_col or "async" in sync_col.lower()}}
         if rports[0] in NONE_WORDS:   # 리셋 없는 도메인
