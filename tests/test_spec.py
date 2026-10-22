@@ -46,7 +46,7 @@ x
 | 도메인 | 클럭 포트 | 주파수 | 리셋 포트 | 리셋 극성 | 리셋 동기 | 도메인 간 관계 | 전력 도메인 | isolation | retention |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | a | clk_a | 250 MHz | rst_a | high | 동기 | b와 비동기 | PD_A | clamp0 | 없음 |
-| b | clk_b | 32 kHz | rst_b_n | low | 비동기 | a와 비동기 | PD_AON | 없음 | 있음 |
+| b | clk_b | 32 kHz | rst_b_n | low | 동기 | a와 비동기 | PD_AON | 없음 | 있음 |
 
 ## 3. 인터페이스
 

@@ -175,6 +175,7 @@ class ValidReadyChecker:
         self.pending = None
         self.violations: list[dict] = []
         self.handshakes = 0
+        self.overwrite_ok = False   # SPEC이 덮어쓰기를 허용한 번들: ready 전 data 변화는 보지 않음 (valid 유지는 봄)
 
     def sample(self, cycle: int) -> None:
         v, r = _int(self.valid), _int(self.ready)
@@ -184,7 +185,7 @@ class ValidReadyChecker:
             if v != 1:
                 self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
                                         "rule": "valid가 ready 전에 내려감"})
-            elif d != self.pending:
+            elif d != self.pending and not self.overwrite_ok:
                 self.violations.append({"cycle": cycle, "domain": self.domain, "bundle": self.name,
                                         "rule": "ready 전에 data가 바뀜",
                                         "before": self.pending, "after": d})
@@ -353,6 +354,11 @@ class Harness:
             getattr(self.dut, port).value = active
         for d, (clk, _) in self.cfg["clocks"].items():
             await ClockCycles(getattr(self.dut, clk), reset_cycles)
+        # 리셋 풀기와 표본 시작은 뒤에서 한다. start 바로 뒤의 send가 모든 도메인의 사이클 0 전에 큐에 들어가야
+        # idle=N이 도메인과 상관없이 사이클 N에 나간다 (P11 R6 axis_async_fifo: 먼저 푼 s 도메인만 한 사이클 늦게 나감)
+        cocotb.start_soon(self._release())
+
+    async def _release(self) -> None:
         for d in self.cfg["clocks"]:
             await self._drive_edge(d)
             if d in self.cfg["resets"]:   # 리셋 없는 도메인은 풀 리셋이 없음
@@ -370,12 +376,20 @@ class Harness:
         d = self.drivers[bundle]
         d.pattern, d.then, d.i = list(pattern), then, 0
 
+    def allow_overwrite(self, bundle: str) -> None:
+        """T2: 이 출력 번들은 valid가 1인 동안 ready 전에 data가 바뀌어도 위반으로 보지 않는다 (valid가 ready 전에 내려가는 것은
+        계속 본다). SPEC이 아직 받지 않은 값을 새 값으로 덮어쓰도록 정한 번들에만 쓴다 (예: UART 수신 overrun, P11 uart R6)."""
+        c = next((c for c in self.checkers if isinstance(c, ValidReadyChecker) and c.name == bundle), None)
+        if c is None:
+            raise KeyError(f"DUT가 내는 valid_ready 번들이 아님: {bundle}")
+        c.overwrite_ok = True
+
     def cover_protocol(self, bundle: str, req: str | list[str]) -> None:
         """T2 체커가 이 번들의 전송을 한 번 이상 검사했으면 req(ID 하나나 목록)를 실행된 요구사항으로 센다 (T5)."""
         self.protocol_reqs[bundle] = req
 
     def add_property(self, name: str, domain: str, fn, req: str | list[str] | None = None) -> None:
-        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (그 도메인의 리셋 포트 포함, 클럭 제외)."""
+        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (모든 도메인의 리셋 포트 포함, 클럭 제외)."""
         self.properties.append((name, domain, fn, req))
 
     async def drain(self, extra: int = 5, timeout: int = 10000) -> None:
@@ -434,11 +448,12 @@ class Harness:
 
     async def _loop(self, domain: str) -> None:
         drivers = [d for n, d in self.drivers.items() if self._domain_of(n) == domain]
-        # 속성 표본에는 그 도메인의 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 클럭은 넣지 않는다.
+        # 속성 표본에는 리셋 포트도 넣는다 (테스트가 중간에 리셋을 걸면 체커가 알아야 함). 다른 도메인의 리셋 포트도 넣는다:
+        # 리셋을 함께 거는 다중 클럭 SPEC의 속성은 두 리셋을 같이 본다 (P11 R6). 클럭은 넣지 않는다.
         extra = self.cfg.get("extra_resets", {}).get(domain, [])
         rst = self.cfg["resets"].get(domain)
-        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + ([rst[0]] if rst else []) \
-            + [p for p, _ in extra]
+        rports = list(dict.fromkeys(p for p, _ in self.cfg["resets"].values()))
+        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + rports + [p for p, _ in extra]
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
         first = True
         while True:

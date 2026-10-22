@@ -354,7 +354,9 @@ assign m_status_bad_frame = bad_frame_sync3_reg ^ bad_frame_sync4_reg;
 assign m_status_good_frame = good_frame_sync3_reg ^ good_frame_sync4_reg;
 
 // reset synchronization
-always @(posedge m_clk or posedge m_rst) begin
+// (chip-design-department: 설계의 리셋을 한 방식으로 두려고 원본의 비동기 리셋 두 블록을 동기 리셋으로 바꾸고,
+//  리셋이 없던 2·3단에도 자기 도메인 리셋 때 1(리셋 중)을 넣음. 리셋을 푼 뒤 자기 클럭 2사이클 동안 리셋이 이어짐)
+always @(posedge m_clk) begin
     if (m_rst) begin
         s_rst_sync1_reg <= 1'b1;
     end else begin
@@ -365,9 +367,13 @@ end
 always @(posedge s_clk) begin
     s_rst_sync2_reg <= s_rst_sync1_reg;
     s_rst_sync3_reg <= s_rst_sync2_reg;
+    if (s_rst) begin
+        s_rst_sync2_reg <= 1'b1;
+        s_rst_sync3_reg <= 1'b1;
+    end
 end
 
-always @(posedge s_clk or posedge s_rst) begin
+always @(posedge s_clk) begin
     if (s_rst) begin
         m_rst_sync1_reg <= 1'b1;
     end else begin
@@ -378,6 +384,10 @@ end
 always @(posedge m_clk) begin
     m_rst_sync2_reg <= m_rst_sync1_reg;
     m_rst_sync3_reg <= m_rst_sync2_reg;
+    if (m_rst) begin
+        m_rst_sync2_reg <= 1'b1;
+        m_rst_sync3_reg <= 1'b1;
+    end
 end
 
 // Write logic

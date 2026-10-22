@@ -1,11 +1,13 @@
 // 임시 표준 비동기 FIFO 셀. 사내 표준 셀 이름과 포트를 받으면 바꾼다 (P0 자료).
 // valid/ready 양쪽 끝. 포인터는 DEPTH의 두 배까지 세는 이진 카운터와 그 gray 코드 레지스터이고,
 // 상대편 gray 포인터를 2단으로 동기화해(wq1, wq2 / rq1, rq2) 가득 참과 비어 있음을 정한다.
-// 받는 쪽 데이터는 읽기 포인터가 가리키는 칸을 조합으로 읽는다. 리셋은 양쪽 모두 active-low 비동기이고,
+// 받는 쪽 데이터는 읽기 포인터가 가리키는 칸을 조합으로 읽는다. 리셋은 양쪽 모두 active-low이고(ASYNC_RST=1이면 비동기,
+// 0이면 동기. 설계의 리셋 방식을 따름),
 // 한쪽만 리셋하면 포인터가 어긋나므로 두 리셋을 함께 건다. DEPTH는 2 이상인 2의 거듭제곱.
 module cdc_fifo #(
   parameter int WIDTH = 1,
-  parameter int DEPTH = 2
+  parameter int DEPTH = 2,
+  parameter bit ASYNC_RST = 1'b1
 ) (
   input  logic             src_clk,
   input  logic             src_rst_n,
@@ -37,18 +39,36 @@ module cdc_fifo #(
   assign dst_valid = rgray != wq2;
   assign dst_data = mem[rbin[A-1:0]];
 
-  always_ff @(posedge src_clk or negedge src_rst_n) begin
-    if (!src_rst_n) begin
-      wbin  <= '0;
-      wgray <= '0;
-      rq1   <= '0;
-      rq2   <= '0;
-    end else begin
-      rq1 <= rgray;
-      rq2 <= rq1;
-      if (src_valid && src_ready) begin
-        wbin  <= wnext;
-        wgray <= wnext ^ (wnext >> 1);
+  if (ASYNC_RST) begin : g_src_async
+    always_ff @(posedge src_clk or negedge src_rst_n) begin
+      if (!src_rst_n) begin
+        wbin  <= '0;
+        wgray <= '0;
+        rq1   <= '0;
+        rq2   <= '0;
+      end else begin
+        rq1 <= rgray;
+        rq2 <= rq1;
+        if (src_valid && src_ready) begin
+          wbin  <= wnext;
+          wgray <= wnext ^ (wnext >> 1);
+        end
+      end
+    end
+  end else begin : g_src_sync
+    always_ff @(posedge src_clk) begin
+      if (!src_rst_n) begin
+        wbin  <= '0;
+        wgray <= '0;
+        rq1   <= '0;
+        rq2   <= '0;
+      end else begin
+        rq1 <= rgray;
+        rq2 <= rq1;
+        if (src_valid && src_ready) begin
+          wbin  <= wnext;
+          wgray <= wnext ^ (wnext >> 1);
+        end
       end
     end
   end
@@ -57,18 +77,36 @@ module cdc_fifo #(
     if (src_valid && src_ready) mem[wbin[A-1:0]] <= src_data;
   end
 
-  always_ff @(posedge dst_clk or negedge dst_rst_n) begin
-    if (!dst_rst_n) begin
-      rbin  <= '0;
-      rgray <= '0;
-      wq1   <= '0;
-      wq2   <= '0;
-    end else begin
-      wq1 <= wgray;
-      wq2 <= wq1;
-      if (dst_valid && dst_ready) begin
-        rbin  <= rnext;
-        rgray <= rnext ^ (rnext >> 1);
+  if (ASYNC_RST) begin : g_dst_async
+    always_ff @(posedge dst_clk or negedge dst_rst_n) begin
+      if (!dst_rst_n) begin
+        rbin  <= '0;
+        rgray <= '0;
+        wq1   <= '0;
+        wq2   <= '0;
+      end else begin
+        wq1 <= wgray;
+        wq2 <= wq1;
+        if (dst_valid && dst_ready) begin
+          rbin  <= rnext;
+          rgray <= rnext ^ (rnext >> 1);
+        end
+      end
+    end
+  end else begin : g_dst_sync
+    always_ff @(posedge dst_clk) begin
+      if (!dst_rst_n) begin
+        rbin  <= '0;
+        rgray <= '0;
+        wq1   <= '0;
+        wq2   <= '0;
+      end else begin
+        wq1 <= wgray;
+        wq2 <= wq1;
+        if (dst_valid && dst_ready) begin
+          rbin  <= rnext;
+          rgray <= rnext ^ (rnext >> 1);
+        end
       end
     end
   end

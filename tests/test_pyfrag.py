@@ -184,3 +184,11 @@ def test_memory_write_only_in_seq():
     raw = _raw("py_ram")
     _blk(raw, "k_word")["body"] = "mem[waddr] = word"
     assert any("seq 블록에서만" in i.message for i in validate(Module(raw)))
+
+
+def test_sv_only_width_expression_is_a_fragment_error_not_a_crash():
+    """$clog2 같은 SV 식을 Python 조각 모듈의 타입에 쓰면 실행기를 죽이지 않고 조각 오류로 낸다 (2026-10-20 axis_async_fifo R6)."""
+    raw = {"module": "m", "role": "module", "lang": "py", "params": [{"name": "DEPTH", "type": "int", "default": "16"}],
+           "domains": [], "ports": [], "signals": [{"name": "p", "kind": "wire", "type": "logic [$clog2(DEPTH)-1:0]"}], "blocks": []}
+    errs = Module(raw).lower_errors
+    assert errs and "local 파라미터" in errs[0][1]

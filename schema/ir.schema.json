@@ -291,7 +291,7 @@
               "type": "boolean"
             },
             "extra": {
-              "description": "도메인의 추가 리셋 (동기만, 예: 소프트 리셋). 주 리셋 다음 우선순위로 같은 리셋값을 넣음. 포트는 주 리셋처럼 domains에서 유도",
+              "description": "도메인의 추가 리셋 (동기만, 예: 소프트 리셋. 동기 설계(async: false)에만 둠). 주 리셋 다음 우선순위로 같은 리셋값을 넣음. 포트는 주 리셋처럼 domains에서 유도",
               "type": "array",
               "minItems": 1,
               "items": {
@@ -319,7 +319,22 @@
               "type": "boolean"
             }
           },
-          "description": "도메인의 리셋. 없으면 리셋 없는 도메인 (레지스터에 리셋값을 둘 수 없고, Emitter는 리셋 분기 없이 방출함. P11)"
+          "if": {
+            "properties": {
+              "async": {
+                "const": true
+              }
+            },
+            "required": [
+              "async"
+            ]
+          },
+          "then": {
+            "properties": {
+              "extra": false
+            }
+          },
+          "description": "도메인의 리셋. 없으면 리셋 없는 도메인 (레지스터에 리셋값을 둘 수 없고, Emitter는 리셋 분기 없이 방출함. P11). 한 설계의 리셋은 모두 비동기이거나 모두 동기이고(V2), 추가 리셋(extra)은 동기 리셋이라 동기 설계에만 둠"
         },
         "async_to": {
           "description": "SPEC 2번 섹션의 도메인 간 관계. SDC 비동기 클럭 그룹의 출처",

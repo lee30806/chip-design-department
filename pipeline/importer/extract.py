@@ -5,6 +5,7 @@
 - 도메인: `always @(posedge clk [or posedge/negedge rst])`, `always_ff`의 sensitivity와 첫 `if`의 리셋 분기에서 찾는다.
   `negedge clk`는 하강 에지 도메인이다 (같은 클럭의 상승 에지 도메인과는 다른 도메인, 이름은 `<클럭>_neg`).
   비동기 리셋은 sensitivity에 있는 신호, 동기 리셋은 첫 `if` 조건이 입력 포트 하나이고 그 갈래가 상수만 대입하는 경우.
+  한 설계의 리셋은 모두 비동기이거나 모두 동기다. 섞여 있으면(모듈 안이든 모듈 사이든) `mixed_reset`으로 거부한다.
   하위 인스턴스의 도메인도 부모 도메인을 만든다 (domain_map).
 - 포트 도메인: 그 포트를 쓰거나 읽는 seq 블록(조합 경로와 하위 인스턴스를 거쳐)의 도메인.
 - 번들: `<p>_[t]valid`와 `<p>_[t]ready`가 반대 방향으로 있으면 `<p>_`로 시작하는 포트를 valid_ready 번들 후보로 묶는다 (R2에서 확정).
@@ -72,6 +73,15 @@ class Extractor:
     # ------------------------------------------------------------------ 진입점
     def run(self) -> dict:
         self._instance(self.d.top, top=True)
+        styles = {}   # 리셋 방식 → 그 방식을 쓰는 모듈 (모듈 안에서 섞인 것은 _module이 거부함)
+        for mn in self.order:
+            own = {d["reset"]["async"] for d in self.mods[mn].ir.get("domains", []) if d.get("reset")}
+            if len(own) == 1:
+                styles.setdefault(own.pop(), mn)
+        if len(styles) > 1:
+            self._reject(self.d.top.definition.name, None, "mixed_reset",
+                         f"모듈마다 리셋 방식이 다름: {styles[True]}은 비동기, {styles[False]}은 동기. "
+                         "한 설계의 리셋은 한 방식이어야 하므로 원본을 모두 비동기나 모두 동기로 고친 뒤 옮김")
         for w in self.d.warnings():
             if w["code"] in ("ImplicitNet", "ImplicitNetPortNoDefault"):
                 self._review(None, (w["file"], w["line"]), "implicit_net", "선언하지 않은 이름이 암묵적 1비트 wire가 됨 (오타일 수 있음)")
@@ -222,18 +232,13 @@ class Extractor:
                     ex = self._net(c, x["port"])
                     if ex not in input_ports:
                         self._reject(name, loc, "child_reset", f"{iname}의 추가 리셋 {x['port']}에 입력 포트가 아닌 것이 연결됨")
-        # 같은 클럭과 리셋 포트를 동기와 비동기로 함께 쓰면 많이 쓴 쪽으로 합친다 (원본 동작과 달라지므로 검토)
-        for k in [k for k in keys if k[4]]:
-            other = (*k[:4], False)
-            if other in keys and k in keys:
-                na, ns = len(keys[k]), len(keys[other])
-                keep, drop = (k, other) if na > ns else (other, k)
-                for p in keys[drop]:
-                    p.reset = keep[2:]
-                keys[keep] += keys.pop(drop)
-                self._review(name, keys[keep][0].loc, "mixed_reset",
-                             f"리셋 {k[2]}을 비동기 {na}개 블록, 동기 {ns}개 블록에서 씀. {'비동기' if keep[4] else '동기'}로 둠 "
-                             f"(나머지 블록은 리셋 시점이 원본과 다를 수 있음)")
+        # 한 설계의 리셋은 모두 비동기이거나 모두 동기다 (ARCHITECTURE 도메인 리셋). 섞이면 원본을 한 방식으로 고친 뒤 옮긴다
+        styles = {k[4] for k in keys}
+        if len(styles) > 1:
+            where = {asy: next((p.loc for k in keys if k[4] == asy for p in keys[k]), floc) for asy in styles}
+            self._reject(name, where[True], "mixed_reset",
+                         f"비동기 리셋({where[True][0]}:{where[True][1]})과 동기 리셋({where[False][0]}:{where[False][1]})이 섞임. "
+                         "한 설계의 리셋은 한 방식이어야 하므로 원본을 모두 비동기나 모두 동기로 고친 뒤 옮김")
         for ck, edge in clocks:
             if not any(k[:2] == (ck, edge) for k in keys):   # 리셋 없는 도메인
                 keys[(ck, edge, None, None, None)] = []
@@ -447,8 +452,8 @@ class Extractor:
                     if not is_first:
                         self._review(mod, loc, "reset_at_end", f"리셋 {cond[0]}이 블록 끝에서 일부 레지스터만 덮어씀 (리셋 없는 레지스터와 섞임. Porter가 seq 블록을 나눔)")
                     break
-        extra = []
-        nxt = first_stmt(rest_stmt) if rest_stmt is not None else None
+        extra = []   # 추가 동기 리셋은 동기 리셋 설계에만 둔다. 비동기 리셋 블록의 소프트 리셋은 동작으로 남긴다
+        nxt = first_stmt(rest_stmt) if rest_stmt is not None and reset and not reset[2] else None
         while reset and nxt is not None:
             c2 = cond_signal(nxt)
             if not (c2 and nxt.ifTrue is not None and const_only(nxt.ifTrue)

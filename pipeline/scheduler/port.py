@@ -83,7 +83,11 @@ class PortRun:
         self.state["agent_runs"] += 1
         self.save()
         res = run_task(cfg, task, work, check=check, retries=self.limit("agent_retries", 1), run_root=self.dir / "tasks")
-        self.event("agent", f"{name}: {'ok' if res.ok else 'fail'} ({res.attempts}회, {res.duration_s}s)")
+        why = ""
+        if not res.ok:   # 실패 원인을 남긴다 (2026-10-20 axis_async_fifo judge_2가 3.6초 만에 실패했는데 원인이 남지 않음)
+            last = res.runs[-1] if res.runs else {}
+            why = " " + "; ".join([*res.errors[:2], (last.get("stderr_tail") or last.get("stdout_tail") or "").strip()[-300:]]).strip("; ")
+        self.event("agent", f"{name}: {'ok' if res.ok else 'fail'} ({res.attempts}회, {res.duration_s}s){why}")
         return res
 
     # ------------------------------------------------------------------ R1, R2
@@ -186,7 +190,7 @@ class PortRun:
                 st["status"] = rr["status"]
                 if rr["status"] == "reset_only":
                     self.review("R4_RESET_ONLY", f"{name}: 리셋 구간과 직후 {r4.RESET_WINDOW}사이클에서만 원본과 다름 "
-                                                 f"(첫 차이 {rr.get('first')}). 원본의 리셋 없는 플롭이나 섞인 리셋 때문인지 확인", name)
+                                                 f"(첫 차이 {rr.get('first')}). 원본의 리셋 없는 플롭 때문인지 확인", name)
                 self.save()
                 return True
             prev, mismatch = ir, st["r4"]

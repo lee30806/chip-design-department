@@ -157,6 +157,15 @@ class Run:
         self.save()
 
     # -- 에이전트 작업 (끝난 작업은 다시 실행하지 않음) --
+    def work_dir(self, task_name: str) -> Path:
+        """에이전트 작업 디렉터리. 격리하면 저장소 밖(RUNS)에 두고, 실행 디렉터리의 전체 경로로 구분한다. 이름만 쓰면 다른
+        실행의 같은 이름 디렉터리(P11 R6의 r6/regen_0 등)와 겹쳐, 동시에 돌면 서로의 작업 디렉터리를 덮는다
+        (2026-10-19 golden 3블록 동시 실행에서 발생)."""
+        if not self.isolate:
+            return self.dir / "work" / task_name.replace("/", "__")
+        key = hashlib.sha256(str(self.dir.resolve()).encode()).hexdigest()[:8]
+        return RUNS / f"{self.dir.name}-{key}" / task_name.replace("/", "__")
+
     def agent(self, role: str, task, check) -> TaskResult:
         rec = self.dir / "tasks" / f"{task.name.replace('/', '__')}.json"
         if rec.exists():
@@ -165,8 +174,7 @@ class Run:
             if self.state["agent_runs"] >= self.roles.limits.get("budget_agent_runs", 10**9):
                 raise BudgetExceeded(f"에이전트 실행 예산 {self.roles.limits['budget_agent_runs']}회를 다 씀")
         task.isolate = self.isolate
-        work = self.dir / "work" / task.name.replace("/", "__") if not self.isolate else \
-            RUNS / self.dir.name / task.name.replace("/", "__")
+        work = self.work_dir(task.name)
         res = run_task(self.roles.agents[role], task, work, check=check, retries=self.roles.limits.get("agent_retries", 1),
                        run_root=RUNS if self.isolate else None)
         with self.lock:
@@ -1154,12 +1162,13 @@ def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir
 
 
 def minimize_diff(files: dict[int, list[Path]], top_ir: dict, mode: str, seed: int, work: Path, model: str | None,
-                  harness_dir: Path | None, budget: int = 150, sim_fn=None) -> dict | None:
+                  harness_dir: Path | None, budget: int = 150, sim_fn=None, plan_opts: dict | None = None) -> dict | None:
     """두 후보(files의 두 키)의 출력 차이를 유지하는 가장 작은 자극을 찾는다 (시뮬레이션만, 에이전트 없음).
     1) 차이 지점 뒤를 잘라 내고 2) 리셋, backpressure, 단독 입력 사건을 delta debugging으로 지운다.
-    sim_fn(후보 키, 계획, rebuild) → 기록: 후보마다 빌드 방식이 다를 때 (P11 R6의 원본 RTL은 -G, include가 필요)."""
+    sim_fn(후보 키, 계획, rebuild) → 기록: 후보마다 빌드 방식이 다를 때 (P11 R6의 원본 RTL은 -G, include가 필요).
+    plan_opts는 자극 계획 설정에 더한다 (R6의 `joint_reset`)."""
     ca, cb = sorted(files)
-    cfg = diff_cfg(top_ir, mode, seed, model, harness_dir)
+    cfg = diff_cfg(top_ir, mode, seed, model, harness_dir) | (plan_opts or {})
     plan = make_plan(cfg)
     built: set[int] = set()
     runs = 0

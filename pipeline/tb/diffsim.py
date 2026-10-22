@@ -5,6 +5,9 @@
 
 - steady: 처음 리셋 뒤에는 리셋을 넣지 않는다. 출력 트랜잭션 순서 전체를 비교한다.
 - reset: 중간에 리셋을 넣고, 마지막 리셋 뒤 쉬었다가 프로브 트랜잭션을 보낸다.
+  설정 `joint_reset`이 참이고 리셋 도메인이 둘 이상이면 모든 도메인에 같은 시각 구간으로 리셋을 건다 (가장 느린 클럭
+  4~8사이클). 이때는 마지막 리셋이 풀린 뒤의 출력만 비교한다 (P11 R6: 두 클럭 사이 리셋 전달 사이클은 SPEC이 정하지 않음).
+  또 앞부분이 같고 입력을 더 받은 쪽이 출력도 더 냈으면 끝의 개수 차이는 차이로 보지 않는다 (ready 지연도 SPEC이 정하지 않음).
 
 두 모드 모두 출력 트랜잭션 순서 전체를 비교한다. 리셋 때 흘러가던 데이터의 처리도 SPEC이 정할 수 있기 때문이다.
 차이가 SPEC이 정하지 않은 동작에서 났는지는 Verifier가 판단한다.
@@ -18,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import sys
@@ -80,10 +84,20 @@ def make_plan(cfg: dict) -> dict:
             "queues": {b["name"]: [next_txn(b) for _ in range(cycles)] for b in ins},   # 입력 트랜잭션 순서 (모든 후보에 같음)
             "probes": {b["name"]: [next_txn(b) for _ in range(400)] for b in ins},      # 프로브 구간은 처음부터 이 순서로
             "domains": {}}
+    rdoms = [d for d in sorted(h["clocks"]) if d in h["resets"]]
+    groups = _joint_resets(h, rdoms, seed, cycles) if mode == "reset" and cfg.get("joint_reset") and len(rdoms) > 1 \
+        else None
+    if groups is not None:
+        plan["reset_groups"], plan["after_reset"] = groups, True
     for k, d in enumerate(sorted(h["clocks"])):
         rng = random.Random(seed * 1000 + k)
         reset = [1] * INIT_RESET + [0] * (cycles + drain - INIT_RESET)
-        if mode == "reset" and d in h["resets"]:
+        if groups is not None:
+            for g in groups:
+                for gd, c0, n in g:
+                    if gd == d:
+                        reset[c0:c0 + n] = [1] * n
+        elif mode == "reset" and d in h["resets"]:
             c = INIT_RESET + 50
             while c < cycles - 300:
                 if rng.random() < 1 / 250:
@@ -110,6 +124,27 @@ def make_plan(cfg: dict) -> dict:
 
 
 INIT_RESET = 10
+
+
+def _joint_resets(h: dict, rdoms: list[str], seed: int, cycles: int) -> list[list]:
+    """모든 리셋 도메인에 같은 시각 구간으로 거는 리셋 → [[[도메인, 시작 사이클, 길이], ...], ...].
+    사이클 c의 입력은 하강 에지 (c + 0.5) × 주기에 바뀐다. 구간은 가장 느린 클럭 4~8사이클이고 프로브 구간 전에 끝난다."""
+    per = {d: h["clocks"][d][1] for d in rdoms}
+    slow = max(per.values())
+    rng = random.Random(seed * 1000 + 999)
+    t, t_end, groups = (INIT_RESET + 50) * slow, min((cycles - 500) * p for p in per.values()) - 20 * slow, []
+    while t < t_end:
+        if rng.random() < 1 / 250:
+            t1 = t + rng.randint(4, 8) * slow
+            parts = []
+            for d, p in per.items():
+                c0 = max(0, math.ceil(t / p - 0.5))
+                c1 = math.floor(t1 / p - 0.5)
+                parts.append([d, c0, c1 - c0 + 1])
+            groups.append(parts)
+            t = t1 + 10 * slow
+        t += slow
+    return groups
 _NEUTRAL = {"reset": 0, "ready": 1, "single": 0}
 _ACTIVE = {"reset": 1, "ready": 0, "single": 1}
 
@@ -117,8 +152,14 @@ _ACTIVE = {"reset": 1, "ready": 0, "single": 1}
 def episodes(plan: dict) -> list[dict]:
     """줄일 수 있는 자극 사건: 리셋 펄스(처음 리셋 제외), 출력 ready=0 구간, 단독 입력=1 구간."""
     out = []
+    groups = plan.get("reset_groups")
+    for parts in groups or []:   # 함께 거는 리셋은 한 사건으로 (하나만 지우면 한쪽 리셋이 됨)
+        d, c0, n = parts[0]
+        if plan["domains"][d]["reset"][c0] == 1:
+            out.append({"domain": d, "kind": "reset", "name": "reset", "start": c0, "len": n, "parts": parts})
     for d, dp in plan["domains"].items():
-        series = [("reset", "reset", dp["reset"])] + [("ready", n, v) for n, v in dp["ready"].items()] + \
+        series = ([] if groups is not None else [("reset", "reset", dp["reset"])]) + \
+                 [("ready", n, v) for n, v in dp["ready"].items()] + \
                  [("single", n, v) for n, v in dp["single"].items()]
         for kind, name, vals in series:
             c = INIT_RESET if kind == "reset" else 0
@@ -138,10 +179,11 @@ def without(plan: dict, eps: list[dict]) -> dict:
     """사건들을 지운(중립 값으로 바꾼) 계획."""
     p = json.loads(json.dumps(plan))
     for e in eps:
-        dp = p["domains"][e["domain"]]
-        vals = dp["reset"] if e["kind"] == "reset" else dp[e["kind"]][e["name"]]
-        for c in range(e["start"], e["start"] + e["len"]):
-            vals[c] = _NEUTRAL[e["kind"]]
+        for d, c0, n in e.get("parts") or [[e["domain"], e["start"], e["len"]]]:
+            dp = p["domains"][d]
+            vals = dp["reset"] if e["kind"] == "reset" else dp[e["kind"]][e["name"]]
+            for c in range(c0, c0 + n):
+                vals[c] = _NEUTRAL[e["kind"]]
     return p
 
 
@@ -152,6 +194,11 @@ def truncate(plan: dict, upto: int) -> dict:
     p["total"] = total
     if p["probe_at"] is not None and p["probe_at"] >= upto:
         p["probe_at"] = None
+    for parts in p.get("reset_groups") or []:   # 자르는 지점에 걸친 함께 리셋은 통째로 지운다
+        if any(c0 + n > upto for _, c0, n in parts):
+            for d, c0, n in parts:
+                vals = p["domains"][d]["reset"]
+                vals[c0:c0 + n] = [0] * len(vals[c0:c0 + n])
     for dp in p["domains"].values():
         for kind in ("reset", "ready", "single", "valid"):
             seq = [dp["reset"]] if kind == "reset" else list(dp[kind].values())
@@ -167,7 +214,10 @@ def describe(plan: dict, h: dict) -> list[str]:
     ready_port = {b["name"]: b["ready"] for b in h["bundles"]}
     lines = []
     for e in sorted(episodes(plan), key=lambda e: (e["start"], e["domain"])):
-        if e["kind"] == "reset":
+        if e["kind"] == "reset" and e.get("parts"):
+            what = ", ".join(f"{h['resets'][d][0]}={h['resets'][d][1]} ({d} 사이클 {c0}~{c0 + n - 1})"
+                             for d, c0, n in e["parts"]) + " (함께 리셋)"
+        elif e["kind"] == "reset":
             port, active = h["resets"][e["domain"]]
             what = f"{port}={active} (리셋)"
         elif e["kind"] == "ready":
@@ -234,6 +284,8 @@ if cocotb is not None:
                         q[n], idx[n], cur[n] = plan["probes"][n], 0, None
                     if p["reset"][c] and not (plan.get("valid_in_reset") and c >= INIT_RESET):
                         cur[n] = None   # refsim은 테스트를 되풀이하므로 처음 리셋 뒤의 리셋 사이클에도 기록된 valid를 낸다
+                        if plan.get("after_reset"):   # 함께 리셋: 리셋 전에 받은 개수가 달라도 리셋 뒤에는 같은 입력 순서
+                            idx[n] = 0
                     elif cur[n] is None and p["valid"][n][c] and idx[n] < len(q[n]):
                         cur[n] = q[n][idx[n]]
                         idx[n] += 1
@@ -261,17 +313,26 @@ if cocotb is not None:
         tasks = [cocotb.start_soon(run(d)) for d in doms]
         for t in tasks:
             await t
+        if plan.get("after_reset"):   # compare가 마지막 리셋 뒤 출력만 본다
+            rec["reset_end"] = {d: max([c for c, v in enumerate(plan["domains"][d]["reset"]) if v], default=-1)
+                                for d in doms}
         Path(os.environ["DIFF_OUT"]).write_text(json.dumps(rec))
 
 
 def compare(a: dict, b: dict) -> dict | None:
-    """두 후보의 기록을 비교해 첫 차이를 돌려준다. 같으면 None."""
+    """두 후보의 기록을 비교해 첫 차이를 돌려준다. 같으면 None. 기록에 `reset_end`가 있으면(함께 리셋) 마지막 리셋 뒤 출력만."""
+    def after(rec, xs):
+        end = rec.get("reset_end")
+        return xs if end is None else [t for t in xs if t[1] > end.get(t[0], -1)]
     for stream in a["outputs"]:
-        xa, xb = a["outputs"][stream], b["outputs"][stream]
+        xa, xb = after(a, a["outputs"][stream]), after(b, b["outputs"][stream])
         for i, (ta, tb) in enumerate(zip(xa, xb)):
             if ta[2] != tb[2]:
                 return {"stream": stream, "kind": "data", "index": i, "a": ta, "b": tb, "a_prev": xa[max(0, i - 3):i],
                         "b_prev": xb[max(0, i - 3):i]}
+        if len(xa) != len(xb) and "reset_end" in a and \
+                (len(xb) - len(xa)) * (sum(b["inputs"].values()) - sum(a["inputs"].values())) > 0:
+            continue   # 함께 리셋 비교: 앞부분이 같고 더 받은 쪽이 더 냈으면 끝의 개수 차이는 ready 지연 차이로 본다
         if len(xa) != len(xb):
             n = min(len(xa), len(xb))
             return {"stream": stream, "kind": "count", "index": n, "a_count": len(xa), "b_count": len(xb),

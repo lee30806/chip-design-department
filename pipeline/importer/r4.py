@@ -5,7 +5,7 @@
 - 원본 포트 이름을 바꾼 모듈(SV 예약어)은 바꾼 이름으로 감싼 래퍼를 top으로 쓴다.
 - DUT가 내는 번들의 data는 valid=1인 사이클에만 비교한다 (`strict`면 모든 사이클).
 - 리셋 직후 차이: 차이가 모두 리셋 구간과 풀린 뒤 `reset_window` 사이클 안에만 있으면 `reset_only`로 통과시키고 검토 항목으로 남긴다
-  (원본의 리셋 없는 플롭, 섞인 리셋을 IR 규칙으로 옮기면 생기는 차이. P1 우회 표현 2, 7, 8).
+  (원본의 리셋 없는 플롭을 IR 규칙으로 옮기면 생기는 차이. 리셋 방식이 섞인 원본은 R1이 거부함. P1 우회 표현 2, 7, 8).
 """
 from __future__ import annotations
 
@@ -82,10 +82,12 @@ def _diff_cfg(top_ir: dict, mode: str, seed: int, fixed: dict, cycles: int) -> d
 
 
 def run_one(files: list[Path], toplevel: str, top_ir: dict, mode: str, seed: int, build: Path, build_args: list[str],
-            fixed: dict, cycles: int, rebuild: bool, plan: dict | None = None) -> tuple[dict | None, str]:
+            fixed: dict, cycles: int, rebuild: bool, plan: dict | None = None,
+            opts: dict | None = None) -> tuple[dict | None, str]:
+    """opts는 자극 계획 설정에 더한다 (예: R6의 `joint_reset`)."""
     from pipeline.verify.run import sim
     build.mkdir(parents=True, exist_ok=True)
-    cfg = _diff_cfg(top_ir, mode, seed, fixed, cycles) | ({"plan": plan} if plan else {})
+    cfg = _diff_cfg(top_ir, mode, seed, fixed, cycles) | (opts or {}) | ({"plan": plan} if plan else {})
     (build / "diff_cfg.json").write_text(json.dumps(cfg), encoding="utf-8")
     out = build / "diff_out.json"
     out.unlink(missing_ok=True)

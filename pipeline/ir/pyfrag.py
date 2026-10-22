@@ -90,6 +90,15 @@ def const_int(node: ast.expr, consts: dict[str, int] | None = None) -> int:
     raise FragError("상수 정수가 필요함", getattr(node, "lineno", None))
 
 
+def _const_expr(src: str) -> ast.expr:
+    """타입 범위와 깊이 같은 상수식. Python 식으로 읽을 수 없는 SV 식(`$clog2(N)` 등)은 FragError."""
+    try:
+        return ast.parse(src.strip(), mode="eval").body
+    except SyntaxError:
+        raise FragError(f"Python 조각 모듈이 읽을 수 없는 상수식: {src.strip()} (정수와 파라미터의 + - * 식만. "
+                        "$clog2 같은 값은 local 파라미터로 두고 그 이름을 씀)") from None
+
+
 _TYPE = re.compile(r"(?:logic|bit|reg)(?:\s+unsigned)?(?:\s*\[(.+):(.+)\])?")
 
 
@@ -105,7 +114,7 @@ def type_width(t: str, consts: dict[str, int], enums: dict[str, int]) -> int:
         raise FragError(f"Python 조각이 모르는 타입: {t} (logic [hi:lo], int, enum만)")
     if m.group(1) is None:
         return 1
-    hi, lo = (const_int(ast.parse(x.strip(), mode="eval").body, consts) for x in (m.group(1), m.group(2)))
+    hi, lo = (const_int(_const_expr(x), consts) for x in (m.group(1), m.group(2)))
     return abs(hi - lo) + 1
 
 
@@ -245,7 +254,7 @@ class Widths:
             raise FragError(f"Python 조각이 모르는 타입: {t} (logic [hi:lo], int, enum만)")
         if m.group(1) is None:
             return w_const(1)
-        hi, lo = (Lin.of(ast.parse(x.strip(), mode="eval").body, self.params, self.consts) for x in (m.group(1), m.group(2)))
+        hi, lo = (Lin.of(_const_expr(x), self.params, self.consts) for x in (m.group(1), m.group(2)))
         d = hi - lo
         return ((d if d.value(self.consts) >= 0 else d.scale(-1)) + Lin(const=1),)
 
@@ -277,7 +286,7 @@ class Widths:
                 w.sym[f'{b["state_name"]}_q'] = w_const(w.enums.get(b["state_type"], 32))
             elif b.get("kind") == "memory":
                 w.mems[b["name"]] = w.type_sym(b["word_type"])
-                w.depth[b["name"]] = const_int(ast.parse(str(b["depth"]).strip(), mode="eval").body, w.consts)
+                w.depth[b["name"]] = const_int(_const_expr(str(b["depth"])), w.consts)
         for f in raw.get("functions", []):
             if f["name"] in HELPERS:
                 raise FragError(f'function 이름 {f["name"]}가 도움 함수와 겹침')

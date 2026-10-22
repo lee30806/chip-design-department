@@ -102,7 +102,8 @@ def _first_failure(result: dict) -> dict | None:
     for p in result.get("properties", []):
         cands.append({"check": "T4", **p, "anchor": p["cycle"], "anchor_domain": p.get("domain"), "signals_from": None})
     # 사이클은 도메인마다 따로 세므로, 도메인이 섞이면 "가장 이른 것"은 근사다. 같은 도메인 안에서는 정확하다.
-    return min(cands, key=lambda c: c["anchor"]) if cands else None
+    # 사이클을 모르는 실패(테스트가 사이클 없이 넣은 기댓값의 missing)는 맨 뒤로 본다
+    return min(cands, key=lambda c: (c["anchor"] is None, c["anchor"] or 0)) if cands else None
 
 
 def mismatch_report(m: Module, result: dict, trace: list[dict], spec_text: str | None = None,
@@ -110,8 +111,11 @@ def mismatch_report(m: Module, result: dict, trace: list[dict], spec_text: str |
     first = _first_failure(result)
     if first is None:
         return None
-    lo, hi = first["anchor"] - WINDOW_BEFORE, first["anchor"] + WINDOW_AFTER
     dom = first.get("anchor_domain")
+    if first["anchor"] is None:   # 사이클을 모름: 트레이스 끝 구간을 보여 준다 (끝까지 오지 않은 출력)
+        first["anchor"] = max((t["cycle"] for t in trace if dom is None or t["domain"] == dom), default=0)
+        first["anchor_note"] = "실패 사이클을 모름. 트레이스 끝 구간"
+    lo, hi = first["anchor"] - WINDOW_BEFORE, first["anchor"] + WINDOW_AFTER
     window = [t for t in trace if lo <= t["cycle"] <= hi and (dom is None or t["domain"] == dom)]
     outs = _stream_signals(m, first["signals_from"]) if first["signals_from"] else \
         [p.name for p in m.ports if p.dir == "output"]

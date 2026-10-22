@@ -15,7 +15,8 @@ Python 조각을 SV와 같은 의미로 실행한다. 판정은 늘 방출한 RT
   (`schedule`의 falling). 실행기 안에서는 상승 에지 도메인과 같게 다룬다.
 - 추가 동기 리셋은 에지에서 주 리셋 다음으로 리셋값을 넣는다. `reset.synchronize` 도메인은 `rst_sync` 셀을 거친 리셋을 쓴다.
 - 표준 셀(`cdc_sync`의 `2ff`/`gray`/`pulse`, `cdc_fifo`, `rst_sync`)은 `pipeline/emitter/stubs/`의 RTL과 같은 의미로
-  실행한다. 셀 내부 레지스터는 `<인스턴스 경로>u_<id>.<레지스터>`로 값 표에 둔다.
+  실행한다. 셀의 리셋은 모듈의 리셋 방식(비동기 또는 동기, `ASYNC_RST`)을 따른다.
+  셀 내부 레지스터는 `<인스턴스 경로>u_<id>.<레지스터>`로 값 표에 둔다.
 
 지원 범위: `comb`/`seq`/`fsm`/`memory`(inferred)/`cdc_sync`/`cdc_fifo`/`tristate` 블록, 인스턴스와 연결(계층). struct, signed는 아직 없다.
 메모리 워드는 `<이름>[<주소>]` 키로 값 표에 둔다 (쓴 적 없는 워드는 0).
@@ -490,18 +491,37 @@ class PySim:
             val[p + b["dst"]["valid"]] = int(val[k + "rgray"] != val[k + "wq2"])
             val[p + b["dst"]["data"]] = val.get(f'{k}mem[{val[k + "rbin"] % depth}]', 0)
 
-    def _cell_async(self, sc: _Scope, b: dict) -> None:
-        """셀의 리셋은 양쪽 모두 active-low 비동기 (0으로)."""
-        k = f'{sc.prefix}u_{b["id"]}.'
+    @staticmethod
+    def _cell_sides(b: dict) -> dict[str, tuple[str, ...]]:
+        """셀의 리셋되는 레지스터: 쪽(src/dst) → 레지스터 이름."""
         sides = {"src": ("tog",) if b.get("style") == "pulse" else ("wbin", "wgray", "rq1", "rq2"),
                  "dst": ("s1", "s2", "s3") if b.get("style") == "pulse" else
                  ("s1", "q") if b["kind"] == "cdc_sync" else ("rbin", "rgray", "wq1", "wq2")}
-        for side, regs in sides.items():
+        if b["kind"] == "cdc_sync" and b.get("style") != "pulse":
+            del sides["src"]
+        return sides
+
+    def _cell_async(self, sc: _Scope, b: dict) -> None:
+        """셀의 리셋은 양쪽 모두 active-low (0으로). 비동기 리셋 설계면 리셋이 걸린 동안 바로 0을 유지한다."""
+        if sc.m.reset_async() is False:   # 동기 리셋 설계: 에지에서 넣음 (_cell_edge)
+            return
+        k = f'{sc.prefix}u_{b["id"]}.'
+        for side, regs in self._cell_sides(b).items():
             dom = b[f"{side}_domain"]
-            if dom is not None and (side == "dst" or b["kind"] == "cdc_fifo" or b.get("style") == "pulse") \
-                    and self.in_reset(sc, dom):
+            if dom is not None and self.in_reset(sc, dom):
                 for r in regs:
                     self.val[k + r] = 0
+
+    def _cell_sync_reset(self, sc: _Scope, b: dict, rising: set[str], pending: dict[str, int]) -> None:
+        """동기 리셋 설계의 셀: 리셋이 걸린 쪽의 에지에서 0을 넣는다 (그 쪽의 다른 갱신보다 우선)."""
+        if sc.m.reset_async() is not False:
+            return
+        k, p = f'{sc.prefix}u_{b["id"]}.', sc.prefix
+        for side, regs in self._cell_sides(b).items():
+            dom = b[f"{side}_domain"]
+            if dom is not None and self.dom_of[(p, dom)] in rising and self.in_reset(sc, dom):
+                for r in regs:
+                    pending[k + r] = 0
 
     def _cell_edge(self, sc: _Scope, b: dict, rising: set[str], pending: dict[str, int]) -> None:
         val, k, p = self.val, f'{sc.prefix}u_{b["id"]}.', sc.prefix
@@ -534,6 +554,7 @@ class PySim:
                 if val[p + b["dst"]["valid"]] and val[p + b["dst"]["ready"]]:
                     nxt = (val[k + "rbin"] + 1) & mask(a + 1)
                     pending[k + "rbin"], pending[k + "rgray"] = nxt, _bin2gray(nxt)
+        self._cell_sync_reset(sc, b, rising, pending)
 
     def _pad_comb(self, b: dict) -> None:
         """패드 값: 블록 구동 > 바깥 장치 구동 > 풀업(1). 비트마다."""

@@ -350,6 +350,10 @@ def _domain_relations(m: Module) -> list[Issue]:
                 out.append(Issue("V2", f"{node}/reset", "reset.synchronize는 비동기 리셋(async: true)에만 씀"))
         if r["port"] in {x["port"] for x in r.get("extra", [])}:
             out.append(Issue("V2", f"{node}/reset", f'추가 리셋에 주 리셋 포트를 다시 씀: {r["port"]}'))
+        if r["async"] != m.reset_async():
+            out.append(Issue("V2", f"{node}/reset", "한 설계의 리셋은 모두 비동기이거나 모두 동기여야 함: "
+                                                    f"{'비동기' if r['async'] else '동기'} 리셋 도메인과 "
+                                                    f"{'비동기' if m.reset_async() else '동기'} 리셋 도메인이 섞임"))
     # 클럭 포트가 같은 도메인은 같은 클럭이어야 한다 (같은 그룹, 같은 분주비)
     by_clock: dict[str, list[str]] = {}
     for d in m.domains.values():
@@ -378,6 +382,10 @@ def _domain_map_relations(m: Module, child: Module, inst: dict, node: str) -> li
             out.append(Issue("V2", node, f"리셋이 있는 자식 도메인 {cd}를 리셋 없는 도메인 {pd}에 연결함"))
             continue
         pr, cr = pr or {}, cr or {}
+        if cr and cr["async"] != pr["async"]:
+            out.append(Issue("V2", node, f"자식 도메인 {cd}({'비동기' if cr['async'] else '동기'} 리셋)를 "
+                                         f"{'비동기' if pr['async'] else '동기'} 리셋 도메인 {pd}에 연결함 "
+                                         "(한 설계의 리셋은 한 방식)"))
         pairs = [(d["clock"], m.domains[pd]["clock"])]
         if cr:
             pairs += [(cr["port"], m.synced_reset(pd) if pr.get("synchronize") else pr["port"]),

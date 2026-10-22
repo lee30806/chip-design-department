@@ -126,6 +126,12 @@ class Module:
     def all_reset_ports(self) -> set[str]:
         return {p for d in self.domains for p in self.reset_ports(d)}
 
+    def reset_async(self) -> bool | None:
+        """모듈의 리셋 방식: 비동기면 True, 동기면 False, 리셋 있는 도메인이 없으면 None.
+        한 설계의 리셋은 모두 한 방식이다 (V2). 섞여 있으면 첫 도메인의 방식."""
+        styles = [d["reset"]["async"] for d in self.domains.values() if d.get("reset")]
+        return styles[0] if styles else None
+
     @staticmethod
     def synced_reset(dom: str) -> str:
         """`reset.synchronize` 도메인에서 rst_sync 셀이 내는 동기화한 리셋 (active-low) 넷 이름."""

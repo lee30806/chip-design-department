@@ -6,6 +6,7 @@
   임시 표준 `sync_2ff #(WIDTH) (clk, rst_n, d, q)`를 쓴다 (`stubs/sync_2ff.sv`). `gray`는 같은 셀에 폭만 준다.
   셀의 리셋은 active-low이므로, 도착 도메인의 리셋이 active-high면 반전해 연결한다.
   `pulse`는 `sync_pulse`, `cdc_fifo` 블록은 `cdc_fifo` 셀이다 (`stubs/`). 모두 임시 표준 셀이고 사내 셀을 받으면 바꾼다.
+  셀의 리셋은 설계의 리셋 방식을 따른다: 동기 리셋 설계면 `ASYNC_RST(1'b0)`를 준다 (기본은 비동기).
 - 도메인의 추가 동기 리셋(`reset.extra`)은 `if (주 리셋) ... else if (추가 리셋) ... else 본문`으로 씌운다.
 - `reset.synchronize` 도메인은 `rst_sync` 셀로 리셋을 동기화하고, 그 도메인의 셀과 인스턴스에는 동기화한 리셋을 연결한다.
 - 인스턴스의 클럭과 리셋은 `domain_map`으로만 연결한다.
@@ -108,6 +109,12 @@ def _rst_n(m: Module, dom: dict) -> str:
         return m.synced_reset(dom["name"])
     r = dom["reset"]
     return r["port"] if r["active"] == "low" else f'!{r["port"]}'
+
+
+def _cell_params(m: Module, prm: list[str] | None = None) -> str:
+    """표준 셀의 파라미터 목록. 동기 리셋 설계면 셀도 동기 리셋으로 (ASYNC_RST=0)."""
+    prm = [*(prm or []), *([".ASYNC_RST(1'b0)"] if m.reset_async() is False else [])]
+    return f' #({", ".join(prm)})' if prm else ""
 
 
 def _sensitivity(dom: dict) -> str:
@@ -334,17 +341,18 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
                 _fsm(w, m, b)
             elif b["kind"] == "cdc_sync" and b["style"] == "pulse":
                 s, d = m.domains[b["src_domain"]], m.domains[b["dst_domain"]]
-                w.line(f'  {PULSE_CELL} u_{b["id"]} (.src_clk({s["clock"]}), .src_rst_n({_rst_n(m, s)}), '
+                w.line(f'  {PULSE_CELL}{_cell_params(m)} u_{b["id"]} (.src_clk({s["clock"]}), .src_rst_n({_rst_n(m, s)}), '
                        f'.dst_clk({d["clock"]}), .dst_rst_n({_rst_n(m, d)}), .d({b["src"]}), .q({b["dst"]}));')
             elif b["kind"] == "cdc_sync":
                 dom = m.domains[b["dst_domain"]]
                 c = SYNC_CELL
-                prm = f' #(.WIDTH($bits({b["dst"]})))' if b["style"] == "gray" else ""
+                prm = _cell_params(m, [f'.WIDTH($bits({b["dst"]}))'] if b["style"] == "gray" else [])
                 w.line(f'  {c["module"]}{prm} u_{b["id"]} (.{c["clk"]}({dom["clock"]}), .{c["rst"]}({_rst_n(m, dom)}), '
                        f'.{c["d"]}({b["src"]}), .{c["q"]}({b["dst"]}));')
             elif b["kind"] == "cdc_fifo":
                 s, d, a, z = m.domains[b["src_domain"]], m.domains[b["dst_domain"]], b["src"], b["dst"]
-                w.line(f'  {FIFO_CELL} #(.WIDTH($bits({z["data"]})), .DEPTH({b["depth"]})) u_{b["id"]} (')
+                prm = _cell_params(m, [f'.WIDTH($bits({z["data"]}))', f'.DEPTH({b["depth"]})'])
+                w.line(f'  {FIFO_CELL}{prm} u_{b["id"]} (')
                 w.line(f'    .src_clk({s["clock"]}), .src_rst_n({_rst_n(m, s)}), .src_valid({a["valid"]}), '
                        f'.src_ready({a["ready"]}), .src_data({a["data"]}),')
                 w.line(f'    .dst_clk({d["clock"]}), .dst_rst_n({_rst_n(m, d)}), .dst_valid({z["valid"]}), '

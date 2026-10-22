@@ -47,8 +47,8 @@ def test_cdc_and_memory_rules(edit, expect):
 def test_emitter_memory_gray_and_reset_polarity():
     text = emit(Module(FIFO)).text
     assert "logic [WIDTH-1:0] mem [2**ADDR_WIDTH];" in text
-    assert "sync_2ff #(.WIDTH($bits(wr_ptr_gray_sync2_reg))) u_c_wr_gray (.clk(m_clk), .rst_n(!m_rst)," in text
-    assert "sync_2ff u_c_s_rst (.clk(s_clk), .rst_n(!s_rst), .d(m_side_ready_reg), .q(m_side_ready_sync));" in text
+    assert "sync_2ff #(.WIDTH($bits(wr_ptr_gray_sync2_reg)), .ASYNC_RST(1'b0)) u_c_wr_gray (.clk(m_clk), .rst_n(!m_rst)," in text
+    assert "sync_2ff #(.ASYNC_RST(1'b0)) u_c_s_rst (.clk(s_clk), .rst_n(!s_rst), .d(m_side_ready_reg), .q(m_side_ready_sync));" in text
     raw = copy.deepcopy(FIFO)
     _blk(raw, "k_mem")["impl"] = "macro"
     with pytest.raises(EmitError):

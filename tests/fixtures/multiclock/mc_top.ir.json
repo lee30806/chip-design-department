@@ -4,8 +4,7 @@
  "params": [],
  "domains": [
   {"name": "a", "clock": "a_clk", "freq_mhz": 100, "edge": "pos",
-   "reset": {"port": "a_rst_n", "active": "low", "async": true, "extra": [{"port": "a_soft_rst", "active": "high"}],
-             "synchronize": true},
+   "reset": {"port": "a_rst_n", "active": "low", "async": true, "synchronize": true},
    "async_to": ["b"]},
   {"name": "a2", "clock": "a2_clk", "freq_mhz": 50, "edge": "pos", "sync_to": {"domain": "a", "div": 2},
    "reset": {"port": "a_rst_n", "active": "low", "async": true, "synchronize": true}},
@@ -13,6 +12,7 @@
    "reset": {"port": "b_rst_n", "active": "low", "async": true}, "async_to": ["a"]}
  ],
  "ports": [
+  {"name": "a_soft_rst", "dir": "input", "type": "logic", "domain": "a"},
   {"bundle": "in", "protocol": "valid_ready", "role": "sink", "domain": "a", "signals": [
    {"name": "in_valid", "dir": "input", "type": "logic"},
    {"name": "in_ready", "dir": "output", "type": "logic", "kind": "wire"},
@@ -40,6 +40,7 @@
  "instances": [{"name": "u_src", "module": "mc_src", "domain_map": {"sys": "a", "slow": "a2"}}],
  "connections": [
   {"id": "c_in", "from": "self.in", "to": "u_src.s"},
+  {"id": "c_soft", "from": "self.a_soft_rst", "to": "u_src.soft_rst"},
   {"id": "c_mv", "from": "u_src.m_valid", "to": "self.x_valid"},
   {"id": "c_md", "from": "u_src.m_data", "to": "self.x_data"},
   {"id": "c_mr", "from": "self.x_ready", "to": "u_src.m_ready"},

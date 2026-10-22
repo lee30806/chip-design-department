@@ -221,3 +221,35 @@ def test_sva_log_parsing_and_classification():
     c = classify_findings(fs, {}, {})
     assert [(x.type, x.route, x.module, x.node) for x in c] == [
         ("sim_mismatch", "repair", "core", "assertions/p_hold"), ("tb_error", "verifier", "core", "assertions/m_in")]
+
+
+# ---------------------------------------------------------------- 하니스: SPEC이 허용한 덮어쓰기
+def test_valid_ready_checker_allow_overwrite():
+    pytest.importorskip("cocotb")
+    from types import SimpleNamespace as NS
+    from pipeline.tb.lib import ValidReadyChecker
+    dut = NS(m_valid=NS(value=0), m_ready=NS(value=0), m_data=NS(value=0))
+    b = {"name": "m", "domain": "sys", "valid": "m_valid", "ready": "m_ready", "data": ["m_data"]}
+
+    def run(overwrite):
+        c = ValidReadyChecker(dut, b)
+        c.overwrite_ok = overwrite
+        for cyc, (v, d) in enumerate([(1, 0xA1), (1, 0x3C), (0, 0x3C)]):   # ready 0: data가 바뀐 뒤 valid가 내려감
+            dut.m_valid.value, dut.m_data.value = v, d
+            c.sample(cyc)
+        return [x["rule"] for x in c.violations]
+    assert run(False) == ["ready 전에 data가 바뀜", "valid가 ready 전에 내려감"]
+    assert run(True) == ["valid가 ready 전에 내려감"]   # 덮어쓰기는 허용해도 valid 유지는 계속 본다
+
+
+def test_mismatch_report_without_failure_cycle():
+    """테스트가 사이클 없이 넣은 기댓값이 끝까지 오지 않으면(missing, 사이클 None) 리포트가 죽지 않고 트레이스 끝을 본다
+    (2026-10-20 axis_async_fifo R6)."""
+    from pipeline.tb.report import mismatch_report
+    m = Module(_fn())
+    res = {"test": "t", "scoreboard": {"kind": "missing", "stream": "y", "expected": {"y": 1}, "got": None, "cycle": None,
+                                       "domain": None, "req": None, "expected_since": None, "expected_domain": None},
+           "protocol": [], "properties": []}
+    trace = [{"domain": "sys", "cycle": c, "values": {"y": c}} for c in range(30)]
+    rep = mismatch_report(m, res, trace)
+    assert rep["first_failure"]["anchor"] == 29 and rep["fanin"]["values"][-1]["cycle"] == 29

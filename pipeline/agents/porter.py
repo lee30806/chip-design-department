@@ -47,7 +47,7 @@ IR에서 방출한 RTL이 원본과 **사이클 단위로 같은 출력**을 내
      연결은 이름 하나(`self.<신호>`)로 잇는다. 원본에서 연결하지 않은 입력은 0으로 둔다.
 3. `python3 tools/pl.py validate {out} --l1 draft.json{lib_arg}`가 `"ok": true`가 될 때까지 고친다.
 4. `python3 tools/pl.py porteq {out}{lib_arg} --ref ref`로 원본과 비교한다. `"status"`가 `equal`이 될 때까지 고친다.
-   `reset_only`(리셋 구간 직후에만 차이)는 원본의 리셋 없는 플롭이나 섞인 리셋 때문이면 그대로 두어도 된다.
+   `reset_only`(리셋 구간 직후에만 차이)는 원본의 리셋 없는 플롭 때문이면 그대로 두어도 된다 (리셋 방식이 섞인 원본은 R1이 거부함).
 
 ## 규칙
 {lang_note}- `{out}` 외의 파일은 만들거나 고치지 않는다.

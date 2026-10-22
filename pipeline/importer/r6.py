@@ -2,6 +2,8 @@
 
 - 동작: 같은 시드 자극(`diffsim`, steady/reset, 시드 여럿)에서 출력 트랜잭션 순서를 비교한다. 지연이 달라도 SPEC을 지키는
   설계는 같은 순서를 내므로 사이클 단위로 보지 않는다. 차이는 `minimize_diff`로 줄인다.
+  리셋 도메인이 둘 이상이면 reset 모드는 모든 도메인에 리셋을 함께 걸고 마지막 리셋 뒤 출력만 비교한다 (`joint_reset`,
+  2026-10-22 사용자 결정: 한쪽만 리셋과 두 클럭 사이 리셋 전달 사이클은 SPEC이 정하지 않는다).
 - 타이밍: 같은 실행에서 스트림마다 같은 순번 트랜잭션이 나온 사이클의 차이(재생성 - 원본)를 표로 낸다.
 - 구조: 재생성 모듈 트리(Architect가 정함)와 원본 트리를 리포트로만 낸다.
 """
@@ -45,6 +47,11 @@ def timing(a: dict, b: dict) -> list[dict]:
     return out
 
 
+def plan_opts(h: dict) -> dict:
+    """리셋 도메인이 둘 이상이면 리셋을 함께 건다."""
+    return {"joint_reset": True} if len(h["resets"]) > 1 else {}
+
+
 def run(top_ir: dict, regen_ir: dict[str, dict], r1: dict, work: Path, cells: list[Path], cycles: int = 3000,
         minimize: bool = True, seeds=SEEDS, budget: int = 80) -> dict:
     """→ {"status": "equal"|"differ"|"error", "runs": [...], "timing": [...], "difference": {...}, "structure": {...}}"""
@@ -58,10 +65,13 @@ def run(top_ir: dict, regen_ir: dict[str, dict], r1: dict, work: Path, cells: li
     from pipeline.tb.gen import harness_config, pad_view
     from pipeline.ir.model import Module
     h = harness_config(Module(pad_view(top_ir)))
+    opts = plan_opts(h)
     runs, first_diff = [], None
     for k, (mode, seed) in enumerate(seeds):
-        ra, ea = r4.run_one(ref_files, ref_top, top_ir, mode, seed, work / "ref", [*ref_args, "-Wno-fatal"], {}, cycles, rebuild=k == 0)
-        rb, eb = r4.run_one(reg_files, regen_top, top_ir, mode, seed, work / "regen", ["-Wno-fatal"], {}, cycles, rebuild=k == 0)
+        ra, ea = r4.run_one(ref_files, ref_top, top_ir, mode, seed, work / "ref", [*ref_args, "-Wno-fatal"], {}, cycles,
+                            rebuild=k == 0, opts=opts)
+        rb, eb = r4.run_one(reg_files, regen_top, top_ir, mode, seed, work / "regen", ["-Wno-fatal"], {}, cycles,
+                            rebuild=k == 0, opts=opts)
         if ra is None or rb is None:
             return {"status": "error", "error": ea if ra is None else eb, "mode": mode, "seed": seed}
         d = compare(ra, rb)
@@ -88,7 +98,8 @@ def minimize_r6(ref_files, ref_top, ref_args, reg_files, regen_top, top_ir, mode
         else:
             rec, _ = r4.run_one(reg_files, regen_top, top_ir, mode, seed, work / "regen", ["-Wno-fatal"], {}, 0, rebuild, plan)
         return rec
-    m = minimize_diff({0: ref_files, 1: reg_files}, top_ir, mode, seed, work, None, None, budget=budget, sim_fn=sim_fn)
+    m = minimize_diff({0: ref_files, 1: reg_files}, top_ir, mode, seed, work, None, None, budget=budget, sim_fn=sim_fn,
+                      plan_opts=plan_opts(h))
     if m is None:
         return None
     m["stimulus"] = describe(m["plan"], h)

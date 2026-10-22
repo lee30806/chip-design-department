@@ -16,16 +16,18 @@ class Model:
 @cocotb.test()
 async def basic(dut):
     h = make(dut, Model(), name="basic")  # name은 테스트마다 달라야 한다
-    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: L1 포트 값 dict (그 도메인의 리셋 포트 포함, 클럭 제외)
+    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: 그 도메인의 L1 포트 값 dict (모든 도메인의 리셋 포트 포함, 클럭 제외)
     h.cover_protocol("m_axis", "REQ-ID")   # valid/ready 규칙 체커가 이 번들을 검사하면 그 요구사항을 실행한 것으로 셈
     h.set_ready("m_axis", [1, 0, 1])       # 출력 번들의 ready 패턴 (backpressure). 패턴은 끝나면 처음부터 되풀이한다
     h.set_ready("m_axis", [0] * 100, then=1)   # 처음 100사이클만 막고 그 뒤로 계속 받기 (then 값을 유지)
+    h.allow_overwrite("m_axis")            # SPEC이 받지 않은 값을 덮어쓰도록 정한 번들만: ready 전 data 변화를 T2 위반으로 보지 않음
     await h.start()                       # 클럭 시작, 리셋, 표본 시작
     h.send("s_axis", {"s_axis_tdata": 1, "s_axis_tlast": 0}, idle=0)   # 입력 번들에 전송 하나 (data 신호 모두 지정)
     await h.drain()                       # 입력을 다 보내고 기대 출력이 다 올 때까지 기다림
     h.finish()                            # 불일치, 프로토콜 위반, 속성 위반이 있으면 AssertionError
 ```
 
+- 사이클 번호는 리셋이 풀린 첫 사이클을 0으로 센다 (도메인마다 자기 클럭). `await h.start()` 바로 뒤에 넣은 첫 전송은 `idle=N`이면 사이클 N에 valid=1로 나간다 (idle=0이면 사이클 0). 그 뒤 전송의 idle은 앞 전송이 받힌 다음 사이클부터 센다: 사이클 c에 받히면 다음 전송은 사이클 c+1+N에 나간다.
 - 기대 출력과 실제 출력은 순서대로 비교한다. 출력이 기대보다 먼저 와도 된다 (프레임 끝에서야 기대를 알 수 있는 모델).
 - 1비트 단독 출력은 1인 사이클마다, 여러 비트 단독 출력은 값이 바뀔 때마다 트랜잭션 하나가 된다.
 - 리셋이나 pause 같은 입력은 `dut.<포트>.value = 1`로 직접 바꿀 수 있다. 클럭 에지는 `from cocotb.triggers import ClockCycles`, `await ClockCycles(dut.<클럭>, n)`.

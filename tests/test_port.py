@@ -50,8 +50,9 @@ def test_r1_async_fifo_domains_and_reviews():
     assert [(d["name"], d["clock"], d["reset"]["port"], d["reset"]["async"]) for d in ir["domains"]] == \
         [("s", "s_clk", "s_rst", False), ("m", "m_clk", "m_rst", False)]
     assert [p.get("bundle") for p in ir["ports"][:2]] == ["s_axis", "m_axis"]
+    assert not res["rejects"]   # 리셋 동기화 플롭도 동기 리셋으로 고친 원본 (한 설계의 리셋은 한 방식)
     kinds = {r["kind"] for r in res["reviews"]}
-    assert {"mixed_reset", "unused_param", "reset_at_end"} <= kinds
+    assert {"unused_param", "reset_at_end"} <= kinds
     assert "PAUSE_ENABLE" not in [p["name"] for p in ir["params"]]
 
 
@@ -126,6 +127,28 @@ def test_r1_rejects(tmp_path):
     g.write_text("module neg(input clk, input rst, output reg q); always @(negedge clk) if (rst) q <= 0; else q <= ~q; endmodule\n")
     res = Extractor(Design(Inputs([g], "neg"))).run()   # 하강 에지 클럭은 하강 에지 도메인으로 옮김
     assert not res["rejects"] and res["modules"]["neg"].ir["domains"][0]["edge"] == "neg"
+
+
+def test_r1_rejects_mixed_reset_styles(tmp_path):
+    """한 설계의 리셋은 모두 비동기이거나 모두 동기다. 모듈 안에서 섞여도, 모듈 사이에서 달라도 거부한다."""
+    f = tmp_path / "mix.v"
+    f.write_text("module mix(input clk, input rst, input d, output reg a, output reg b);\n"
+                 "  always @(posedge clk or posedge rst) if (rst) a <= 0; else a <= d;\n"
+                 "  always @(posedge clk) if (rst) b <= 0; else b <= a;\nendmodule\n")
+    res = Extractor(Design(Inputs([f], "mix"))).run()
+    assert [r["kind"] for r in res["rejects"]] == ["mixed_reset"] and "mix.v:2" in res["rejects"][0]["message"]
+    g = tmp_path / "hier.v"
+    g.write_text("module sub(input clk, input rst, input d, output reg q); always @(posedge clk) if (rst) q <= 0; else q <= d; endmodule\n"
+                 "module hier(input clk, input rst, input d, output q, output reg r);\n"
+                 "  sub u(.clk(clk), .rst(rst), .d(d), .q(q));\n"
+                 "  always @(posedge clk or posedge rst) if (rst) r <= 0; else r <= q;\nendmodule\n")
+    res = Extractor(Design(Inputs([g], "hier"))).run()
+    assert "mixed_reset" in [r["kind"] for r in res["rejects"]]
+    h = tmp_path / "soft.v"   # 비동기 리셋 블록의 소프트 리셋은 추가 리셋으로 올리지 않음 (동작으로 남김)
+    h.write_text("module sr(input clk, input rst, input soft_rst, input d, output reg q);\n"
+                 "  always @(posedge clk or posedge rst) if (rst) q <= 0; else if (soft_rst) q <= 0; else q <= d;\nendmodule\n")
+    res = Extractor(Design(Inputs([h], "sr"))).run()
+    assert not res["rejects"] and "extra" not in res["modules"]["sr"].ir["domains"][0]["reset"]
 
 
 def test_tristate_ir_validator_and_emitter():
@@ -288,3 +311,88 @@ def test_spec_writer_revise_gets_failed_test_stimuli(tmp_path):
     assert t.inputs["r6_stim/v0_t.json"] == st and "r6_stim/" in t.text
     t = spec_writer.make_task("spec_writer/v1", "m", "", {}, {}, {}, prev_spec=prev, r6={})
     assert not any(k.startswith("r6_stim/") for k in t.inputs) and "r6_stim/" not in t.text
+
+
+def test_isolated_work_dirs_of_same_named_runs_do_not_collide(tmp_path):
+    """P11 R6의 재생성 실행은 블록마다 r6/regen_0이다. 동시에 돌아도 격리 작업 디렉터리가 겹치면 안 된다."""
+    from pipeline.scheduler.run import Run
+    dirs = []
+    for blk in ("a", "b"):
+        r = Run.__new__(Run)
+        r.dir, r.isolate = tmp_path / blk / "r6" / "regen_0", True
+        dirs.append(r.work_dir("verifier/v0"))
+    assert dirs[0] != dirs[1] and all(d.name == "verifier__v0" and d.parent.name.startswith("regen_0-") for d in dirs)
+
+
+def _two_clock_cfg(mode="reset", joint=True):
+    h = {"clocks": {"m": ["m_clk", 11.001], "s": ["s_clk", 10.0]}, "resets": {"m": ["m_rst", 1], "s": ["s_rst", 1]},
+         "bundles": [], "inputs": [], "port_domains": {}}
+    return {"harness": h, "widths": {}, "mode": mode, "seed": 3, "cycles": 3000, "drain": 200, "model": None,
+            "harness_dir": None} | ({"joint_reset": True} if joint else {})
+
+
+def test_r6_joint_reset_plan_overlaps_in_time():
+    """R6 함께 리셋: 모든 도메인의 리셋이 같은 시각 구간을 덮고, 가장 느린 클럭 4사이클 이상이며 프로브 전에 끝난다."""
+    from pipeline.tb.diffsim import INIT_RESET, make_plan
+    plan = make_plan(_two_clock_cfg())
+    groups = plan["reset_groups"]
+    assert groups and plan["after_reset"]
+    per = {"m": 11.001, "s": 10.0}
+    for parts in groups:
+        spans = {d: ((c0 + 0.5) * per[d], (c0 + n - 0.5) * per[d]) for d, c0, n in parts}
+        assert all(n >= 4 for _, _, n in parts)
+        assert max(a for a, _ in spans.values()) <= min(b for _, b in spans.values())   # 시각 구간이 겹침
+        for d, c0, n in parts:
+            assert plan["domains"][d]["reset"][c0:c0 + n] == [1] * n
+            assert c0 + n < plan["probe_at"] - 100
+    for d, dp in plan["domains"].items():   # 그룹 밖 리셋은 처음 리셋뿐
+        inside = {c for parts in groups for gd, c0, n in parts if gd == d for c in range(c0, c0 + n)}
+        assert {c for c, v in enumerate(dp["reset"]) if v} == set(range(INIT_RESET)) | inside
+    assert "reset_groups" not in make_plan(_two_clock_cfg(joint=False))
+
+
+def test_r6_joint_reset_episodes_remove_whole_group():
+    from pipeline.tb.diffsim import describe, episodes, make_plan, truncate, without
+    plan = make_plan(_two_clock_cfg())
+    eps = [e for e in episodes(plan) if e["kind"] == "reset"]
+    assert len(eps) == len(plan["reset_groups"])
+    p2 = without(plan, eps[:1])
+    for d, c0, n in eps[0]["parts"]:
+        assert p2["domains"][d]["reset"][c0:c0 + n] == [0] * n
+    assert len([e for e in episodes(p2) if e["kind"] == "reset"]) == len(eps) - 1
+    h = _two_clock_cfg()["harness"]
+    assert any("함께 리셋" in x for x in describe(plan, h))
+    d, c0, n = eps[0]["parts"][0]
+    p3 = truncate(plan, c0 + 1)   # 그룹 중간에서 자르면 그룹 전체를 지운다 (한쪽 리셋이 남지 않음)
+    for gd, gc, gn in eps[0]["parts"]:
+        assert 1 not in p3["domains"][gd]["reset"][gc:gc + gn]
+
+
+def test_r6_compare_after_last_reset_only():
+    from pipeline.tb.diffsim import compare
+    a = {"outputs": {"o": [["m", 5, {"x": 1}], ["m", 50, {"x": 7}]]}, "reset_end": {"m": 20, "s": 18}}
+    b = {"outputs": {"o": [["m", 6, {"x": 2}], ["m", 9, {"x": 3}], ["m", 51, {"x": 7}]]}, "reset_end": {"m": 20, "s": 18}}
+    assert compare(a, b) is None
+    b["outputs"]["o"][-1][2] = {"x": 8}
+    assert compare(a, b)["kind"] == "data"
+    a.pop("reset_end"), b.pop("reset_end")
+    assert compare(a, b) is not None
+
+
+def test_r6_compare_tail_count_follows_inputs_accepted():
+    """함께 리셋 비교: 입력을 더 받은 쪽이 같은 앞부분 뒤에 더 낸 것은 차이가 아니다. 덜 받고 더 내면 차이다."""
+    from pipeline.tb.diffsim import compare
+    a = {"outputs": {"o": [["m", 30, {"x": 1}]]}, "inputs": {"i": 1}, "reset_end": {"m": 9}}
+    b = {"outputs": {"o": [["m", 30, {"x": 1}], ["m", 31, {"x": 2}]]}, "inputs": {"i": 2}, "reset_end": {"m": 9}}
+    assert compare(a, b) is None
+    b["inputs"] = {"i": 1}
+    assert compare(a, b)["kind"] == "count"
+    b["inputs"] = {"i": 2}
+    a.pop("reset_end")
+    assert compare(a, b)["kind"] == "count"
+
+
+def test_r6_plan_opts_joint_only_for_multiple_reset_domains():
+    from pipeline.importer.r6 import plan_opts
+    assert plan_opts({"resets": {"m": ["m_rst", 1], "s": ["s_rst", 1]}}) == {"joint_reset": True}
+    assert plan_opts({"resets": {"clk": ["rst", 1]}}) == {}

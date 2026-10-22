@@ -5,7 +5,7 @@
  "params": [],
  "domains": [
   {"name": "sys", "clock": "clk", "edge": "pos",
-   "reset": {"port": "rst_n", "active": "low", "async": true, "extra": [{"port": "soft_rst", "active": "high"}]}},
+   "reset": {"port": "rst_n", "active": "low", "async": true}},
   {"name": "slow", "clock": "clk_slow", "edge": "pos", "sync_to": {"domain": "sys", "div": 2},
    "reset": {"port": "rst_slow_n", "active": "low", "async": true}}
  ],
@@ -18,6 +18,7 @@
    {"name": "m_valid", "dir": "output", "type": "logic", "kind": "wire"},
    {"name": "m_ready", "dir": "input", "type": "logic"},
    {"name": "m_data", "dir": "output", "type": "logic [7:0]", "kind": "wire"}]},
+  {"name": "soft_rst", "dir": "input", "type": "logic", "domain": "sys"},
   {"name": "cnt", "dir": "output", "type": "logic [3:0]", "domain": "slow", "kind": "reg", "reset": "'0"}
  ],
  "signals": [
@@ -29,7 +30,7 @@
   {"id": "k_ready", "kind": "comb",
    "body": "s_ready = rst_n and not soft_rst and (not buf_v or m_ready)\nm_valid = buf_v\nm_data = buf_d"},
   {"id": "k_buf", "kind": "seq", "domain": "sys",
-   "body": "fire_q = s_valid and s_ready\nif s_valid and s_ready:\n    buf_v = True\n    buf_d = s_data + 1\nelif m_ready:\n    buf_v = False"},
+   "body": "fire_q = s_valid and s_ready\nif soft_rst:\n    buf_v = False\n    buf_d = 0\nelif s_valid and s_ready:\n    buf_v = True\n    buf_d = s_data + 1\nelif m_ready:\n    buf_v = False"},
   {"id": "k_cnt", "kind": "seq", "domain": "slow", "body": "if fire_q:\n    cnt = cnt + 1"}
  ]
 }
