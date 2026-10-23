@@ -17,7 +17,7 @@ from pathlib import Path
 
 from pipeline.ir.model import Module
 from pipeline.ir.pysim import supported
-from pipeline.tb.gen import pad_top
+from pipeline.tb.gen import comb_view, pad_top
 from pipeline.verify.run import sim
 
 TB_DIR = Path(__file__).resolve().parent
@@ -46,7 +46,7 @@ def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Pa
     out = build_dir / "pyequiv_result.json"
     out.unlink(missing_ok=True)
     cfg = build_dir / "pyequiv.json"
-    ph = phases(library[top])
+    ph = phases(Module(comb_view(library[top].raw)))   # 조합 top은 가상 클럭 하나
     cfg.write_text(json.dumps({"top": top, "library": {n: m.source_raw for n, m in library.items()},
                                "cycles": max(1, cycles // len(ph)), "phases": ph, "seed": seed, "reset_cycles": RESET_CYCLES, "reset_prob": RESET_PROB, "out": str(out.resolve())},
                               ensure_ascii=False), encoding="utf-8")

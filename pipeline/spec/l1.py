@@ -12,6 +12,8 @@
 - 도메인 간 관계: "<도메인>과 비동기"는 `async_to`, "<도메인>에서 N분주"는 `sync_to`.
   클럭 포트가 앞 도메인과 같으면 그 도메인과 같은 클럭(`sync_to`, 분주비는 앞 도메인과 같음)으로 본다.
 - 클럭 에지는 상승 에지로 고정한다 (하강 에지 도메인은 쓰지 않음).
+- 조합 블록(클럭 없음): 도메인과 클럭 포트 칸이 모두 "없음"인 행 하나만 둔다. 이 행은 도메인이 아니라 domains가 빈다.
+  3번 섹션 포트의 도메인 칸은 "–".
 만든 IR의 각 노드가 어느 SPEC 줄에서 왔는지 `provenance`로 함께 돌려준다.
 
     python3 -m pipeline.spec.l1 <spec.md> -o <block_top.ir.json>
@@ -54,9 +56,11 @@ def _freq_mhz(text: str) -> float | None:
 
 def domains(spec: Spec) -> tuple[list[dict], list[dict], dict]:
     t = _table(spec, 2, ("도메인", "클럭 포트", "리셋 포트", "리셋 극성"))
-    names = [r["도메인"] for r in t.dicts()]
+    rows = [(r, line) for r, line in zip(t.dicts(), t.row_lines)
+            if not (r["도메인"] in NONE_WORDS and r["클럭 포트"] in NONE_WORDS)]   # 조합 블록 표시 행
+    names = [r["도메인"] for r, _ in rows]
     doms, pds, prov = [], {}, {}
-    for r, line in zip(t.dicts(), t.row_lines):
+    for r, line in rows:
         rports = [x.strip() for x in r["리셋 포트"].split(",")]
         actives = ["low" if "low" in x.lower() else "high" for x in r["리셋 극성"].split(",")]
         actives += actives[-1:] * (len(rports) - len(actives))   # 극성을 하나만 쓰면 모두 같은 극성

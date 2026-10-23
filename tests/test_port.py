@@ -250,6 +250,23 @@ def test_r1_comb_module_and_no_reset_domain():
         assert not errors(validate(m, lib)), (n, validate(m, lib))
 
 
+
+def test_comb_block_top_spec_and_harness_view(tmp_path):
+    """조합 Block Top: SPEC 2절의 "없음" 행은 도메인이 아니고, 표 왕복이 같으며, 하니스와 시뮬레이션 top은 가상 클럭 래퍼를 쓴다."""
+    from pipeline.spec.parse import load
+    from pipeline.tb.gen import COMB_CLK, harness_config, pad_top, trace_names
+
+    l1, _ = block_top_l1(load(ROOT / "tests" / "fixtures" / "comb_top" / "add8.spec.md"))
+    assert l1["domains"] == [] and {p["domain"] for p in l1["ports"]} == {None}
+    md = spec_tables.tables_md(l1)
+    assert "| 없음 | 없음 |" in md and "비동기" not in md
+    assert spec_tables.roundtrip_diff(l1, block_top_l1(parse("# add8 SPEC\n\n" + md))[0]) == []
+    cfg = harness_config(Module(l1))
+    assert cfg["clocks"] == {"comb": (COMB_CLK, 10.0)} and set(cfg["port_domains"].values()) == {"comb"}
+    assert trace_names(Module(l1))["domains"] == ["comb"]
+    files, top = pad_top(l1, tmp_path)
+    assert top == "add8_pad_top" and COMB_CLK in files[0].read_text() and f".{COMB_CLK}(" not in files[0].read_text()
+
 def test_no_reset_domain_rules():
     pipe = json.loads((FX / "comb" / "ported" / "pipe.ir.json").read_text())
     bad = json.loads(json.dumps(pipe))

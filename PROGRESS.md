@@ -55,6 +55,18 @@
 
 ## 진행 기록
 
+### 2026-10-23 조합 Block Top (사용자 지시)
+
+벤치마크(RTLLM 2.0)의 클럭 없는 조합 문제 15개를 생성 파이프라인으로 돌리기 위한 기능. rtl-factory 계획의 B1a(가상 클럭으로 돌리고 방출 RTL에서 클럭 포트를 지움) 대신, 하위 모듈에 이미 있던 조합 모듈 지원(`domains: []`)을 Block Top까지 넓혔다. 방출 RTL에는 클럭이 없고, 가상 클럭은 검증 하니스의 래퍼에만 있다.
+
+- **SPEC:** 2절에 도메인과 클럭 포트 칸이 모두 "없음"인 행 하나를 두면 조합 블록 (`pipeline/spec/l1.py`가 그 행을 도메인으로 읽지 않음). 3절 포트의 도메인 칸은 "–". `spec_tables`도 같은 형식으로 쓰므로 표 왕복이 같다. 템플릿 문서에 규칙 추가.
+- **검증 하니스:** `harness_config`, `trace_names`, `pad_top`이 도메인 없는 top을 가상 클럭 뷰(`comb_view`, 클럭 `tb_comb_clk`, 도메인 `comb`)로 읽고, 시뮬레이션 top은 가상 클럭 포트를 받아 버리는 래퍼(`<top>_pad_top`). P11 이식 흐름(R4)에서 쓰던 것을 Run의 Verify, 차분 시뮬레이션, Verifier 하니스가 함께 쓰게 됨.
+- **번역기 검사(`pyequiv`):** 조합 top이면 같은 가상 클럭 뷰로 실행기와 RTL을 비교 (전에는 클럭 그룹이 없어 실패).
+- **에이전트 안내:** Verifier `tb_guide.md`(입력 번들이 없으므로 `streams = set()`, 하강 에지에서 입력을 바꾸고 `add_property(..., "comb", ...)`로 출력 확인), IR 안내(조합 Block Top의 하위 모듈은 모두 조합, `domain_map: {}`).
+- **시험:** `tests/fixtures/comb_top/`(SPEC, IR, Verifier 테스트). 가짜 에이전트로 SPEC → 통과, 틀린 설계(cin 누락)는 속성 위반으로 실패, Python 조각 후보가 번역기 검사와 함께 통과. SPEC 표 왕복과 하니스 뷰 단위 시험.
+- **rtl-factory 이식:** 바뀐 파이프라인 파일은 rtl-factory 복사본과 내용이 같아 이 변경의 패치가 그대로 적용된다 (`git apply --check` 확인). 이식 뒤 벤치 어댑터는 `--subset combinational`로 돌리고, BenchSpecWriter 안내에 2절 "없음" 행 규칙을 넣는다.
+- 시험 결과: 시뮬레이션 제외 314개(3개 건너뜀), 시뮬레이션 106개 통과. 실제 에이전트로는 아직 돌리지 않음.
+
 ### 2026-10-23 CLI 실행기와 README (사용자 지시)
 
 - **`chipdept`** (`pipeline/cli.py`, `pyproject.toml` `[project.scripts]`, 설치 없이 `python3 -m pipeline`): 저장소의 CLI 진입점 22개를 그룹(`spec`, `port`, `ir`, `tb`, `verify`, `report`, `tool`)과 단독 명령(`run`, `approve`, `api`, `gateway`, `dept`, `eda`)으로 묶고, 인자와 종료 코드를 그대로 넘긴다. `tool`(에이전트 도구 `pl.py`)은 사람이 부를 때 `.tools.log`를 남기지 않는다.

@@ -67,7 +67,10 @@ def _bundle(p: dict) -> dict:
 
 def harness_config(m: Module) -> dict:
     """L1만 읽는다. inout 포트가 있으면 패드 모델 뷰(pad_view)로 바꿔 읽는다 (DUT 자리에는 pad_top_sv 래퍼를 둠).
+    도메인이 없는 조합 모듈은 가상 클럭 뷰(comb_view)로 읽는다 (DUT 자리에는 pad_top 래퍼를 둠).
     pads는 패드 체커(동시 구동 충돌)가 볼 inout 포트 이름이다."""
+    if not m.domains:
+        m = Module(comb_view(m.raw))
     pads = [p["name"] for p in inout_ports(m.raw)]
     if pads:
         m = Module(pad_view(m.raw))
@@ -108,9 +111,9 @@ def trace_names(m: Module, library: dict[str, Module] | None = None) -> dict:
     outputs: DUT 출력 포트. Verify가 시드별 결과를 비교할 때(T1) 쓴다.
     qualifiers: DUT가 내는 번들의 data 출력 → 그 번들의 valid. valid가 0인 사이클의 data 값은 비교하지 않는다.
     domains: 클럭 도메인. 둘 이상이면 T1은 사이클 비교를 하지 않는다 (시드에 따라 도메인 사이 위상이 바뀜).
-    inout 포트가 있으면 DUT 자리에 패드 래퍼가 오므로 래퍼의 포트만 넣는다 (내부 신호는 래퍼 안이라 보이지 않음)."""
-    if inout_ports(m.raw):
-        v = Module(pad_view(m.raw))
+    inout 포트가 있거나 조합 모듈이면 DUT 자리에 래퍼가 오므로 래퍼의 포트만 넣는다 (내부 신호는 래퍼 안이라 보이지 않음)."""
+    if inout_ports(m.raw) or not m.domains:
+        v = Module(pad_view(comb_view(m.raw)))
         return {"names": {p.name: p.domain for p in v.ports if not p.derived}, "outputs": [p.name for p in v.ports if p.dir == "output"],
                 "qualifiers": {}, "domains": sorted(v.domains)}
     names = {p.name: p.domain for p in m.ports if not p.derived}
@@ -291,13 +294,15 @@ def comb_view(raw: dict) -> dict:
 
 
 def pad_top(raw: dict, out_dir: Path) -> tuple[list[Path], str]:
-    """시뮬레이션 top: inout 포트가 있으면 패드 래퍼 파일과 그 이름, 없으면 ([], 모듈 이름)."""
-    if not inout_ports(raw):
+    """시뮬레이션 top: inout 포트가 있거나 조합 모듈(하니스의 가상 클럭 포트가 필요)이면 래퍼 파일과 그 이름,
+    없으면 ([], 모듈 이름)."""
+    view = comb_view(raw)
+    if not inout_ports(raw) and view is raw:
         return [], raw["module"]
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f'{raw["module"]}_pad_top'
     f = out_dir / f"{name}.sv"
-    f.write_text(pad_wrapper_sv(raw, raw["module"], name), encoding="utf-8")
+    f.write_text(pad_wrapper_sv(view, raw["module"], name, inner_raw=raw), encoding="utf-8")
     return [f], name
 
 

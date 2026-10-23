@@ -35,6 +35,10 @@ async def basic(dut):
 - 속성 표본은 하강 에지 뒤에 읽는다. 동기 리셋이면 표본에서 리셋이 1인 사이클의 출력은 아직 리셋 전 값이고, 다음 사이클 표본부터 리셋 값이다.
 - 하강 에지 도메인(L1 도메인의 `edge`가 `neg`)은 반대다: 하니스가 상승 에지에서 그 도메인의 입력을 바꾸고 표본을 읽으며, DUT는 하강 에지에서 받는다. 그 도메인의 입력을 직접 바꿀 때는 `await RisingEdge(dut.<클럭>)` 뒤에 바꾼다.
 - inout 포트 P는 하니스에서 `P_pad_o`, `P_pad_oe`(바깥 장치가 내는 값과 구동 여부)와 `P_pad_val`(패드 값)로 다룬다. 바깥 장치가 구동하는 동안(`P_pad_oe=1`) 패드 값이 바깥 장치의 값과 다르면 DUT가 같은 패드를 다른 값으로 구동한 것이므로 하니스가 동시 구동 충돌(T2)로 실패시킨다. open-drain 버스에서 바깥 장치가 1을 낼 때는 `P_pad_oe=0`으로 놓아 풀업에 맡긴다.
+- 클럭이 없는 조합 블록(L1의 `domains`가 빔)은 하니스가 가상 클럭 `tb_comb_clk` 하나의 도메인 `comb`로 돌린다. 모든 포트가 `comb`
+  도메인이고 리셋은 없다. 입력 번들이 없으므로 `on_input`이 불리지 않는다: 모델은 `streams = set()`으로 두고, 출력은
+  `h.add_property(이름, "comb", fn, REQ)`로 같은 표본의 입력과 비교한다. 입력은 `await FallingEdge(dut.tb_comb_clk)` 뒤에
+  `dut.<포트>.value`로 바꾸고, 같은 사이클 표본에서 출력이 이미 그 입력의 함수여야 한다. backpressure와 idle 규칙은 해당 없음.
 - 실패 메시지에 `[SVA] assertions/<id> ... assume 실패`가 있으면 테스트 입력이 설계의 입력 가정을 어긴 것이다. SPEC이 그 입력을 허용하는지 확인하고, 허용하지 않으면 입력을 고친다.
 - 테스트는 SPEC의 요구사항 ID를 기대 출력, 속성, `cover_protocol`로 모두 하나 이상 실행해야 한다.
 
@@ -60,7 +64,7 @@ async def basic(dut):
 
 - SPEC 8번 섹션의 예시 시나리오는 그대로 directed 테스트로 쓴다.
 - 무작위 테스트는 `random.Random(고정 시드)`를 쓴다.
-- backpressure(`set_ready`)와 입력 공백(`idle`)이 있는 테스트를 하나 이상 둔다.
+- backpressure(`set_ready`)와 입력 공백(`idle`)이 있는 테스트를 하나 이상 둔다. (번들이 있는 블록만)
 
 ## 검사
 

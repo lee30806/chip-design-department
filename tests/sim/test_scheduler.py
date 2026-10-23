@@ -650,3 +650,56 @@ def test_lead_cannot_pin_module_without_repairs_left(tmp_path):
     with pytest.raises(ValueError, match="상한을 다 써서"):
         approve.decide(run, ["E1"], "repair", by="lead", module="a")
     assert approve.decide(run, ["E1"], "repair", by="lead", module="b")[0]["module"] == "b"
+
+
+def test_comb_block_top_with_fake_agents(tmp_path):
+    """클럭이 없는 조합 Block Top: SPEC 2절의 "없음" 행 → domains 없는 L1 → 하니스는 가상 클럭 래퍼로 검증."""
+    C = ROOT / "tests" / "fixtures" / "comb_top"
+    files = {
+        "Architect": {"out/ir/add8.ir.json": f"@{C / 'add8.ir.json'}", "out/ir/add8_core.ir.json": f"@{C / 'add8_core.ir.json'}",
+                      "out/assumptions.json": json.dumps({"assumptions": ["동작은 하위 모듈 하나(add8_core)에 둠"]})},
+        "Author": {"out/add8_core.ir.json": f"@{C / 'add8_core.ir.json'}"},
+        "Verifier": {"out/test_add8.py": f"@{C / 'tb_add8.py'}"},
+    }
+    run = Run(tmp_path / "run", C / "add8.spec.md", _roles(tmp_path, files), isolate=False)
+    rep = run.execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:2000]
+    assert block_top_l1(load(C / "add8.spec.md"))[0]["domains"] == []
+    rtl = (tmp_path / "run" / "rtl" / "add8.sv").read_text()
+    assert "tb_comb_clk" not in rtl and "always_ff" not in (tmp_path / "run" / "rtl" / "add8_core.sv").read_text()
+
+
+def test_comb_block_top_wrong_design_fails(tmp_path):
+    C = ROOT / "tests" / "fixtures" / "comb_top"
+    bad = json.loads((C / "add8_core.ir.json").read_text())
+    bad["blocks"][0]["body"] = bad["blocks"][0]["body"].replace("a + b + {7'b0, cin}", "a + b")   # cin을 빠뜨림
+    files = {
+        "Architect": {"out/ir/add8.ir.json": f"@{C / 'add8.ir.json'}", "out/ir/add8_core.ir.json": f"@{C / 'add8_core.ir.json'}",
+                      "out/assumptions.json": json.dumps({"assumptions": ["동작은 하위 모듈 하나(add8_core)에 둠"]})},
+        "Author": {"out/add8_core.ir.json": json.dumps(bad)},
+        "Verifier": {"out/test_add8.py": f"@{C / 'tb_add8.py'}"},
+    }
+    rep = Run(tmp_path / "run", C / "add8.spec.md", _roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] != "pass"
+    props = [x for f in (tmp_path / "run" / "verify").rglob("*.result.json") for x in json.loads(f.read_text())["properties"]]
+    assert props and {x["property"] for x in props} == {"sum_is_a_plus_b"}   # 가상 클럭 표본의 속성(T4)이 잡음
+
+
+def test_comb_block_top_python_fragment_candidate(tmp_path):
+    """조합 Block Top의 Python 조각 후보: 번역기 검사(도메인 없는 모듈)를 거쳐 SV 후보와 함께 통과한다."""
+    C = ROOT / "tests" / "fixtures" / "comb_top"
+    files = {
+        "Architect": {"out/ir/add8.ir.json": f"@{C / 'add8.ir.json'}", "out/ir/add8_core.ir.json": f"@{C / 'add8_core.ir.json'}",
+                      "out/assumptions.json": json.dumps({"assumptions": ["동작은 하위 모듈 하나(add8_core)에 둠"]})},
+        "Author|author__add8_core__c1": {"out/add8_core.ir.json": f"@{C / 'add8_core.py.ir.json'}"},
+        "Author": {"out/add8_core.ir.json": f"@{C / 'add8_core.ir.json'}"},
+        "Verifier": {"out/test_add8.py": f"@{C / 'tb_add8.py'}"},
+    }
+    roles = _roles(tmp_path, files)
+    roles.author_langs = ("sv", "py")
+    rep = Run(tmp_path / "run", C / "add8.spec.md", roles, isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert all(c["status"] == "pass" for c in rep["candidates"].values())
+    eq = list((tmp_path / "run" / "verify").glob("*_c1_*/pyequiv_add8_core/pyequiv_result.json"))
+    assert eq and json.loads(eq[0].read_text())["ok"]
+    assert not any(r["code"] in ("CANDIDATE_DIFF", "PY_EQUIV") for r in rep["review"])

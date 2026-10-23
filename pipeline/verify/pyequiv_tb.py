@@ -10,6 +10,7 @@
 하강 에지 도메인(`edge: neg`)을 실행기에서도 진행한다.
 `phases`(그룹 기준 도메인 → h)를 차례로 바꿔 가며 도메인 사이 위상을 바꾸고, 실행기와 RTL은 이어서 돌린다.
 inout 포트가 있는 top은 하니스와 같은 패드 모델 포트(P_pad_o, P_pad_oe, P_pad_val)로 비교한다 (RTL 쪽은 패드 래퍼).
+도메인이 없는 조합 top은 하니스와 같은 가상 클럭 뷰(`comb_view`)로 돌린다 (RTL 쪽은 가상 클럭 포트를 받는 래퍼).
 첫 불일치를 결과 파일에 쓰고 실패한다.
 """
 import json
@@ -22,6 +23,7 @@ from cocotb.triggers import ReadOnly, Timer
 
 from pipeline.ir.model import Module
 from pipeline.ir.pysim import PySim
+from pipeline.tb.gen import comb_view
 
 
 def _groups(top: Module) -> dict[str, list[str]]:
@@ -36,6 +38,7 @@ def _groups(top: Module) -> dict[str, list[str]]:
 async def pyequiv(dut):
     cfg = json.loads(Path(os.environ["PYEQUIV_CFG"]).read_text(encoding="utf-8"))
     lib = {n: Module(r) for n, r in cfg["library"].items()}
+    lib[cfg["top"]] = Module(comb_view(cfg["library"][cfg["top"]]))   # 조합 top: 가상 클럭 하나 (RTL 쪽은 pad_top 래퍼)
     top = lib[cfg["top"]]
     sim = PySim(top, lib)
     rng = random.Random(cfg["seed"])
