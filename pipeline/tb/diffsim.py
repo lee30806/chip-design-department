@@ -8,6 +8,9 @@
   설정 `joint_reset`이 참이고 리셋 도메인이 둘 이상이면 모든 도메인에 같은 시각 구간으로 리셋을 건다 (가장 느린 클럭
   4~8사이클). 이때는 마지막 리셋이 풀린 뒤의 출력만 비교한다 (P11 R6: 두 클럭 사이 리셋 전달 사이클은 SPEC이 정하지 않음).
   또 앞부분이 같고 입력을 더 받은 쪽이 출력도 더 냈으면 끝의 개수 차이는 차이로 보지 않는다 (ready 지연도 SPEC이 정하지 않음).
+  같은 이유로 더 받은 쪽이 중간 한 곳에 연속으로 더 낸 항목(받은 입력 차이 이하)도 건너뛴다 (프로브 앞 조용한 구간에서
+  입력 순서가 다른 위치에서 끊김). 이 끝 개수 허용은 steady 모드에도 적용한다: 처음 리셋 뒤 ready가 처음 1이 되는 사이클도 두 클럭 위상에 따라 달라진다
+  (2026-10-23 P11 axis_async_fifo 회차 4: steady에서 출력 2088 대 2089, 받은 입력도 2088 대 2089를 spec_gap으로 판정).
 
 두 모드 모두 출력 트랜잭션 순서 전체를 비교한다. 리셋 때 흘러가던 데이터의 처리도 SPEC이 정할 수 있기 때문이다.
 차이가 SPEC이 정하지 않은 동작에서 났는지는 Verifier가 판단한다.
@@ -89,6 +92,8 @@ def make_plan(cfg: dict) -> dict:
         else None
     if groups is not None:
         plan["reset_groups"], plan["after_reset"] = groups, True
+    if cfg.get("joint_reset") and len(rdoms) > 1:
+        plan["tail_tolerant"] = True   # 끝 개수 허용 (모듈 설명)
     for k, d in enumerate(sorted(h["clocks"])):
         rng = random.Random(seed * 1000 + k)
         reset = [1] * INIT_RESET + [0] * (cycles + drain - INIT_RESET)
@@ -239,7 +244,7 @@ if cocotb is not None:
         outs = [b for b in h["bundles"] if b["dut_drives"]]
         doms = sorted(h["clocks"])
         rec = {"outputs": {b["name"]: [] for b in outs}, "inputs": {b["name"]: 0 for b in ins}, "events": [],
-               "resets": {d: [] for d in doms}, "probe_at": probe_at}
+               "resets": {d: [] for d in doms}, "probe_at": probe_at, "tail_tolerant": bool(plan.get("tail_tolerant"))}
         fixed = cfg.get("fixed", {})
         trace_ports = {}
         if cfg.get("cycle_trace"):
@@ -281,7 +286,9 @@ if cocotb is not None:
                 for b in dins:
                     n = b["name"]
                     if probe_at is not None and c == probe_at:
-                        q[n], idx[n], cur[n] = plan["probes"][n], 0, None
+                        # 내고 있던 트랜잭션은 받힐 때까지 유지하고 그 뒤부터 프로브 순서 (valid를 받히기 전에 내리지 않음).
+                        # 2026-10-23 P11 axis_async_fifo: 받는 지연이 SPEC 범위 안에서 다른 후보만 이 항목을 잃어 data 차이로 보였음
+                        q[n], idx[n] = plan["probes"][n], 0
                     if p["reset"][c] and not (plan.get("valid_in_reset") and c >= INIT_RESET):
                         cur[n] = None   # refsim은 테스트를 되풀이하므로 처음 리셋 뒤의 리셋 사이클에도 기록된 valid를 낸다
                         if plan.get("after_reset"):   # 함께 리셋: 리셋 전에 받은 개수가 달라도 리셋 뒤에는 같은 입력 순서
@@ -305,7 +312,9 @@ if cocotb is not None:
                         rec["inputs"][b["name"]] += 1
                         cur[b["name"]] = None
                 for b in douts:
-                    if _int(getattr(dut, b["valid"])) == 1 and _int(getattr(dut, b["ready"])) == 1:
+                    # 처음 리셋 구간의 출력은 기록하지 않는다: 첫 리셋 에지 전에는 레지스터가 초기값(무작위)이라 SPEC이 정하지 않는다
+                    # (2026-10-22 P11 삭제 시험: 재생성의 사이클 0 valid=1을 두 번 regen_defect로 오판)
+                    if c >= INIT_RESET and _int(getattr(dut, b["valid"])) == 1 and _int(getattr(dut, b["ready"])) == 1:
                         rec["outputs"][b["name"]].append([d, c, {n: _int(getattr(dut, n)) for n in b["data"]}])
                 if d in trace_ports:
                     rec["cycles"][d].append({n: _int(getattr(dut, n)) for n in trace_ports[d]})
@@ -319,20 +328,46 @@ if cocotb is not None:
         Path(os.environ["DIFF_OUT"]).write_text(json.dumps(rec))
 
 
+def _skip_extra(xl: list, xs: list, i: int, k: int) -> int | None:
+    """xl[i:]에서 j개(1..k)를 건너뛰면 남은 부분이 xs[i:]와 짧은 쪽 길이만큼 같아지는 가장 작은 j. 없으면 None."""
+    for j in range(1, k + 1):
+        rest_l, rest_s = xl[i + j:], xs[i:]
+        n = min(len(rest_l), len(rest_s))
+        if n and all(x[2] == y[2] for x, y in zip(rest_l[:n], rest_s[:n])):
+            return j
+    return None
+
+
 def compare(a: dict, b: dict) -> dict | None:
     """두 후보의 기록을 비교해 첫 차이를 돌려준다. 같으면 None. 기록에 `reset_end`가 있으면(함께 리셋) 마지막 리셋 뒤 출력만."""
     def after(rec, xs):
         end = rec.get("reset_end")
         return xs if end is None else [t for t in xs if t[1] > end.get(t[0], -1)]
+    loose = "reset_end" in a or a.get("tail_tolerant")
+    extra = sum(a.get("inputs", {}).values()) - sum(b.get("inputs", {}).values()) if loose else 0   # >0: a가 더 받음
     for stream in a["outputs"]:
         xa, xb = after(a, a["outputs"][stream]), after(b, b["outputs"][stream])
-        for i, (ta, tb) in enumerate(zip(xa, xb)):
-            if ta[2] != tb[2]:
+        i = 0
+        while i < min(len(xa), len(xb)):
+            if xa[i][2] != xb[i][2]:
+                # 다중 리셋 도메인: 입력을 k개 더 받은 쪽이 한 곳에 연속으로 낸 k개 이하의 항목은 건너뛴다 (프로브 앞에서
+                # 끊긴 입력 순서. 끝의 개수 차이와 같은 원인). 건너뛴 뒤는 그대로 같아야 한다
+                skip = _skip_extra(xa, xb, i, extra) if extra > 0 else None
+                if skip is None and extra < 0:
+                    skip = _skip_extra(xb, xa, i, -extra)
+                    if skip is not None:
+                        xb, extra = xb[:i] + xb[i + skip:], extra + skip
+                        continue
+                elif skip is not None:
+                    xa, extra = xa[:i] + xa[i + skip:], extra - skip
+                    continue
+                ta, tb = xa[i], xb[i]
                 return {"stream": stream, "kind": "data", "index": i, "a": ta, "b": tb, "a_prev": xa[max(0, i - 3):i],
                         "b_prev": xb[max(0, i - 3):i]}
-        if len(xa) != len(xb) and "reset_end" in a and \
+            i += 1
+        if len(xa) != len(xb) and loose and \
                 (len(xb) - len(xa)) * (sum(b["inputs"].values()) - sum(a["inputs"].values())) > 0:
-            continue   # 함께 리셋 비교: 앞부분이 같고 더 받은 쪽이 더 냈으면 끝의 개수 차이는 ready 지연 차이로 본다
+            continue   # 다중 리셋 도메인: 앞부분이 같고 더 받은 쪽이 더 냈으면 끝의 개수 차이는 ready 지연 차이로 본다
         if len(xa) != len(xb):
             n = min(len(xa), len(xb))
             return {"stream": stream, "kind": "count", "index": n, "a_count": len(xa), "b_count": len(xb),

@@ -45,9 +45,25 @@ def ref_sources(r1: dict, build: Path) -> tuple[list[Path], list[str]]:
     return files, args
 
 
-def ref_wrapper(ir: dict, renames: dict[str, str], build: Path) -> tuple[Path | None, str]:
+def ref_params(ir: dict, r1: dict) -> dict[str, str]:
+    """원본에 줄 파라미터 (원본 이름 → 값): IR의 파라미터(local 제외)와, R1이 고른 구조에서 쓰이지 않는다고 지운 파라미터의
+    고정 값. 지운 것을 빼고 빌드하면 원본이 기본값으로 다른 구조를 골라, 이식 IR과 함께 틀린 채로 R4가 같다고 본다
+    (2026-10-22 axis_async_fifo: PAUSE_ENABLE 고정 1, 기본 0. 원본 테스트벤치의 pause, overflow가 이식 IR에서 실패)."""
+    meta = r1["modules"].get(ir["module"], {})
+    inv = {v: k for k, v in meta.get("renames", {}).items()}
+    out = {inv.get(p["name"], p["name"]): p["default"] for p in ir["params"] if not p.get("local")}
+    removed = meta.get("removed_params")
+    if removed is None and ir["module"] == r1.get("top"):   # 이 기록이 생기기 전의 R1: top은 고정 설정에서
+        removed = r1["inputs"]["params"]
+    for k, v in (removed or {}).items():
+        out.setdefault(k, str(v))
+    return out
+
+
+def ref_wrapper(ir: dict, renames: dict[str, str], build: Path, params: dict[str, str] | None = None) -> tuple[Path | None, str]:
     """원본을 감싼 래퍼 (파일, top 이름). 포트 이름을 바꿨거나(SV 예약어), inout 포트가 있거나, 조합 모듈(가상 클럭)이면 만든다.
-    없으면 (None, 원본 이름). 래퍼가 top이면 -G가 원본에 닿지 않으므로 파라미터(고정한 설정)는 래퍼 안의 인스턴스에 준다."""
+    없으면 (None, 원본 이름). 래퍼가 top이면 -G가 원본에 닿지 않으므로 파라미터(고정한 설정)는 래퍼 안의 인스턴스에 준다.
+    params: 원본에 줄 파라미터 (`ref_params`). 없으면 IR의 파라미터."""
     from pipeline.tb.gen import comb_view, inout_ports, pad_wrapper_sv
 
     name = ir["module"]
@@ -55,7 +71,8 @@ def ref_wrapper(ir: dict, renames: dict[str, str], build: Path) -> tuple[Path | 
     if not renames and not inout_ports(ir) and hview is ir:
         return None, name
     inv = {v: k for k, v in renames.items()}
-    params = {inv.get(p["name"], p["name"]): p["default"] for p in ir["params"] if not p.get("local")}
+    if params is None:
+        params = {inv.get(p["name"], p["name"]): p["default"] for p in ir["params"] if not p.get("local")}
     f = build / f"{name}_ref_top.sv"
     f.write_text(pad_wrapper_sv(hview, name, f"{name}_ref_top", params, inv, inner_raw=ir), encoding="utf-8")
     return f, f"{name}_ref_top"
@@ -169,10 +186,11 @@ def run_module(name: str, lib: dict[str, dict], r1: dict, work: Path, cells: lis
         ir_files = [*ir_files, iw]
     ref_files, ref_args = ref_sources(r1, work)
     renames = r1["modules"].get(name, {}).get("renames", {})
-    wrap, ref_top = ref_wrapper(view, renames, work)
+    rparams = ref_params(top_ir, r1)
+    wrap, ref_top = ref_wrapper(view, renames, work, rparams)
     if wrap:
         ref_files = [*ref_files, wrap]
-    gparams = [] if wrap else [f"-G{p['name']}={p['default']}" for p in top_ir["params"] if not p.get("local")]
+    gparams = [] if wrap else [f"-G{k}={v}" for k, v in rparams.items()]
     top_ir = view
     h = harness_config(Module(pad_view(comb_view(top_ir))))
     results = []

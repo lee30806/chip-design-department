@@ -415,6 +415,29 @@ _FORBIDDEN = {"DelayControl": "지연(#)", "ProceduralForceStatement": "force", 
 _FN_FORBIDDEN = {"TimingControlStatement": "타이밍 제어(@, #)", "WaitStatement": "wait", "WaitForkStatement": "wait fork"}
 
 
+# 합성 RTL 조각에 쓸 수 있는 시스템 함수 (상수 계산과 형 변환). 그 밖의 `$...`(PLI, $display, $random, $time 등)는 합성되지 않는다.
+# SVA(`assertions`)는 Emitter가 `ifndef SYNTHESIS`로 감싸므로 보지 않는다 (2026-10-22 사용자 규칙: 합성 RTL에 task, PLI 금지).
+SYNTH_SYSFUNCS = {"$clog2", "$bits", "$signed", "$unsigned", "$countones", "$onehot", "$onehot0",
+                  "$size", "$high", "$low", "$left", "$right"}
+
+
+def system_calls(node) -> list[str]:
+    """구문 트리 안의 시스템 함수와 시스템 task 이름 (`$display` 등)."""
+    found = []
+
+    def visit(n):
+        if str(getattr(n, "kind", "")).endswith("SystemName"):
+            found.append(n.systemIdentifier.valueText)
+        return pyslang.VisitAction.Advance
+
+    node.visit(visit)
+    return found
+
+
+def _unsynth_calls(node) -> list[str]:
+    return sorted({c for c in system_calls(node) if c not in SYNTH_SYSFUNCS})
+
+
 def _kinds_in(node, kinds: dict[str, str]) -> list[str]:
     found = []
 
@@ -505,6 +528,9 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
     funcs = {f'functions/{f["name"]}': (i, f) for i, f in enumerate(m.functions)}
     order = {f["name"]: i for i, f in enumerate(m.functions)}
     tasks = m.tasks()
+    for name in tasks:
+        out.append(Issue("V4", f"functions/{name}", f"합성 RTL에 task를 쓰지 않음 (사내 규칙): {name}. "
+                                                    "comb 블록에 풀어 쓰거나 값을 돌려주는 function으로 바꾼다"))
     sm = tree.sourceManager
     signal_names = m.readable()
     module_names = signal_names | set(m.storage())
@@ -526,6 +552,8 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
         writes, reads, kinds, forbidden = _block_usage(n.statement, tasks)
         for f in forbidden:
             out.append(Issue("V4", node, f"금지 구문: {f}"))
+        if bad := _unsynth_calls(n.statement):
+            out.append(Issue("V4", node, f"합성되지 않는 시스템 함수/PLI: {bad} (상수 함수 {sorted(SYNTH_SYSFUNCS)}만)"))
         called = {name for name, _ in invocations(n.statement)}
         if b["kind"] != "comb" and called & set(tasks):
             out.append(Issue("V4", node, f"task는 comb 블록에서만 부름 (seq는 function을 씀): {sorted(called & set(tasks))}"))
@@ -550,6 +578,8 @@ def v3_v4(m: Module, library: dict[str, Module]) -> list[Issue]:
         for tr in b["transitions"]:
             t = pyslang.SyntaxTree.fromText(f"module __c; wire w = ({tr['cond']}); endmodule")
             _, reads, _, _ = _block_usage(t.root)
+            if bad := _unsynth_calls(t.root):
+                out.append(Issue("V4", f'blocks/{b["id"]}/transitions/{tr["id"]}', f"합성되지 않는 시스템 함수/PLI: {bad}"))
             undeclared = sorted((reads & signal_names) - set(b["reads"]))
             if undeclared:
                 out.append(Issue("V4", f'blocks/{b["id"]}/transitions/{tr["id"]}', f"reads에 없는 신호를 읽음: {undeclared}"))
@@ -574,6 +604,8 @@ def _function_checks(m: Module, node: str, idx: int, f: dict, n, order: dict[str
     writes, reads, kinds, forbidden = _block_usage(n, tasks)
     for x in forbidden + _kinds_in(n, _FN_FORBIDDEN):
         out.append(Issue("V4", node, f"금지 구문: {x}"))
+    if bad := _unsynth_calls(n):
+        out.append(Issue("V4", node, f"합성되지 않는 시스템 함수/PLI: {bad} (상수 함수 {sorted(SYNTH_SYSFUNCS)}만)"))
     if "nonblocking" in kinds:
         out.append(Issue("V4", node, f'{f["kind"]} 본문은 blocking(=)만 씀'))
     local = {v["name"] for v in [*f["args"], *f.get("vars", [])]}

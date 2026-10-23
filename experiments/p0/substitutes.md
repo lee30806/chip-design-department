@@ -15,7 +15,7 @@ P0에서 받기로 한 사내 자료를 아직 받지 못했습니다. 그래서
 | 표준 동기화 셀 | 아래 "동기화 셀" | Emitter `cdc_sync`, SDC 골격 |
 | 메모리 매크로 래퍼 규약 | 추론형 배열만 (`impl: inferred`) | Emitter `memory` (`impl: macro`) |
 | 표준 프로토콜 태그 목록 | `valid_ready` 하나 | 스키마, 하니스 생성기 |
-| 사내 코딩 가이드 | 아래 "코딩 규칙" (Validator 규칙에서 정리) | Emitter, V4 |
+| 사내 코딩 가이드 | [docs/RTL 코딩 규칙.md](../../docs/RTL%20코딩%20규칙.md) (Validator 규칙에서 정리) | Emitter, V4 |
 | 로컬 모델 목록과 서빙 엔드포인트 | 이 Mac의 ollama 모델 (아래) | X1, X2, X3 |
 | 폐쇄망 반입 coding agent 패키지 | 로컬 설치판으로 확인 | X3, X5 |
 
@@ -68,20 +68,7 @@ module rst_sync (input logic clk, rst_n, output logic rst_n_sync);              
 
 ## 코딩 규칙
 
-Validator와 Emitter가 강제하는 규칙입니다. 사내 코딩 가이드를 받으면 대조해 빠진 규칙을 Validator에 더합니다.
-
-| 영역 | 규칙 |
-| --- | --- |
-| 이름 | SV 식별자 규칙과 예약어 금지(V1). 노드 이름은 모듈 안에서 겹치지 않음 |
-| 클럭과 리셋 | `domains`에서 만듦. 조각에 sensitivity list와 리셋 분기를 쓰지 않음 |
-| 금지 구문 | 지연(`#`), `initial`, `force`/`release`, `assign`/`deassign` (V4) |
-| 대입 | `seq`에는 non-blocking(`<=`)만, `comb`에는 blocking(`=`)만 (V4). `seq` 안의 임시 변수는 `comb` 신호로 뺌 |
-| 래치 | `comb` 블록은 쓰는 신호마다 본문 첫머리에 무조건 대입이 있음 (V6) |
-| 폭 | 암묵적인 폭 변환은 오류. 캐스트(`4'(x)`)나 슬라이스로 명시 |
-| 리셋 | 한 `seq` 블록의 레지스터는 모두 리셋이 있거나 모두 없음 (V7) |
-| 도메인 | 다른 도메인 값은 `cdc_sync`의 `dst`로만 읽음. 비동기 입력은 `cdc_sync`의 `src`로만 읽음 (V8) |
-| FSM | 상태는 enum. 리셋 상태에서 모든 상태에 도달 가능 (V9) |
-| 파라미터 | 다른 파라미터에서 계산된 값은 `local: true`(localparam). 구조를 바꾸는 파라미터(`generate`)는 쓰지 않고 설정마다 IR을 따로 둠 |
+[docs/RTL 코딩 규칙.md](../../docs/RTL%20코딩%20규칙.md)로 옮겼습니다 (2026-10-22). 사내 코딩 가이드를 받으면 그 문서와 대조합니다.
 
 ## 로컬 모델
 

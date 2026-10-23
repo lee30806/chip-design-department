@@ -53,14 +53,14 @@
 | `memory` | `name`, `word_type`, `depth`, `impl: "inferred"`, `ports` | 배열 `name[addr]`. 쓰기 포트 도메인의 `seq`만 쓰고, 읽기 포트 도메인의 `seq`만 읽는다 |
 | `tristate` | `pad`, `o`, `oe`, `i`, `domain`, `style` | `top`과 `block_top`의 inout 포트 `pad`를 구동한다. `push_pull`은 `pad = oe ? o : z`, `open_drain`은 `pad = oe ? 0 : z`(`o` 없음, 1은 바깥 풀업). `i`는 패드 값을 받는 wire이고 `domain`의 신호로 본다. `oe`는 1비트이거나 `pad`와 같은 폭(비트마다). inout 포트는 이 블록 하나만 다루고 조각에서 읽거나 쓰지 않는다. 하위 모듈은 inout 대신 `<이름>_o`, `<이름>_oe`(출력), `<이름>_i`(입력) 포트를 쓴다 |
 
-## functions (function, task)
+## functions (function)
 
-모듈 안에서만 쓰는 도움 함수다. `{"name", "kind": "function" | "task", "ret"(function만), "args": [{"name", "dir", "type"}], "vars": [{"name", "type"}], "body"}`.
+모듈 안에서만 쓰는 도움 함수다. `{"name", "kind": "function", "ret", "args": [{"name", "dir": "input", "type"}], "vars": [{"name", "type"}], "body"}`.
 
-- Emitter는 `function automatic <ret> name(input ...);` / `task automatic name(input ..., output ...);`으로 내고, `vars`를 본문 앞에 선언한다.
+- **task는 쓰지 않는다** (합성 RTL 규칙, Validator V4 오류). 출력이 여럿인 계산은 `comb` 블록에 풀어 쓰거나 function 여럿으로 나눈다.
+- Emitter는 `function automatic <ret> name(input ...);`로 내고, `vars`를 본문 앞에 선언한다.
 - 본문은 인자, `vars`, 상수(파라미터, enum 멤버), 배열에서 앞에 정의한 function만 읽고 쓴다. 모듈 신호는 인자로 넘긴다. 대입은 blocking(`=`)만이고 타이밍 제어(`@`, `#`, `wait`)는 쓸 수 없다. 재귀는 안 된다.
 - function은 입력 인자만 받고 `return e;`로 값을 돌려준다. 어느 조각(`comb`, `seq`, `fsm` 전이 조건, `assertions`)에서나 식으로 부른다.
-- task는 출력 인자에 쓴다. `comb` 블록에서 문장(`split(a, hi, lo);`)으로만 부르고, 출력 인자로 넘긴 신호는 그 블록의 `writes`에 적는다. task 본문은 출력 인자마다 처음에 조건 없이 대입한다 (래치 금지와 같은 규칙).
 - 함수 이름은 `reads`에 적지 않는다. 인자와 지역 변수 이름은 모듈의 다른 이름과 겹치지 않게 한다.
 
 ## assertions (SVA)
@@ -79,6 +79,7 @@
 - 폭을 맞춘다. 암묵적 확장과 절단은 오류다. `4'(X + 1)`, `8'd1`, `x[7:0]`처럼 명시한다. 파라미터(int, 32비트)와 비교하거나 더할 때도 캐스트한다.
 - `seq` 블록 안에 임시 변수를 쓰지 않는다. `comb` 블록의 wire로 뺀다.
 - `generate`는 쓸 수 없다. `comb` 블록에서 `for` 루프로 풀어 쓴다. 되풀이되는 계산은 `functions`로 뺀다.
+- 합성되지 않는 시스템 함수와 시스템 task(PLI, DPI, `$display`, `$random`, `$time`, `$finish` 등)는 조각과 function에 쓰지 않는다 (V4 오류). 상수 함수 `$clog2`, `$bits`, `$signed`, `$unsigned`, `$countones`, `$onehot`, `$onehot0`, `$size`, `$high`, `$low`, `$left`, `$right`만 쓴다. 시뮬레이션 검사는 `assertions`(SVA)로 쓴다.
 - 비동기 입력(포트 `domain`이 null)은 `cdc_sync`의 `src`로만 읽는다.
 - `cdc_sync`의 `dst`는 받는 쪽 도메인이 리셋 중이거나 막 풀렸을 때 0이고, 보내는 쪽 값은 2클럭 넘게 늦게 보인다. 그래서 도메인을 넘는 상태 플래그는 0이 안전한 뜻으로 정한다. 예: "상대가 리셋 중"(1이면 멈춤) 대신 "상대가 준비됨"(1이면 진행)으로 보내야, 아직 동기화되지 않은 0이 "멈춤"으로 읽힌다 (P8a async_fifo: 리셋 중 플래그의 초기 0을 "상대가 깨어남"으로 읽어 첫 비트를 받은 뒤 프레임을 버림).
 
@@ -92,7 +93,7 @@ body와 cond를 Python 문법으로 쓴다. 실행되는 Python이 아니라 사
 - 식: `+ - * & | ^ ~ << >>`, 비교 하나(`a == b`, 사슬 비교 금지), `and or not`, `a if c else b`, `x[i]`, `x[hi:lo]`(SV처럼 양 끝 포함).
 - 메모리(`memory` 블록의 `name`): `mem[addr]`로 한 워드씩 읽고 쓴다. 쓰기는 `seq`에서만 (`if wr_en:` / `    mem[wr_addr] = wr_word`). 워드의 일부는 워드를 신호에 받은 뒤 고른다.
 - 도움 함수: `cat(a, b)`(연결), `rep(n, x)`(반복), `u(w, v)`(폭 w 상수), `any_bits(x)`, `all_bits(x)`, `parity(x)`.
-- 모듈의 `functions`도 Python으로 쓴다: 본문은 같은 문장(모두 blocking)이고 function은 `return e`로 끝낸다. function은 식에서 `f(a, b)`, task는 `comb`의 문장 `t(a, out1, out2)`로 부른다 (출력 인자 자리는 같은 폭의 신호나 비트 선택). 인자는 위치로만 넘긴다.
+- 모듈의 `functions`도 Python으로 쓴다: 본문은 같은 문장(모두 blocking)이고 function은 `return e`로 끝낸다. function은 식에서 `f(a, b)`로 부른다. 인자는 위치로만 넘긴다.
 - 폭: 툴이 SV 규칙대로 계산하고 확장과 절단을 캐스트로 적는다. 대입 대상보다 넓은 결과는 잘린다. 정수 리터럴은 식의 다른 피연산자 폭을 따른다 (`cnt == 0`, `cnt + 1`). 연결 안의 상수는 `u(4, 9)`처럼 폭을 쓴다.
 - 쓸 수 없는 것: `def`(함수는 IR의 `functions`로), 리스트, 문자열, `while`, 나눗셈, 사슬 비교, 부호 있는 값, struct 타입.
 - 예: `if state_q == HEADER and s_valid:` / `    byte_cnt = s_data` / `elif state_q == PAYLOAD and s_valid:` / `    byte_cnt = byte_cnt - 1`

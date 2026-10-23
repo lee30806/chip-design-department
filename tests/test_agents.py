@@ -96,6 +96,17 @@ def test_tools_cli_in_workdir(tmp_path):
     assert len((w / ".tools.log").read_text().splitlines()) == 10
 
 
+def test_model_check_without_input_bundles(tmp_path):
+    # 단독 포트만 있는 블록(fn_top, od_top): 넣을 트랜잭션이 없어도 실패가 아니고, 테스트가 import하는 harness/를 찾는다
+    w = _installed(tmp_path)
+    (w / "in/fn.json").write_text((ROOT / "tests/fixtures/v1ext/fn_mod.ir.json").read_text())
+    (w / "in/harness").mkdir()
+    (w / "in/harness/fn_harness.py").write_text("X = 1\n")
+    (w / "out/m.py").write_text("import fn_harness\n\nclass Model:\n    pass\n")
+    out = _pl(w, "model", "out/m.py", "in/fn.json")[1]
+    assert out["ok"] is True and out["inputs"] == 0
+
+
 def test_agent_can_call_tools(tmp_path):
     raw = LIB["pkt_parser"].raw
     t = Task("author", "t", "x", inputs={"in/ir.json": json.dumps(raw)}, outputs=["out/result.txt"], isolate=False)

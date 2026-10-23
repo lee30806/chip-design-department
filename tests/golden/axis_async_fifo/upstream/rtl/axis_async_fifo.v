@@ -845,16 +845,28 @@ if (PAUSE_ENABLE) begin : pause
     reg s_pause_ack_sync2_reg;
     reg s_pause_ack_sync3_reg;
 
+    // (chip-design-department: 리셋이 없던 일시정지 동기화 플롭에 자기 도메인 동기 리셋 0을 넣음.
+    //  표준 동기화 셀처럼 받는 쪽 리셋에서 0이 되게 함. 리셋 동기화 단과 같은 처리)
     always @(posedge s_clk) begin
         s_pause_req_sync1_reg <= s_pause_req;
         s_pause_ack_sync2_reg <= s_pause_ack_sync1_reg;
         s_pause_ack_sync3_reg <= s_pause_ack_sync2_reg;
+        if (s_rst) begin
+            s_pause_req_sync1_reg <= 1'b0;
+            s_pause_ack_sync2_reg <= 1'b0;
+            s_pause_ack_sync3_reg <= 1'b0;
+        end
     end
 
     always @(posedge m_clk) begin
         s_pause_req_sync2_reg <= s_pause_req_sync1_reg;
         s_pause_req_sync3_reg <= s_pause_req_sync2_reg;
         s_pause_ack_sync1_reg <= pause_reg;
+        if (m_rst) begin
+            s_pause_req_sync2_reg <= 1'b0;
+            s_pause_req_sync3_reg <= 1'b0;
+            s_pause_ack_sync1_reg <= 1'b0;
+        end
     end
 
     assign m_axis_tready_out = m_axis_tready && !pause_reg;

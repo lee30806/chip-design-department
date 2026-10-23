@@ -47,7 +47,7 @@ def run(inp: Inputs, out: Path) -> dict:
         (r1 / "source" / f"{name}.sv").write_text(m.source["text"], encoding="utf-8")
         meta[name] = {"file": m.source["file"], "line": m.source["line"], "end_line": m.source["end_line"],
                       "renames": m.renames, "pending": m.pending, "macro_params": m.macro_params,
-                      "port_domains": m.port_domains, "tri_split": m.tri_split}
+                      "port_domains": m.port_domains, "tri_split": m.tri_split, "removed_params": m.removed_params}
     if design.headers:
         (r1 / "source" / "headers").mkdir()
         for h in design.headers:

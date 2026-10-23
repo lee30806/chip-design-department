@@ -18,8 +18,8 @@
 | P8a Python 동작 조각 | **완료 (2026-10-14)** | 사용자 결정. 구조는 JSON, 동작은 SV 또는 Python 조각. 비교 4블록 모두 통과 (adapter, cobs, crc는 두 언어 후보 모두, async_fifo는 방출기 수정 뒤 재검증에서 Python 후보). 범위: 후보 하나만 Python (후보 0 SV, 후보 1 Python) |
 | P9 운영 안정화 | **진행 중 (2026-10-14 사용자 지시로 재개)** | Web UI 2차(대시보드, 환류 관리, 리포트), 3차(설정, Seat 대화와 작업 지시) 구현. SSO와 EPC는 조건 대기 |
 | P10 다중 클럭과 리셋 확장 | **완료 (2026-10-16)** | 시험용 Block Top(`mc_top`). SDC는 문자열로만 확인 (SDC 검사 도구에는 넣지 않음) |
-| P11 원본 RTL에서 IR과 SPEC 만들기 | **진행 중** | 구현과 가짜 에이전트 시험 완료. 실제 에이전트로는 golden 4블록 중 `axis_cobs_decode`만 R6까지 원본과 같아짐 (2026-10-18). Haiku high로 `axis_adapter`, `uart`도 통과. `axis_async_fifo`는 다중 클럭 리셋을 사용 조건으로 바꾼 뒤 Haiku medium으로 R6 통과 (2026-10-22) |
-| P12 v1 제외 항목 확장 | **완료 (2026-10-19, 에이전트 없이)** | 하강 에지 도메인, 패드 동시 구동 충돌, 실행기 `tristate`, function/task, SVA. 실제 에이전트 실행은 아직 |
+| P11 원본 RTL에서 IR과 SPEC 만들기 | **진행 중** | 구현과 가짜 에이전트 시험 완료. 실제 에이전트로는 golden 4블록 중 `axis_cobs_decode`만 R6까지 원본과 같아짐 (2026-10-18). Haiku high로 `axis_adapter`, `uart`도 통과. `axis_async_fifo`는 다중 클럭 리셋을 사용 조건으로 바꾼 뒤 Haiku medium으로 R6 통과 (2026-10-22). 그 통과는 `PAUSE_ENABLE` 참조 결함으로 무효였고, 고친 뒤 다시 통과 (2026-10-23) |
+| P12 v1 제외 항목 확장 | **완료 (2026-10-19)** | 하강 에지 도메인, 패드 동시 구동 충돌, 실행기 `tristate`, function, SVA. task는 사내 규칙으로 금지 (2026-10-22). 실제 에이전트로 `ne_top`, `od_top`, `fn_top` R6 통과 (2026-10-23) |
 
 ## 제외 항목 (사용자 결정)
 
@@ -49,12 +49,22 @@
 | 두 단계 이상의 모듈 트리 | P4 | 하위 모듈이 다시 나뉘는 블록 (P8) |
 | 에이전트 단독 평가 나머지 (Author, Verifier, Architect 각 3블록, Repair cobs) | P4 | agy 사용량 여유 |
 | 대체 LEC 무한 증명 (사내 Formality/Conformal 또는 FSM 재인코딩 끄기) | P8 | 사내 LEC 또는 PI 결정 |
-| `axis_crc_append` CRC-E03 정의, Q-01 결정, DV 공백(SVA, 16비트 롤오버) | P8 | 다음 SPEC 개정 |
-| golden 블록 Verifier 체커의 리셋 표본 가정 재확인 | P8 | P9 재개 |
+| DV/PI Seat 모델 선정 | P8 | 사용자 결정 |
 | 설계 모델 실행기 확장 (`memory`, `cdc_sync`, 다중 클럭, struct, signed) | P8a | 필요한 블록이 나올 때 |
 | 하니스에서 설계 모델로 Verifier 테스트 실행 (RTL 전 빠른 실행) | P8a | 실제 비교에서 Repair 반복 비용이 크게 나올 때 |
 
 ## 진행 기록
+
+### 2026-10-23 실패 교훈 반영 점검과 남은 항목 실행 (사용자 지시)
+
+DV/PI Seat 모델 선정을 뺀 남은 항목을 진행하고, 실패 교훈이 하네스에 들어 있는지 점검해 빠진 것을 넣었다. 자세한 것은 IMPLEMENTATION.md "실패 교훈 반영 점검과 남은 항목 실행".
+- **규칙과 문서:** 합성 RTL의 task·PLI 금지(V4, 사용자 확인), `docs/RTL 코딩 규칙.md`, `docs/용어집.md`, SPEC 검사 경고 `RESET_SAME_CYCLE`·`MULTI_RESET_USAGE`, 템플릿(범위와 "구현에 따름", 다중 클럭 리셋 사용 조건), Verifier·`tb_guide.md` "자주 틀린 것", refsim `singles`, Python 조각 `$clog2`, DV 안내.
+- **결함 수정:** R1이 지운 고정 파라미터를 참조 빌드에 주지 않음(`PAUSE_ENABLE`: 2026-10-22 `axis_async_fifo` 통과는 무효였음), 원본 일시정지 동기화 플롭에 동기 리셋 0(사용자 결정), diffsim(처음 리셋 구간 출력, 다중 리셋 도메인의 끝·중간 개수 허용, 프로브 전환 때 valid 유지), SPEC 게이트의 inout 규칙, `pl.py model`의 입력 번들 없는 블록.
+- **실제 실행 (Haiku medium):** `axis_adapter` upsize R4 `equal`. `ne_top`, `od_top`, `fn_top` R6 통과. `axis_async_fifo`(`20261022c`)는 비교 결함으로 회차 5가 상한에 걸렸고, 비교를 고쳐 회차 4로 되돌린 뒤 회차 5에서 R6 통과 (사용자 결정). 가져온 IR로 원본 테스트벤치 20/20.
+- **삭제 시험:** 지운 요구사항(tkeep=0 바이트 그대로)을 재생성 설계가 가장 단순한 구현으로 원본과 같게 내 잡지 못함. 추측할 수 없는 동작을 지워야 검출을 시험할 수 있음.
+- **CRC DV 공백과 SPEC 결정:** SVA와 16비트 롤오버 테스트 통과. 사용자가 권장안을 골라 SPEC을 고쳤다: CRC-E03(도중 리셋된 프레임은 마무리하지 않고 받는 쪽이 처리), CRC-E04(리셋 뒤 첫 프레임은 정상), CRC-E01을 한 문장으로("rst=1을 본 다음 사이클부터"), Q-01은 상위 바이트 먼저로 고정하고 범위 밖으로. 동결 RTL(674c)이 그대로 맞아 RTL 변경은 없고, 리셋 뒤 첫 프레임 테스트를 더해 3/3 통과.
+- 사람 승인(기댓값 수정): deltest E1 2회, `ne_top` 2회, `axis_async_fifo` 4회(2회는 버린 회차).
+- 시험: 시뮬레이션 제외 309개(3개 건너뜀), 시뮬레이션 103개 통과.
 
 ### 2026-10-22 axis_async_fifo R6 통과: 다중 클럭 리셋을 사용 조건으로 (사용자 결정)
 

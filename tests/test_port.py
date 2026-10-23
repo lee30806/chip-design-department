@@ -390,9 +390,60 @@ def test_r6_compare_tail_count_follows_inputs_accepted():
     b["inputs"] = {"i": 2}
     a.pop("reset_end")
     assert compare(a, b)["kind"] == "count"
+    a["tail_tolerant"] = True   # steady 모드라도 리셋 도메인이 둘 이상이면 끝 개수 허용 (처음 리셋 뒤 ready 지연도 미정)
+    assert compare(a, b) is None
+
+
+def test_r6_compare_skips_contiguous_extra_from_side_that_accepted_more():
+    """다중 리셋 도메인: 프로브 앞에서 입력 순서가 다른 위치에서 끊기면, 더 받은 쪽이 한 곳에 낸 항목은 차이가 아니다
+    (2026-10-23 P11 axis_async_fifo reset 시드 4). 받은 입력이 같거나 덜 받은 쪽이 더 냈으면 차이다."""
+    from pipeline.tb.diffsim import compare
+    o = lambda *xs: [["m", c, {"x": x}] for c, x in enumerate(xs)]
+    a = {"outputs": {"o": o(1, 2, 9, 3, 4)}, "inputs": {"i": 6}, "tail_tolerant": True}
+    b = {"outputs": {"o": o(1, 2, 3, 4)}, "inputs": {"i": 5}, "tail_tolerant": True}
+    assert compare(a, b) is None and compare(b, a) is None
+    b["inputs"] = {"i": 6}
+    assert compare(a, b)["kind"] == "data"
+    b["inputs"], a["outputs"]["o"] = {"i": 5}, o(1, 2, 9, 8, 3, 4)   # 받은 차이(1)보다 많이 더 냄
+    assert compare(a, b)["kind"] == "data"
+    a["outputs"]["o"], b["outputs"]["o"] = o(1, 2, 9, 3, 4), o(1, 2, 3, 5)   # 건너뛴 뒤에도 다름
+    assert compare(a, b)["kind"] == "data"
+    a.pop("tail_tolerant"), b.pop("tail_tolerant")
+    b["outputs"]["o"] = o(1, 2, 3, 4)
+    assert compare(a, b)["kind"] == "data"
+
+
+def test_r6_steady_plan_tail_tolerant_only_with_joint_reset():
+    from pipeline.tb.diffsim import make_plan
+    cfg = _two_clock_cfg()
+    cfg["mode"] = "steady"
+    assert make_plan(cfg).get("tail_tolerant") is True
+    assert "tail_tolerant" not in make_plan(_two_clock_cfg(joint=False))
 
 
 def test_r6_plan_opts_joint_only_for_multiple_reset_domains():
     from pipeline.importer.r6 import plan_opts
     assert plan_opts({"resets": {"m": ["m_rst", 1], "s": ["s_rst", 1]}}) == {"joint_reset": True}
     assert plan_opts({"resets": {"clk": ["rst", 1]}}) == {}
+
+
+def test_ref_params_keep_removed_fixed_params():
+    """R1이 쓰이지 않는다고 지운 파라미터도 원본 빌드에는 고정 값으로 준다. 빼면 원본이 기본값으로 다른 구조를 골라
+    이식 IR과 함께 틀린 채로 R4가 같다고 본다 (2026-10-22 axis_async_fifo PAUSE_ENABLE: 고정 1, 기본 0)."""
+    from pipeline.importer.r4 import ref_params
+    ir = {"module": "f", "params": [{"name": "W", "default": "8"}, {"name": "AW", "default": "3", "local": True}]}
+    r1 = {"top": "f", "inputs": {"params": {"W": "8", "PAUSE_ENABLE": "1"}},
+          "modules": {"f": {"renames": {}, "removed_params": {"PAUSE_ENABLE": "1"}}}}
+    assert ref_params(ir, r1) == {"W": "8", "PAUSE_ENABLE": "1"}
+    r1["modules"]["f"].pop("removed_params")   # 기록이 생기기 전의 R1: top은 고정 설정에서
+    assert ref_params(ir, r1) == {"W": "8", "PAUSE_ENABLE": "1"}
+    r1["top"] = "other"
+    assert ref_params(ir, r1) == {"W": "8"}
+
+
+def test_r1_records_removed_params_with_fixed_values():
+    """golden axis_async_fifo를 PAUSE_ENABLE=1로 고정해 추출하면 PAUSE_ENABLE은 generate 조건에서만 쓰여 지워지고, 그 값이 남는다."""
+    ext = _golden("axis_async_fifo")
+    m = ext["modules"]["axis_async_fifo"]
+    assert m.removed_params.get("PAUSE_ENABLE") == "1"
+    assert "PAUSE_ENABLE" not in {p["name"] for p in m.ir["params"]}

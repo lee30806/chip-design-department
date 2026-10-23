@@ -8,6 +8,8 @@ Chip Design Department의 아키텍처 개요입니다. 시스템은 SPEC에서 
 
 - [Chip Design Department 설계](./docs/Chip%20Design%20Department%20설계.md): 부서 계층, Seat, 환류, 승인, 인프라, Web UI
 - [LLM 기반 RTL 생성 파이프라인 설계](./docs/LLM%20기반%20RTL%20생성%20파이프라인%20설계.md): SPEC 규격, 파이프라인, IR 스키마, Validator, 검증, 이식 시험
+- [RTL 코딩 규칙](./docs/RTL%20코딩%20규칙.md): 생성 RTL이 지키는 규칙과 어느 검사가 강제하는지
+- [용어집](./docs/용어집.md): 문서와 코드에서 쓰는 말
 
 ---
 
@@ -202,6 +204,7 @@ flowchart LR
 
 **R6 규칙.**
 - **재생성 분할 상한.** 재생성 실행의 Architect는 원본 모듈 수(top 빼고, 적어도 1)를 넘게 나누지 못합니다. 상한은 실행 상태에 남아 재구성과 이어 가기에도 같게 적용됩니다. 작은 블록을 둘로 나눌 때마다 모듈 사이 계약이 어긋났기 때문입니다.
+- **다중 클럭 리셋.** 리셋 도메인이 둘 이상이고 클럭이 다르면, SPEC은 리셋을 사용 조건으로 씁니다(모든 리셋을 함께, 가장 느린 클럭 N사이클 이상. 한쪽 리셋은 미정의). 두 클럭의 위상에 따라 달라지는 사이클 수는 범위와 "구현에 따름(검증하지 않음)"으로 씁니다. 비교도 이에 맞춰 모든 도메인에 같은 시각 구간으로 리셋을 걸고(`joint_reset`), 마지막 리셋이 풀린 뒤의 출력만 봅니다. 리셋마다 입력 순서를 처음부터 다시 쓰고, 앞부분이 같고 입력을 더 받은 쪽이 출력도 더 낸 끝 개수 차이는 ready 지연 차이로 봅니다. 한쪽 리셋과 위상까지 정확히 정하려던 SPEC은 고치기 5회 안에 끝나지 않았습니다 (2026-10-21~22 `axis_async_fifo`).
 - **판정.** 비교가 다르거나, 재생성이 실패했어도 그 Verifier 테스트가 원본에서 실패하면 Arbiter가 판정합니다. 판정은 둘 중 하나입니다.
   - `spec_gap`: SPEC이 그 동작을 정하지 않았거나 두 가지로 읽힙니다. SPEC을 고칩니다.
   - `regen_defect`: SPEC이 분명히 정했는데 재생성 설계가 어겼습니다. 일반 파이프라인 결함으로 리포트하고 끝냅니다.
@@ -229,7 +232,7 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 | L0 | `instances`, `connections` | 인스턴스(파라미터 바인딩, `domain_map`)와 연결 |
 | L1 | `params`, `domains`, `ports` | 파라미터, 클럭/리셋/전력 도메인, 포트 또는 프로토콜 번들 |
 | L2 | `types`, `signals` | enum/struct 타입, `reg`/`wire` 신호 |
-| L3 | `blocks`, `functions`, `assertions` | `comb`, `seq`, `fsm`, `cdc_sync`, `cdc_fifo`, `memory`, `tristate`. 도움 함수(function, task)와 SVA 속성(assert, assume, cover) |
+| L3 | `blocks`, `functions`, `assertions` | `comb`, `seq`, `fsm`, `cdc_sync`, `cdc_fifo`, `memory`, `tristate`. 도움 함수(function)와 SVA 속성(assert, assume, cover) |
 
 - **모듈 role.** `top`, `block_top`, `module`, `external`의 네 가지입니다. `top`과 `block_top`은 인스턴스, 연결, 동기화 셀, 3상태 구동(`tristate`)만 가집니다. `external`은 L1만 가지며 등록된 RTL 파일을 그대로 참조합니다.
 - **동결 범위.** 모든 모듈의 L1과 인스턴스 목록, `top`과 `block_top`의 연결, 동기화 셀, 신호, 타입입니다.
@@ -237,7 +240,7 @@ IR은 모듈당 JSON 파일 하나입니다. RTL의 유일한 소스이며, 다�
 - **조각 언어.** 모듈의 `lang`이 `sv`(기본)면 조각은 SystemVerilog, `py`면 Python 문법의 사이클 단위 기술입니다. `py` 모듈은 읽을 때 SV 조각으로 낮추므로 Validator, Emitter, 하니스는 같은 경로를 탑니다. 설계 모델(`py` 조각)과 참조 모델(Verifier)은 서로 다른 에이전트가 따로 씁니다. 같은 모델을 RTL의 원천과 기댓값에 함께 쓰지 않습니다 (검증이 순환하므로). 설계 모델 대 RTL 비교는 번역기 검사로만 쓰고, 판정은 늘 RTL 시뮬레이션으로 합니다.
 - **리셋 방식.** 한 설계의 리셋은 모두 비동기이거나 모두 동기입니다. 모듈 안의 도메인끼리, `domain_map`으로 잇는 부모와 자식 도메인끼리 같아야 합니다(V2). 블록 안 리셋 동기화(`reset.synchronize`, 비동기 assert와 동기 deassert)는 비동기로 셉니다. 추가 리셋(`reset.extra`, 소프트 리셋)은 동기 리셋이라 동기 설계에만 두고, 비동기 설계의 소프트 리셋은 동작으로 씁니다. 표준 셀(`sync_2ff`, `sync_pulse`, `cdc_fifo`)의 리셋도 설계의 방식을 따릅니다(`ASYNC_RST`). 원본 RTL을 이식할 때 리셋 방식이 섞여 있으면 R1이 거부하고(`mixed_reset`), 원본을 한 방식으로 고친 뒤 옮깁니다.
 - **도메인 에지.** 도메인은 상승 에지(`pos`)나 하강 에지(`neg`)입니다. 하강 에지 도메인은 같은 클럭의 상승 에지 도메인과 한 클럭 그룹으로 묶어(반주기 경로) 서로 읽을 수 있습니다. 분주 관계, 동기화 셀, 리셋 동기화는 상승 에지 도메인에만 둡니다. 하니스와 차분 시뮬레이션은 하강 에지 도메인의 입력을 상승 에지에서 바꾸고, 설계 모델 실행기는 하강 에지 시각에 그 도메인을 진행합니다.
-- **function과 SVA.** `functions`는 모듈 안의 automatic function/task입니다. 본문은 인자와 지역 변수만 읽고 쓰므로(모듈 신호는 인자로) 조각의 읽기·쓰기 분석이 그대로 맞습니다. task는 `comb`에서만 부르고 출력 인자로 넘긴 신호가 그 조각의 쓰기입니다. `assertions`는 SVA 속성이고, Emitter가 도메인 클럭과 `disable iff`를 씌워 합성에서 빠지게 냅니다. 시뮬레이션에서 실패하면 멈추지 않고 보고 줄을 내며, Verify가 이를 그 테스트의 실패로 읽어 assert는 Repair로, assume은 Verifier로 보냅니다.
+- **function과 SVA.** `functions`는 모듈 안의 automatic function입니다. 본문은 인자와 지역 변수만 읽고 쓰므로(모듈 신호는 인자로) 조각의 읽기·쓰기 분석이 그대로 맞습니다. `assertions`는 SVA 속성이고, Emitter가 도메인 클럭과 `disable iff`를 씌워 합성에서 빠지게 냅니다. 시뮬레이션에서 실패하면 멈추지 않고 보고 줄을 내며, Verify가 이를 그 테스트의 실패로 읽어 assert는 Repair로, assume은 Verifier로 보냅니다. **합성 RTL에는 task와 PLI를 쓰지 않습니다** (사내 규칙, 2026-10-22): `task`와 상수 함수(`$clog2`, `$bits`, `$signed` 등) 밖의 시스템 함수·task(`$display`, `$random`, DPI 등)는 Validator V4 오류입니다. SVA는 Emitter가 `` `ifndef SYNTHESIS ``로 감싸므로 이 규칙 밖입니다. 원본 RTL의 task는 Porter가 `comb` 블록이나 function으로 풀어 옮깁니다.
 - **inout 패드.** 하니스와 설계 모델 실행기는 inout 포트 P를 바깥 장치의 `P_pad_o`, `P_pad_oe`와 패드 값 `P_pad_val`로 다룹니다 (블록 구동 > 바깥 구동 > 풀업). 바깥 장치가 구동하는데 패드 값이 다르면 블록이 같은 패드를 다른 값으로 구동한 것이므로, 하니스가 동시 구동 충돌로 실패시킵니다 (2-state 시뮬레이터에서도 잡힘).
 - **v1 제외.** generate, 하위 모듈 사이의 3상태 버스, 의도적 래치는 아직 표현하지 못합니다. inout은 `top`/`block_top` 경계에서만 `tristate` 블록으로 표현하고, 하위 모듈은 `_o`, `_oe`, `_i` 포트로 나눕니다. 원본 RTL의 generate는 이식할 때 고정한 파라미터로 펼쳐 옮깁니다 (4.5).
 

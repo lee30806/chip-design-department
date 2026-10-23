@@ -620,7 +620,7 @@ Architect는 L0와 L1과 함께 가정 목록을 반드시 출력합니다. 하�
 v1 스키마는 아래 여섯 가지를 표현하지 못했고, 필요한 형태를 확인한 것부터 추가했습니다.
 
 - generate (인스턴스 반복, 조건부 생성). P11 원본 이식은 고정한 파라미터로 펼쳐 옮김
-- function과 task. P12에서 모듈의 `functions`로 추가함 (automatic, 본문은 인자와 지역 변수만 읽고 씀. task는 `comb`에서만 부름)
+- function. P12에서 모듈의 `functions`로 추가함 (automatic, 본문은 인자와 지역 변수만 읽고 씀). task는 2026-10-22 사내 규칙으로 합성 RTL에서 쓰지 않음 (V4 오류). PLI와 상수 함수 밖의 시스템 함수도 V4 오류
 - inout과 tristate. P11에서 Block Top 경계의 `tristate` 블록으로 추가함 (하위 모듈 사이의 3상태 버스는 여전히 제외). P12에서 하니스의 동시 구동 충돌 검사와 설계 모델 실행기의 `tristate` 실행을 더함
 - 의도적 래치
 - 다중 비트 CDC (async FIFO, 핸드셰이크). P10에서 `cdc_fifo`로 추가함

@@ -59,6 +59,7 @@ class Mod:
     port_domains: dict[str, str | None] = field(default_factory=dict)
     signature: str = ""
     tri_split: dict[str, dict] = field(default_factory=dict)   # 나눈 inout 포트 → {style, o, oe, i, 원본 식}
+    removed_params: dict[str, str] = field(default_factory=dict)   # 고른 구조에서 쓰이지 않아 지운 파라미터 → 고정 값
 
 
 class Extractor:
@@ -290,6 +291,7 @@ class Extractor:
             info["domain"] = pdom.get(pad)
 
         params = self._params(inst, body, top, name)
+        mod.removed_params = self._removed_params
         ports = self._ports(body, pdom, derived, name)
         ir = {"module": name, "role": "module", "params": params, "domains": domains, "ports": ports}
         instances, connections, signals, pending = self._connections(body, children, child_maps, dnames, input_ports, name)
@@ -831,6 +833,7 @@ class Extractor:
         self._local_names = {p.name for p in body.parameters} | {m.name for m in body if m.kind == SK.Parameter}
         used = self._used_names(body)
         self._scan_body_consts(inst, body, mod)
+        self._removed_params: dict[str, str] = {}
         out = []
         for m in self._param_syms(body):
             ptype = self._param_type(m, body, mod)
@@ -848,7 +851,9 @@ class Extractor:
                 entry["local"] = True
             if m.name not in used and not m.isLocalParam:
                 self._review(mod, self._loc(m), "unused_param",
-                             f"파라미터 {m.name}은 고른 구조에서 쓰이지 않음 (generate 조건이나 고르지 않은 갈래에서만 쓰였음). 지움")
+                             f"파라미터 {m.name}은 고른 구조에서 쓰이지 않음 (generate 조건이나 고르지 않은 갈래에서만 쓰였음). "
+                             f"고정 값 {default}로 갈래를 고르고 지움")
+                self._removed_params[m.name] = default   # 원본을 빌드할 때는 이 값을 준다 (r4.ref_params)
                 continue
             if m.name not in used and m.isLocalParam:
                 continue

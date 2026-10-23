@@ -187,8 +187,21 @@ def test_memory_write_only_in_seq():
 
 
 def test_sv_only_width_expression_is_a_fragment_error_not_a_crash():
-    """$clog2 같은 SV 식을 Python 조각 모듈의 타입에 쓰면 실행기를 죽이지 않고 조각 오류로 낸다 (2026-10-20 axis_async_fifo R6)."""
+    """Python 식으로 읽을 수 없는 SV 식을 Python 조각 모듈의 타입에 쓰면 실행기를 죽이지 않고 조각 오류로 낸다 (2026-10-20 axis_async_fifo R6)."""
     raw = {"module": "m", "role": "module", "lang": "py", "params": [{"name": "DEPTH", "type": "int", "default": "16"}],
-           "domains": [], "ports": [], "signals": [{"name": "p", "kind": "wire", "type": "logic [$clog2(DEPTH)-1:0]"}], "blocks": []}
+           "domains": [], "ports": [], "signals": [{"name": "p", "kind": "wire", "type": "logic [DEPTH'(3):0]"}], "blocks": []}
     errs = Module(raw).lower_errors
     assert errs and "local 파라미터" in errs[0][1]
+
+
+def test_clog2_in_types_is_read_symbolically():
+    """동결된 L1 포트 타입의 `$clog2(DEPTH)`를 읽는다 (2026-10-22 axis_async_fifo R6: Python 후보가 이 때문에 매번 실패).
+    폭은 파라미터 값으로 세고, 방출하는 캐스트에는 `$clog2(DEPTH)`가 그대로 남는다."""
+    from pipeline.ir.pyfrag import Lin, _const_expr, clog2, const_int
+    assert [clog2(v) for v in (0, 1, 2, 3, 4, 1024, 1025)] == [0, 0, 1, 2, 2, 10, 11]
+    assert const_int(_const_expr("$clog2(DEPTH)+1"), {"DEPTH": 1024}) == 11
+    w = Lin.of(_const_expr("$clog2(DEPTH)"), {"DEPTH"}, {"DEPTH": 1024}) + Lin(const=1)
+    assert w.sv() == "$clog2(DEPTH)+1" and w.value({"DEPTH": 1024}) == 11 and w.value({"DEPTH": 16}) == 5
+    raw = {"module": "m", "role": "module", "lang": "py", "params": [{"name": "DEPTH", "type": "int", "default": "16"}],
+           "domains": [], "ports": [], "signals": [{"name": "p", "kind": "wire", "type": "logic [$clog2(DEPTH):0]"}], "blocks": []}
+    assert Module(raw).lower_errors == []

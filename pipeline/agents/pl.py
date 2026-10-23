@@ -128,10 +128,14 @@ def cmd_model(a) -> dict:
     spec = importlib.util.spec_from_file_location("model_under_test", a.model)
     mod = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(Path(a.model).parent))
+    sys.path.insert(0, str(Path(a.l1).resolve().parent / "harness"))   # 테스트가 하니스를 import하므로 작업 폴더의 harness/도 찾게 한다
     spec.loader.exec_module(mod)
     model = mod.Model()
     rng = random.Random(a.seed)
     ins = [b for b in cfg["bundles"] if not b["dut_drives"]]
+    if not ins:   # 입력 번들이 없는 블록(단독 포트만): 트랜잭션으로 넣을 것이 없으므로 생성만 확인한다
+        return {"ok": True, "inputs": 0, "skipped": 0, "expected_outputs": {},
+                "note": "입력 번들이 없어 Model 생성만 확인함 (사이클 값은 테스트에서 확인)"}
     widths = signal_widths(raw)
 
     out_counts: dict[str, int] = {}
@@ -290,8 +294,20 @@ def cmd_refsim(a) -> dict:
     if rec is None:
         return {"ok": False, "errors": [err[-1500:]]}
     outs = {s: [{"cycle": c - INIT_RESET, **t} for _, c, t in xs] for s, xs in rec["outputs"].items()}
-    return {"ok": True, "inputs_accepted": rec["inputs"], "outputs": outs,
-            "note": "cycle은 리셋이 풀린 뒤 0부터, 출력 valid와 ready가 함께 1인 사이클"}
+    # 상태 출력 같은 단독 출력도 낸다: 값이 바뀐 사이클과 값. 없으면 SpecWriter가 RTL을 읽어 짐작한다
+    # (2026-10-21~22 axis_async_fifo: 리셋 직후 s_status_depth=2046을 두 실행 모두 SPEC에서 놓침)
+    singles = {}
+    for o in h["outputs"]:
+        prev, ch = None, []
+        for c, row in enumerate(rec.get("cycles", {}).get(o["domain"], [])):
+            if c >= INIT_RESET and row.get(o["name"]) != prev:
+                prev = row.get(o["name"])
+                ch.append([c - INIT_RESET, prev])
+        singles[o["name"]] = ch
+    return {"ok": True, "inputs_accepted": rec["inputs"], "outputs": outs, "singles": singles,
+            "note": "cycle은 리셋이 풀린 뒤 0부터, 출력 valid와 ready가 함께 1인 사이클. "
+                    "singles는 단독 출력마다 [사이클, 값] (사이클 0의 값과 값이 바뀐 사이클). 자극의 사이클별 값(valid, ready, "
+                    "single, reset)의 순번도 같은 번호다"}
 
 
 def cmd_spec_gate(a) -> dict:

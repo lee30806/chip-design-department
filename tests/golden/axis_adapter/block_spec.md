@@ -71,7 +71,7 @@ Oct 11, 2026 · 이식 시험 블록의 Block Top SPEC (원본: verilog-axis `ax
 
 ## 7. 예외와 코너 케이스
 
-- ADP-E01 (필수) rst=1인 동안 m_axis_tvalid=0이고 받아 둔 입력은 버린다.
+- ADP-E01 (필수) rst=1을 본 다음 클럭부터 rst=1인 동안 m_axis_tvalid=0이고 받아 둔 입력은 버린다.
 - ADP-E02 미정의: tkeep이 0이거나 레인 0부터 연속이 아닌 입력 비트의 출력
 
 ## 8. 예시 시나리오

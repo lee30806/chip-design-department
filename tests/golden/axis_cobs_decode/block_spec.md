@@ -58,7 +58,7 @@ COBS 인코딩: 프레임은 코드 바이트 C와 그 뒤의 데이터 바이�
 
 ## 7. 예외와 코너 케이스
 
-- COBS-E01 (필수) rst=1인 동안 m_axis_tvalid=0, s_axis_tready=0이고, 리셋 뒤에는 새 프레임을 기다린다.
+- COBS-E01 (필수) rst=1을 본 다음 클럭부터 rst=1인 동안 m_axis_tvalid=0, s_axis_tready=0이고, 리셋 뒤에는 새 프레임을 기다린다.
 - COBS-E02 미정의: 코드 바이트 하나(0x01)와 tlast만으로 된 빈 프레임의 출력
 
 ## 8. 예시 시나리오

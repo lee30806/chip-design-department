@@ -40,7 +40,7 @@ TASK = """\
 
 ## 원본으로 확인하기 (`refsim`)
 `python3 tools/pl.py refsim ir/{top}.ir.json --ref ref --stim .refsim/stim1.json`은 원본 RTL에 네가 정한 자극을 넣고, 출력 번들마다
-나간 트랜잭션(필드 값, 리셋이 풀린 뒤 사이클)을 낸다. 자극 파일은 `.refsim/` 아래에 둔다 (예: `.refsim/stim1.json`):
+나간 트랜잭션(필드 값, 리셋이 풀린 뒤 사이클)을, 상태 출력 같은 단독 출력마다 값이 바뀐 사이클과 값(`singles`)을 낸다. 자극 파일은 `.refsim/` 아래에 둔다 (예: `.refsim/stim1.json`):
 `{{"inputs": {{"<입력 번들>": [{{"<필드>": 값, ...}}, ...]}}, "valid": {{"<입력 번들>": [사이클별 0/1]}},
 "ready": {{"<출력 번들>": [사이클별 0/1]}}, "single": {{"<단독 입력 포트>": [사이클별 값]}}, "cycles": N}}`.
 `inputs` 말고는 모두 생략할 수 있다 (생략하면 valid=1, ready=1, 단독 입력 0). 필드는 포트 이름(`s_axis_tdata`)이나

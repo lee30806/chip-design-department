@@ -140,7 +140,7 @@ def test_sva_failures_are_findings_of_the_test(tmp_path):
     assert [(x.tool, x.rule, x.test, x.message.split()[0]) for x in r.findings] == \
         [("sva", "SVA_ASSUME", "breaks_assumption", "assertions/m_b_small")], r.findings
     # z 상위 니블을 틀리게 만든 RTL: 두 테스트 모두 assert p_z 실패. Classifier는 모듈과 노드를 짚어 Repair로 보낸다
-    f.write_text(e.text.replace("hi = x[7:4];", "hi = x[6:3];"))
+    f.write_text(e.text.replace("z_hi = 4'((a ^ b) >> 4);", "z_hi = 4'((a ^ b) >> 3);"))
     r = sim([f], "fn_mod", "tb_fn_mod", ROOT / "tests" / "sim", tmp_path / "bad")
     p_z = [x for x in r.findings if x.rule == "SVA_ASSERT"]
     assert {x.test for x in p_z} == {"within_assumption", "breaks_assumption"} and all("assertions/p_z" in x.message for x in p_z)

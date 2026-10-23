@@ -811,6 +811,49 @@ Claude Code CLI, 모든 역할 `claude-haiku-5-5`, effort medium (`config/roles.
 - 사람 승인 2회(기댓값 수정): TR-01 지연 하한 완화, sc03_full 대기 시간 수정.
 - 시험: `tests/test_port.py`(함께 리셋 계획, 사건 묶음, 마지막 리셋 뒤 비교, 끝 개수 차이). 시뮬레이션 제외 303개, 시뮬레이션 103개 통과 (끝 개수 차이와 입력 순서 재시작 뒤에는 관련 시뮬레이션 33개를 다시 돌림).
 
+### 실패 교훈 반영 점검과 남은 항목 실행 (2026-10-22\~23 사용자 지시)
+
+DV/PI Seat 모델 선정을 뺀 남은 항목을 진행하고, 지난 실패에서 얻은 교훈(Architecture·SPEC 작성 요구 등)이 하네스에 들어 있는지 점검했습니다. 빠진 것은 아래처럼 넣었습니다.
+
+| 교훈 | 반영 | 위치 |
+| --- | --- | --- |
+| 합성 RTL에는 task와 PLI를 쓰지 않음 (사내 규칙, 사용자 확인) | V4: `task`는 오류. 합성 가능한 상수 시스템 함수(`$clog2`, `$bits`, `$signed` 등 `SYNTH_SYSFUNCS`) 밖의 시스템 함수·PLI는 블록, FSM 조건, 함수 본문에서 오류. SVA는 `ifndef SYNTHESIS` 안이라 제외. Porter는 task를 comb나 function으로 풀고 `$display`는 옮기지 않음. P12의 task 기능은 이 규칙으로 대체 | `validator/checks.py`, `agents/porter.py`, `ir_guide.md`, 픽스처 `fn_mod`, `fn.v` |
+| RTL 코딩 규칙과 용어를 한 곳에 | 규칙마다 강제하는 곳(Validator 규칙, Emitter, 안내)을 짝지은 `docs/RTL 코딩 규칙.md`, 용어 약 110개의 `docs/용어집.md` | `docs/` |
+| 동기 리셋은 "다음 사이클부터" | SPEC 검사 경고 `RESET_SAME_CYCLE`(동기 리셋 문장에 "rst=1인 동안"만 있고 다음 사이클·클럭이 없음). golden SPEC 두 곳(ADP-E01, COBS-E01) 수정 | `spec/check.py`, SPEC 작성 템플릿 |
+| 다중 클럭 리셋은 사용 조건 | SPEC 검사 경고 `MULTI_RESET_USAGE`(리셋 도메인이 둘 이상인데 함께 거는 사용 조건 문장이 없음) | `spec/check.py`, 템플릿, ARCHITECTURE R6 |
+| 범위와 "구현에 따름" | 상태 출력의 단위와 범위, 위상에 따른 값은 범위와 "구현에 따름(검증하지 않음)". Verifier는 그런 값을 검사하지 않고 범위는 범위로 검사 | 템플릿, `agents/verifier.py`, `tb_guide.md` |
+| 사람이 승인한 테스트 결함 | `tb_guide.md` "자주 틀린 것": 고정 사이클 뒤 개수 검사, `set_ready` 되풀이, 범위 값을 한 값으로, 동기 리셋 그 사이클 출력, 리셋 뒤 보내던 프레임, 다른 도메인 사이클 번호(대기 클럭 예), 직전 사이클 값으로 같은 사이클 규칙 검사 | `tb_guide.md` |
+| refsim으로 사이클을 재고 씀 | refsim이 단일 출력 값 변화(`singles`)도 냄. 자극 배열과 번호가 같다는 설명 | `agents/pl.py`, `agents/spec_writer.py` |
+| 고정 파라미터로 지운 원본 갈래 | R1이 지운 파라미터(`removed_params`)를 기록하고, 참조 빌드에 그 고정 값을 줌 (아래 `PAUSE_ENABLE`) | `importer/extract.py`, `importer/r1.py`, `importer/r4.py`(`ref_params`) |
+| `$clog2` 파라미터 식 | Python 조각의 상수 식에서 `$clog2`를 기호로 다룸 | `ir/pyfrag.py` |
+| DV 핸드셰이크 표본 | 핸드셰이크는 에지 전에 표본, 조건 대기, SVA는 `--assert`와 `$display`(멈추지 않음)와 음성 검사 | `department/guidance/dv.tb.md`, `dv.checker.md` |
+
+이 과정에서 찾아 고친 결함:
+- **`PAUSE_ENABLE` 제거로 틀린 참조.** R1이 고정 파라미터 `PAUSE_ENABLE=1`로 갈래를 고르고 파라미터를 지웠는데, R4/R6 참조 빌드는 원본 기본값 0으로 빌드했습니다. 그래서 전에 통과한 `axis_async_fifo` R6(커밋 7e8f5fa)는 일시정지가 꺼진 원본과 비교한 것이었습니다. `removed_params`로 고친 뒤 R4가 `m_pause_ack` 차이를 잡았습니다.
+- **원본의 리셋 없는 일시정지 동기화 플롭.** 고친 참조로 R4가 `s_pause_ack`에서 `differ`였습니다. 원본 RTL의 일시정지 동기화 플롭(`s_pause_req_sync1`, `s_pause_ack_sync2/3`는 s_rst, `s_pause_req_sync2/3`, `s_pause_ack_sync1`은 m_rst)에 동기 리셋 0을 넣었습니다 (사용자 결정). 원본 테스트벤치 20/20 통과.
+- **하니스 시작 순서.** 리셋 풀기를 `_release()`로 미뤄 `idle=N`이 모든 도메인에서 사이클 N.
+- **diffsim:** 처음 리셋 구간(`INIT_RESET` 전) 출력은 기록하지 않음(재생성의 사이클 0 valid로 `regen_defect` 오판 2회). 다중 리셋 도메인이면 끝 개수 허용을 steady 모드에도 적용하고(처음 리셋 뒤 ready 지연도 미정), 더 받은 쪽이 중간 한 곳에 연속으로 낸 항목(받은 입력 차이 이하)도 건너뜀(프로브 앞 조용한 구간에서 입력 순서가 다른 위치에서 끊김). 프로브 전환 때 내던 트랜잭션은 받힐 때까지 유지(valid를 받히기 전에 내리지 않음).
+- **SPEC 게이트:** 블록이 없는 L1(SPEC 표에서 만든 것)에 V2의 "inout은 tristate 블록 하나가 맡아야" 규칙을 적용해 inout 블록이 늘 실패. 게이트에서 이 규칙을 뺌 (`od_top`).
+- **`pl.py model`:** 입력 번들이 없는 블록(단독 포트만, inout 패드만)에서 빈 목록에서 고르다 예외. Model 생성만 확인하도록 고치고, 테스트가 import하는 `harness/`를 경로에 넣음 (`fn_top`, `od_top`).
+
+실제 에이전트 실행 (Claude Code Haiku 5.5 effort medium):
+
+| 실행 | 결과 | 비고 |
+| --- | --- | --- |
+| `port-axis_adapter-upsize-20261022` | R4 `equal` (Porter 첫 시도) | 업사이즈 설정 |
+| `port-ne_top-20261022` (하강 에지) | R6 통과 (회차 4, 에이전트 92회) | 사람 승인 2회 |
+| `port-od_top-20261022` (open-drain 패드) | R6 통과 (회차 0, 13회) | SPEC 게이트와 `pl.py model` 수정 뒤 |
+| `port-fn_top-20261022` (function) | R6 통과 (회차 0, 14회) | `pl.py model` 수정 뒤 |
+| `port-axis_async_fifo-20261022c` | R6 통과 (회차 5, 139회) | 사람 승인 4회 (2회는 버린 첫 회차 5). 아래 |
+| `port-axis_adapter-deltest-20261022`, `deltest2` | 삭제를 잡지 못함 | 아래 |
+
+- **`axis_async_fifo`:** 회차 2, 3은 리셋 뒤 `s_axis_tready`가 처음 1이 되는 사이클을 정확한 값으로 써서 실패했고, 회차 4(SPEC v4)에서 범위(사이클 2\~4, 구현에 따름)가 되었습니다. 그런데 회차 4를 비교 결함(위 diffsim 두 가지)이 `differ`로 내, SpecWriter가 v5에서 다시 "사이클 4"로 좁혀 회차 5가 실패하고 고치기 상한에 걸렸습니다. 비교를 고친 뒤 회차 4로 되돌려(회차 5 결과는 `.abandoned`로 보관) 다시 판정하니 재생성은 원본과 같았고, 남은 것은 원본이 리셋 구간에 `s_status_depth=2046`을 내는 진짜 SPEC 공백이었습니다. 새 v5(리셋 창 인덱스 1\~2의 상태는 0\~2047, 구현에 따름)로 회차 5가 원본과 같고 두 Verifier 테스트가 원본에서 통과. 가져온 IR로 원본 테스트벤치 20/20 통과.
+- **삭제 시험:** SPEC 요구사항을 지워도 R6가 잡는지 보았습니다. 1차(FR-DATA-03 하나)는 SC-02 표가 같은 동작을 정하고 있어 남았고, 2차는 FR-DATA-03(tkeep=0 바이트도 입력 값 그대로)과 EX-02, SC-02의 해당 값까지 지웠습니다. 재생성 설계는 그래도 원본과 같았습니다. 시프터의 가장 단순한 구현이 마스크하지 않으므로 원본과 같은 동작이 기본으로 나온 것입니다. R6는 지운 요구사항이 없을 때 설계가 원본과 다르게 나올 수 있는 동작만 잡습니다. 검출을 시험하려면 사이클 수, 조건부 값, 우선순위처럼 추측할 수 없는 동작을 지워야 합니다.
+- **CRC DV 공백 (P8 대기 항목):** `experiments/p8/crc_dv/`에 SVA(bind: 유지, 상태, 리셋, 16비트 롤오버 cover)와 0xFFFF→0→1 롤오버, stall, 중간 리셋 테스트. 통과. SPEC 결정(사용자, 권장안): CRC-E03은 도중 리셋된 프레임을 마무리하지 않음(남은 바이트와 CRC를 내지 않고 받는 쪽이 처리), CRC-E04는 리셋 뒤 첫 프레임이 CRC-01\~12를 따름, CRC-E01은 "rst=1을 본 다음 사이클부터" 한 문장(REQ_MULTI, RESET_SAME_CYCLE 경고 해소), Q-01은 상위 바이트 먼저로 고정하고 범위 밖 항목에 넣음. 동결 RTL(674c)의 동작 그대로라 RTL은 바꾸지 않았고, `first_frame_after_mid_reset` 테스트(끊긴 프레임 3바이트 뒤 리셋, 다음 "123456789"가 정확히 `29 B1`로 끝나고 `stat_frames=1`)를 더해 3/3 통과, SVA 실패 0. 남은 SPEC 경고는 기존 CRC-T01의 REQ_MULTI 하나.
+- **golden 블록 Verifier 체커의 리셋 표본 가정:** 다시 보았고 가정한 곳이 없었습니다.
+
+시험: 시뮬레이션 제외 309개(3개 건너뜀), 시뮬레이션 103개 통과.
+
 ---
 
 ## 3. 횡단 관심사

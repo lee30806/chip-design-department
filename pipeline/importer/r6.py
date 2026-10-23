@@ -27,10 +27,11 @@ def _regen_files(regen_ir: dict[str, dict], work: Path, cells: list[Path]) -> li
 def _ref(r1: dict, top_ir: dict, work: Path) -> tuple[list[Path], str, list[str]]:
     files, args = r4.ref_sources(r1, work)
     renames = r1["modules"].get(top_ir["module"], {}).get("renames", {})
-    wrap, top = r4.ref_wrapper(top_ir, renames, work)
+    params = r4.ref_params(top_ir, r1)
+    wrap, top = r4.ref_wrapper(top_ir, renames, work, params)
     if wrap:
         return [*files, wrap], top, args
-    return files, top, [*args, *[f"-G{p['name']}={p['default']}" for p in top_ir["params"] if not p.get("local")]]
+    return files, top, [*args, *[f"-G{k}={v}" for k, v in params.items()]]
 
 
 def timing(a: dict, b: dict) -> list[dict]:

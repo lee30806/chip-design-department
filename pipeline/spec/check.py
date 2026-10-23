@@ -7,6 +7,9 @@
 - 포트: 출력 포트마다 그 포트를 다루는 요구사항이 있는지(오류), 입력 포트가 요구사항에서 참조되는지(경고)
 - 번들의 프로토콜 태그가 표준 목록에 있는지(경고)
 - 예시 시나리오: 정상 하나와 코너 하나 이상, 시나리오마다 입력과 기대 출력이 있는 표
+- 리셋 문장(경고): 동기 리셋 도메인에서 "리셋이 1인 동안/사이클에 출력이 ~"처럼 리셋이 걸린 그 사이클을 요구하는 문장
+  (P8 CRC-E01, P8a COBS-E01·AFIFO-E02: 레지스터 출력은 리셋을 본 다음 사이클에야 바뀜). 리셋 도메인이 둘 이상(다른
+  클럭)인데 모든 리셋을 함께 거는 사용 조건 문장이 없음 (P11 axis_async_fifo: 한쪽 리셋 동작은 두 클럭 위상에 따라 달라짐)
 - 레지스터 맵을 주면 레지스터 검사와 SPEC 대조 (`regmap.py`)
 검토 항목으로 올리는 것: 미정의 동작(7번 섹션의 "미정의"), 열린 질문(10번 섹션), 위 검사의 경고,
 LLM 검사의 질문(`--llm`, llm_check.py)
@@ -62,6 +65,8 @@ def check_l1(spec: Spec) -> tuple[dict | None, list[SpecIssue]]:
         return None, [SpecIssue("TABLE_PARSE", "error", f, f"2~4번 섹션 표에서 L1을 만들 수 없음: {e}")]
     out = []
     for i in validate(Module(ir), {}, upto=3):
+        if "tristate 블록 하나가 맡아야" in i.message:
+            continue   # SPEC 표의 L1에는 블록이 없다. inout을 맡는 tristate는 Architect와 Author가 둔다 (2026-10-22 od_top)
         line = prov.get(i.node) or prov.get(i.node.rsplit("/", 1)[0])
         out.append(SpecIssue(f"L1_{i.stage}", "error", f"{f}:{line}" if line else i.node, i.message))
     for p in ir["ports"]:
@@ -129,6 +134,33 @@ def check_scenarios(spec: Spec) -> list[SpecIssue]:
     return out
 
 
+def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
+    if ir is None:
+        return []
+    f, out = _name(spec), []
+    reqs = [r for r in spec.requirements if r.section in (5, 6, 7) and r.level != "미정의"]
+    rdoms = [d for d in ir["domains"] if d.get("reset")]
+    for d in rdoms:
+        rs = d["reset"]
+        if rs.get("async"):
+            continue
+        port, act = rs["port"], "0" if rs["active"] == "low" else "1"
+        same = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(port)}\s*(?:=|가|이)\s*{act}\s*(?:인|이 된|가 된)\s*(?:동안|사이클)")
+        for r in reqs:
+            if same.search(r.text) and not re.search(r"다음\s*(?:사이클|클럭)", r.text):
+                out.append(SpecIssue("RESET_SAME_CYCLE", "warning", f"{f}:{r.line}",
+                                     f"{r.id}: 동기 리셋({port})이 걸린 그 사이클의 출력을 정함. 레지스터 출력은 리셋을 본 다음 "
+                                     f"사이클부터 바뀌므로 \"{port}={act}을 본 다음 사이클부터\"처럼 쓴다"))
+    clocks = {d["clock"] for d in rdoms}
+    ports = sorted({d["reset"]["port"] for d in rdoms})
+    if len(clocks) > 1 and len(ports) > 1 and not any(
+            "함께" in r.text and all(_word(p).search(r.text) for p in ports) for r in reqs):
+        out.append(SpecIssue("MULTI_RESET_USAGE", "warning", f,
+                             f"리셋 도메인이 클럭 {len(clocks)}개에 걸쳐 있는데 리셋 {', '.join(ports)}을 함께 거는 사용 조건 문장이 없음. "
+                             "\"모든 리셋을 함께, 가장 느린 클럭 N사이클 이상 건다\"와 한쪽만 리셋했을 때(미정의)를 쓴다"))
+    return out
+
+
 def review_items(spec: Spec) -> list[SpecIssue]:
     """사람이 최종 승인에서 볼 항목: 미정의 동작과 열린 질문."""
     f = _name(spec)
@@ -142,7 +174,7 @@ def run(spec: Spec, regmap: Path | None = None, array_depth: dict[str, str] | No
     """llm_review: llm_check.py가 낸 질문 (검토 항목에 그대로 더함)."""
     issues = check_sections(spec)
     ir, l1 = check_l1(spec)
-    issues += l1 + check_requirements(spec) + check_ports(spec, ir) + check_scenarios(spec)
+    issues += l1 + check_requirements(spec) + check_ports(spec, ir) + check_scenarios(spec) + check_resets(spec, ir)
     if regmap:
         from pipeline.spec import regmap as rm
 

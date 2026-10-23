@@ -76,8 +76,22 @@ def parse_literal(s: str, width: int, consts: dict[str, int]) -> int:
     return int(digits, base) & mask(width)
 
 
+def clog2(v: int) -> int:
+    """SV `$clog2`: v 이상인 가장 작은 2의 거듭제곱의 지수 ($clog2(0) = $clog2(1) = 0)."""
+    return (v - 1).bit_length() if v > 1 else 0
+
+
+def _clog2_arg(node: ast.expr) -> ast.expr | None:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == _CLOG2 \
+            and len(node.args) == 1 and not node.keywords:
+        return node.args[0]
+    return None
+
+
 def const_int(node: ast.expr, consts: dict[str, int] | None = None) -> int:
-    """범위, 반복 횟수, 폭 같은 곳의 상수. 정수, 값을 아는 상수 이름, + - * 만."""
+    """범위, 반복 횟수, 폭 같은 곳의 상수. 정수, 값을 아는 상수 이름, + - *, `$clog2`."""
+    if (arg := _clog2_arg(node)) is not None:
+        return clog2(const_int(arg, consts))
     if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
         return node.value
     if isinstance(node, ast.Name) and consts and node.id in consts:
@@ -90,13 +104,17 @@ def const_int(node: ast.expr, consts: dict[str, int] | None = None) -> int:
     raise FragError("상수 정수가 필요함", getattr(node, "lineno", None))
 
 
+_CLOG2 = "__clog2__"   # 상수식의 `$clog2(...)`를 이 이름의 호출로 읽는다
+
+
 def _const_expr(src: str) -> ast.expr:
-    """타입 범위와 깊이 같은 상수식. Python 식으로 읽을 수 없는 SV 식(`$clog2(N)` 등)은 FragError."""
+    """타입 범위와 깊이 같은 상수식. `$clog2(N)`도 읽는다 (동결된 L1의 포트 타입에 흔함: 2026-10-22 axis_async_fifo R6에서
+    Python 후보가 `logic [$clog2(DEPTH):0]` 때문에 매번 실패). 그 밖에 Python 식으로 읽을 수 없는 SV 식은 FragError."""
     try:
-        return ast.parse(src.strip(), mode="eval").body
+        return ast.parse(src.strip().replace("$clog2(", _CLOG2 + "("), mode="eval").body
     except SyntaxError:
-        raise FragError(f"Python 조각 모듈이 읽을 수 없는 상수식: {src.strip()} (정수와 파라미터의 + - * 식만. "
-                        "$clog2 같은 값은 local 파라미터로 두고 그 이름을 씀)") from None
+        raise FragError(f"Python 조각 모듈이 읽을 수 없는 상수식: {src.strip()} (정수와 파라미터의 + - * 식, $clog2만. "
+                        "그 밖의 값은 local 파라미터로 두고 그 이름을 씀)") from None
 
 
 _TYPE = re.compile(r"(?:logic|bit|reg)(?:\s+unsigned)?(?:\s*\[(.+):(.+)\])?")
@@ -128,7 +146,14 @@ class Lin:
 
     @classmethod
     def of(cls, n: ast.expr, params: set[str], consts: dict[str, int]) -> "Lin":
-        """params는 기호로 남길 이름, consts는 값을 아는 그 밖의 상수."""
+        """params는 기호로 남길 이름, consts는 값을 아는 그 밖의 상수. 파라미터의 `$clog2`는 항 하나(`$clog2(식)`)로 둔다."""
+        if (arg := _clog2_arg(n)) is not None:
+            inner = cls.of(arg, params, consts)
+            if not inner.terms:
+                return cls(const=clog2(inner.const))
+            name = f"$clog2({inner.sv()})"
+            _CLOG2_TERMS[name] = inner
+            return cls({name: 1})
         if isinstance(n, ast.Constant) and isinstance(n.value, int) and not isinstance(n.value, bool):
             return cls(const=n.value)
         if isinstance(n, ast.Name):
@@ -162,7 +187,9 @@ class Lin:
         return Lin({n: v * k for n, v in self.terms.items()}, self.const * k)
 
     def value(self, consts: dict[str, int]) -> int:
-        return self.const + sum(v * consts[n] for n, v in self.terms.items())
+        def term(n):
+            return consts[n] if n in consts else clog2(_CLOG2_TERMS[n].value(consts))
+        return self.const + sum(v * term(n) for n, v in self.terms.items())
 
     def key(self) -> tuple:
         return tuple(sorted(self.terms.items())), self.const
@@ -176,6 +203,8 @@ class Lin:
             out += (f"+{self.const}" if self.const > 0 else str(self.const)) if out else str(self.const)
         return out
 
+
+_CLOG2_TERMS: dict[str, "Lin"] = {}   # `$clog2(식)` 항 이름 → 안의 식 (값을 셀 때)
 
 SymW = tuple   # 폭: Lin 여럿의 최댓값 (정규화된 튜플). None은 정수 리터럴 (문맥을 따름)
 

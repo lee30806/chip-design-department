@@ -290,3 +290,37 @@ def test_llm_check_rejects_spec_edits(tmp_path):
 
     res = llm_run(I3C, _qcfg("questions_touch_spec"), tmp_path / "w")
     assert res["scope_violations"] == ["수정: spec.md"] and res["problems"]
+
+
+def _reset_codes(text):
+    return [(i["code"], i["message"]) for i in check_run(parse(text))["issues"]
+            if i["code"] in ("RESET_SAME_CYCLE", "MULTI_RESET_USAGE")]
+
+
+def test_sync_reset_same_cycle_phrasing_is_flagged():
+    """동기 리셋에서 "rst=1인 동안 출력=0"은 리셋이 걸린 그 사이클을 요구해 레지스터 출력으로 지킬 수 없다 (P8 CRC-E01, P8a COBS-E01)."""
+    text = (ROOT / "tests" / "golden" / "axis_cobs_decode" / "block_spec.md").read_text()
+    assert _reset_codes(text) == []
+    bad = text.replace("rst=1을 본 다음 클럭부터 rst=1인 동안", "rst=1인 동안", 1)
+    codes = _reset_codes(bad)
+    assert [c for c, _ in codes] == ["RESET_SAME_CYCLE"] and "COBS-E01" in codes[0][1]
+
+
+def test_multi_clock_reset_usage_condition_is_required():
+    """클럭이 다른 리셋 도메인이 둘 이상이면 모든 리셋을 함께 거는 사용 조건 문장이 있어야 한다 (P11 axis_async_fifo)."""
+    text = (ROOT / "tests" / "fixtures" / "multiclock" / "mc_top.spec.md").read_text()
+    assert [c for c, _ in _reset_codes(text)] == ["MULTI_RESET_USAGE"]
+    line = next(ln for ln in text.splitlines() if ln.startswith("- MC-"))
+    ok = text.replace(line, line + "\n- MC-90 (필수) a_rst_n과 b_rst_n은 함께, 가장 느린 클럭 4사이클 이상 건다.", 1)
+    assert _reset_codes(ok) == []
+
+
+def test_spec_l1_with_inout_passes_gate_without_tristate_block():
+    """SPEC 표에서 만든 L1에는 블록이 없으므로 "inout은 tristate 블록 하나가 맡음"(V2)을 SPEC 게이트에서 보지 않는다
+    (2026-10-22 od_top: SpecWriter의 맞는 SPEC이 이 규칙으로 실패)."""
+    from pipeline.importer import spec_tables
+    top = _json.loads((ROOT / "tests" / "fixtures" / "port" / "inout" / "ported" / "od_top.ir.json").read_text())
+    text = "# od_top SPEC\n\n" + spec_tables.tables_md(top)
+    from pipeline.spec.check import check_l1
+    ir, issues = check_l1(parse(text))
+    assert ir is not None and not [i for i in issues if i.severity == "error"], [i.message for i in issues]

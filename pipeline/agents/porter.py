@@ -53,6 +53,10 @@ IR에서 방출한 RTL이 원본과 **사이클 단위로 같은 출력**을 내
 {lang_note}- `{out}` 외의 파일은 만들거나 고치지 않는다.
 - 초안의 L1, instances, connections를 바꾸지 않는다. 이름도 원본(바꾼 이름 포함) 그대로 쓴다.
 - 원본에 없는 동작을 더하거나 원본 동작을 "고치지" 않는다. 원본이 이상해 보여도 그대로 옮긴다.
+- 원본의 task는 IR에 쓸 수 없다 (합성 RTL 규칙). 같은 동작을 `comb` 블록에 풀어 쓰거나 값을 돌려주는 function으로 옮긴다.
+  `$display` 같은 시스템 task와 PLI 호출은 옮기지 않는다 (시뮬레이션 전용).
+- `generate if`는 고정한 파라미터 값으로 고른 갈래만 옮긴다. R1이 지운 파라미터(`notes.json` reviews의 unused_param, 고정 값을 적음)는
+  그 고정 값으로 고른 것이다 (2026-10-22 axis_async_fifo: PAUSE_ENABLE=1인데 기본값 0의 갈래를 옮김).
 """
 
 FIX = """\
@@ -136,7 +140,8 @@ def make_ref_dir(r1: dict, dest: Path) -> Path:
         shutil.copy(h, src / Path(h).name)
         headers.append(f"src/{Path(h).name}")
     summary = {"inputs": {**r1["inputs"], "incdirs": [], "files": []}, "units": units, "headers": headers, "wrapped": wrapped,
-               "modules": {n: {"renames": m.get("renames", {})} for n, m in r1["modules"].items()}, "top": r1["top"],
+               "modules": {n: {k: m[k] for k in ("renames", "removed_params") if k in m} for n, m in r1["modules"].items()},
+               "top": r1["top"],
                "order": r1["order"]}
     (dest / "ref.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     return dest

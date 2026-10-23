@@ -119,12 +119,11 @@ def test_function_fixture_passes_and_emits_functions_with_sourcemap():
     m = Module(_fn("fn_mod_py"))
     e = emit(m)
     assert "function automatic logic [7:0] mix(input logic [7:0] x, input logic [7:0] w);" in e.text
-    assert "task automatic split(input logic [7:0] x, output logic [3:0] hi, output logic [3:0] lo);" in e.text
-    assert "split((a ^ b), z_hi, z_lo);" in e.text and "return mix(acc, 8'd1);" in e.text
+    assert "task" not in e.text and "return mix(acc, 8'd1);" in e.text
     nodes = {x["node"] for x in e.sourcemap if x.get("fragment")}
     assert {"functions/mix", "functions/mix/body", "assertions/p_z"} <= nodes
     assert any(x["node"] == "functions/rot/body" and "py_line" in x for x in e.sourcemap)   # Python 조각 줄 대응
-    assert ("a", "z") in comb_paths(m, {})                # task 출력은 입력 인자에 조합으로 의존
+    assert ("a", "z") in comb_paths(m, {})
 
 
 @pytest.mark.parametrize("edit, want", [
@@ -133,10 +132,7 @@ def test_function_fixture_passes_and_emits_functions_with_sourcemap():
     (lambda r: r["functions"][0].update(body="x = 8'd0;\nreturn x;"), "입력 인자에 씀"),
     (lambda r: r["functions"][0].update(body="t = rot(x, 3'd1);\nreturn t;"), "앞에 정의한 function만"),
     (lambda r: r["functions"][0].update(body="t = x;\n@(posedge t[0]);\nreturn t;"), "타이밍 제어"),
-    (lambda r: r["functions"][2].update(body="if (x[0]) hi = x[7:4];\nlo = x[3:0];"), "출력 인자 hi"),
     (lambda r: r["functions"][0]["vars"].append({"name": "a", "type": "logic"}), "모듈의 이름과 겹침"),
-    (lambda r: r["blocks"][2].update(body="split(a, z_hi, z_lo);\nq <= a;", writes=["q", "z_hi", "z_lo"], reads=["a"]),
-     "task는 comb 블록에서만"),
 ])
 def test_function_errors(edit, want):
     raw = _fn()
@@ -145,26 +141,34 @@ def test_function_errors(edit, want):
     assert any(want in x for x in msgs), msgs
 
 
-def test_task_output_is_a_write_of_the_caller():
+TASK = {"name": "split", "kind": "task", "args": [{"name": "x", "dir": "input", "type": "logic [7:0]"},
+                                                  {"name": "hi", "dir": "output", "type": "logic [3:0]"}],
+        "body": "hi = x[7:4];"}
+
+
+def test_task_and_unsynthesizable_system_calls_are_rejected():
+    """합성 RTL에는 task와 PLI(시스템 task, $display, $random 등)를 쓰지 않는다 (2026-10-22 사용자 규칙).
+    상수 함수($clog2, $bits, $signed 등)는 쓴다. SVA는 Emitter가 SYNTHESIS 밖으로 빼므로 보지 않는다."""
     raw = _fn()
-    raw["blocks"][1]["writes"] = ["z"]   # task 출력(z_hi, z_lo)을 writes에서 빼면 V4
-    assert any("선언 밖 쓰기: ['z_hi', 'z_lo']" in x for x in _msgs(raw))
+    raw["functions"].append(TASK)
+    assert any("task를 쓰지 않음" in x for x in _msgs(raw))
+    for body, bad in [("y = mix(a, b);\n$display(\"%d\", y);", "$display"), ("y = 8'($random);", "$random"),
+                      ("y = 8'($time);", "$time")]:
+        raw = _fn()
+        raw["blocks"][0]["body"] = body
+        assert any("합성되지 않는 시스템 함수" in x and bad in x for x in _msgs(raw)), (body, _msgs(raw))
+    raw = _fn()
+    raw["blocks"][0]["body"] = "y = mix(a, b) ^ 8'($clog2(16)) ^ 8'($bits(a));"
+    assert _msgs(raw) == []
+    raw = _fn()
+    raw["functions"][0]["body"] = "t = x + w;\n$display(t);\nreturn t;"
+    assert any("합성되지 않는 시스템 함수" in x for x in _msgs(raw))
 
 
 def test_python_fragment_function_errors():
     raw = _fn("fn_mod_py")
     raw["functions"][0]["body"] = "t = x + a\nreturn t"          # 함수 안에서 모듈 신호
     assert "모르는 이름 a" in Module(raw).lower_errors[0][1]
-    raw = _fn("fn_mod_py")
-    raw["blocks"][0]["body"] = "split(a, z_hi, z_lo)\ny = a"       # task는 comb 블록에서 부르지만 y 블록은 그 출력을 쓰지 않음
-    m = Module(raw)
-    assert not m.lower_errors and set(m.raw["blocks"][0]["writes"]) == {"z_hi", "z_lo", "y"}
-    raw = _fn("fn_mod_py")
-    raw["blocks"][2]["body"] = "split(a, z_hi, z_lo)"               # seq에서 task
-    assert "comb 블록과 task 본문의 task 뿐" in Module(raw).lower_errors[0][1]
-    raw = _fn("fn_mod_py")
-    raw["blocks"][1]["body"] = "split(a ^ b, q, z_lo)\nz = cat(z_hi, z_lo)"   # 출력 인자 폭이 다름 (q는 8비트)
-    assert "폭이 다른 대상" in Module(raw).lower_errors[0][1]
 
 
 def test_repair_can_patch_functions_and_assertions():
@@ -183,7 +187,6 @@ def test_repair_can_patch_functions_and_assertions():
     (lambda r: r["assertions"][0].update(expr="y = 8'd0"), "SVA"),
     (lambda r: r["assertions"][0].update(domain="nope"), "정의되지 않은 도메인"),
     (lambda r: r["assertions"][1].update(id="p_y"), "id 중복"),
-    (lambda r: r["assertions"][0].update(expr="split(a, z_hi, z_lo)"), "task"),
 ])
 def test_assertion_errors(edit, want):
     raw = _fn()
