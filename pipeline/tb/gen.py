@@ -158,10 +158,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 # ---------------------------------------------------------------- inout 패드 모델 (P11)
 PAD_SUFFIX = ("_pad_o", "_pad_oe", "_pad_val")
 
@@ -303,3 +299,7 @@ def pad_top(raw: dict, out_dir: Path) -> tuple[list[Path], str]:
     f = out_dir / f"{name}.sv"
     f.write_text(pad_wrapper_sv(raw, raw["module"], name), encoding="utf-8")
     return [f], name
+
+
+if __name__ == "__main__":
+    sys.exit(main())

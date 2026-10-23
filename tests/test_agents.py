@@ -137,7 +137,8 @@ def test_sandbox_blocks_repo_and_sibling_candidates(tmp_path):
     me.mkdir()
     cmd = ["/bin/sh", "-c", f"cat {ROOT}/README.md; cat {run}/author_c1/answer.ir.json; echo ok > {me}/w.txt && echo own-ok"]
     p = subprocess.run(isolate(cmd, [ROOT, run], [me]), capture_output=True, text=True)
-    assert "own-ok" in p.stdout and "정답" not in p.stdout and p.stderr.count("Operation not permitted") == 2
+    assert "own-ok" in p.stdout and "정답" not in p.stdout
+    assert "README.md: Operation not permitted" in p.stderr and "answer.ir.json: Operation not permitted" in p.stderr
 
 
 def test_profile_and_missing_isolation(monkeypatch):
